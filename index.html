@@ -343,12 +343,24 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <div class="ftab" onclick="setFilter('falsebreak',this)"><span class="ficon">🪤</span> الكسر الوهمي <span class="fbadge" id="fb-falsebreak" style="background:rgba(240,68,88,.12);color:var(--dn);border-color:rgba(240,68,88,.25)">0</span></div>
       <div class="ftab" onclick="setFilter('master',this)" style="order:-1"><span class="ficon">🏆</span> الأقوى (مرتبة موحّدة) <span class="fbadge" id="fb-master" style="background:rgba(255,180,0,.15);color:#ffb400;border-color:rgba(255,180,0,.3)">0</span></div>
       <div class="ftab" onclick="setFilter('whale',this)" style="order:-1;background:rgba(45,212,191,.08);border-color:rgba(45,212,191,.3)"><span class="ficon">🐋</span> قاع الحيتان <span class="fbadge" id="fb-whale" style="background:rgba(45,212,191,.15);color:#2dd4bf;border-color:rgba(45,212,191,.3)">0</span></div>
+      <div class="ftab" onclick="setFilter('decision',this)" style="order:-2;background:linear-gradient(135deg,rgba(14,207,126,.14),rgba(255,215,0,.08));border-color:rgba(14,207,126,.4)"><span class="ficon">🧭</span> غرفة القرار <span class="fbadge" id="fb-decision" style="background:rgba(14,207,126,.2);color:#0ecf7e;border-color:rgba(14,207,126,.35)">0</span></div>
       <div class="ftab" onclick="setFilter('spectral',this)" style="order:-1;background:rgba(255,215,0,.08);border-color:rgba(255,215,0,.3)"><span class="ficon">🎯</span> الإشارة الطيفية <span class="fbadge" id="fb-spectral" style="background:rgba(255,215,0,.15);color:#FFD700;border-color:rgba(255,215,0,.3)">0</span></div>
       <div class="ftab" onclick="setFilter('macd',this)"><span class="ficon">📊</span> تقاطع ماكد <span class="fbadge" id="fb-macd" style="background:rgba(96,165,250,.12);color:#60a5fa;border-color:rgba(96,165,250,.25)">0</span></div>
       <div class="ftab" onclick="setFilter('instvol',this)"><span class="ficon">🏦</span> حجم مؤسسي <span class="fbadge" id="fb-instvol" style="background:rgba(251,146,60,.12);color:#fb923c;border-color:rgba(251,146,60,.25)">0</span></div>
       <div class="ftab" onclick="setFilter('revcandle',this)"><span class="ficon">🕯️</span> شمعة انعكاسية <span class="fbadge" id="fb-revcandle" style="background:rgba(236,72,153,.12);color:#ec4899;border-color:rgba(236,72,153,.25)">0</span></div>
     </div>
     <div style="padding:6px 12px;font-size:9px;color:var(--t3);border-bottom:1px solid var(--bd)">⏱ و 🎯 و 📐 تعرض افتراضياً الإشارات الصعودية المؤكدة فقط (ارتداد فعلي، مو مجرد مرور بالمستوى)</div>
+    <div id="dd-bar" style="display:none;padding:8px 12px;border-bottom:1px solid var(--bd);align-items:center;gap:9px;flex-wrap:wrap;background:linear-gradient(135deg,rgba(14,207,126,.05),rgba(255,215,0,.03))">
+      <button onclick="ddRun()" class="scan-btn" style="background:rgba(14,207,126,.14);border:1px solid rgba(14,207,126,.4);color:#0ecf7e;flex-shrink:0">🧭 احسب القرارات</button>
+      <button onclick="ddBrief()" class="scan-btn" style="background:rgba(255,215,0,.12);border:1px solid rgba(255,215,0,.35);color:#FFD700;flex-shrink:0">📋 الملخص التنفيذي</button>
+      <button onclick="ddBook()" class="scan-btn" style="background:rgba(74,158,255,.12);border:1px solid rgba(74,158,255,.35);color:#4a9eff;flex-shrink:0">📓 مراكزي</button>
+      <span style="font-size:10px;color:var(--t3)">رأس المال:</span>
+      <input id="dd-cap" value="100000" style="width:82px;background:var(--c3);border:1px solid var(--bd2);color:var(--t1);border-radius:4px;padding:3px 6px;font-size:10px;font-family:'IBM Plex Mono',monospace">
+      <span style="font-size:10px;color:var(--t3)">المخاطرة٪:</span>
+      <select id="dd-risk" style="width:52px;background:var(--c3);border:1px solid var(--bd2);color:var(--t1);border-radius:4px;padding:3px;font-size:10px;font-family:inherit"><option>0.5</option><option selected>1</option><option>1.5</option><option>2</option></select>
+      <span id="dd-regime" style="font-size:10px;color:var(--t2)">اضغط «احسب القرارات» لقياس نظام السوق</span>
+      <span id="dd-heat" style="font-size:10px;color:var(--t2);margin-right:auto"></span>
+    </div>
     <div id="spectral-scan-bar" style="display:none;padding:8px 12px;border-bottom:1px solid var(--bd);align-items:center;gap:10px;background:rgba(255,215,0,.04)">
       <button id="spectral-scan-btn" onclick="runSpectralScanAll()" class="scan-btn scan-sec" style="background:rgba(255,215,0,.12)!important;border-color:rgba(255,215,0,.3)!important;color:#FFD700!important;flex-shrink:0">🔄 امسح الآن لكل الأسهم</button>
       <span id="spectral-scan-prog" style="font-size:11px;color:var(--t3)">لم يتم المسح بعد — اضغط الزر لبدء اختبار كل الأسهم</span>
@@ -1087,7 +1099,7 @@ const Tm=()=>{const d=new Date();return`${String(d.getHours()).padStart(2,'0')}:
 const G={sel:'2222',tf:'3mo',tfi:'1d',pr:{},op:{},hi:{},lo:{},vo:{},ch:{},pc:{},cans:{},ind:{},sc:{},ld:new Set(),ldg:new Set(),demo:new Set(),failed:new Map(),lwChart:null,cSeries:null,vSeries:null,series:{}};
 let _filter='all',_buyOnly=false,_sellOnly=false,_alertOnly=false,_sortCol='master',_sortDir=-1,_showBearish=false;
 let _visibleSyms=[],_focusedIdx=-1,_pinnedSym=null;
-const TAB_ORDER=['all','vz','ma','rs','sq','ab','fg','hidden','pregap','fvgr','elliott','harmonic','hunter','time','sniper','whale','fib618','falsebreak','master','macd','instvol','revcandle'];
+const TAB_ORDER=['decision','all','vz','ma','rs','sq','ab','fg','hidden','pregap','fvgr','elliott','harmonic','hunter','time','sniper','whale','fib618','falsebreak','master','macd','instvol','revcandle'];
 let _advData=[],_aiOpen=false,_zoomLevel=100;
 /* ⏱ auto-backtest cache for the "توافق زمني" tab — keyed by `${symbol}|${candleCount}`
    so it naturally invalidates once new candles come in for that symbol (candleCount
@@ -2922,6 +2934,9 @@ function setFilter(f,el){
   if(f==='whale'){_sortCol='sb_s';_sortDir=-1;}
   if(f==='radar'){_sortCol='radar_d';_sortDir=-1;}/* الأقرب زمنياً (اليوم/غداً) أولاً */
   if(f==='spectral'){_sortCol='spectral_edge';_sortDir=-1;}
+  const ddBar=document.getElementById('dd-bar');
+  if(ddBar)ddBar.style.display=(f==='decision')?'flex':'none';
+  if(f==='decision'){_sortCol='dd';_sortDir=-1;if(!DD.ran&&_advData.length)ddRun();}
   const scanBar=document.getElementById('spectral-scan-bar');
   if(scanBar)scanBar.style.display=(f==='spectral')?'flex':'none';
   renderResults();
@@ -3040,6 +3055,7 @@ function getHeaders(){
     instvol:`${base}<th onclick="sortResults('iv_r')">مضاعف الحجم</th><th>موضع الإغلاق</th><th>الحالة</th>${end}`,
     revcandle:`${base}<th>النمط</th><th>الموقع</th><th>الحالة</th>${end}`,
     whale:`${base}<th onclick="sortResults('sb_s')">🐋 درجة القاع</th><th>الموقع بالمدى</th><th>الحالة</th>${end}`,
+    decision:`${base}<th>القرار</th><th>الدخول</th><th>الوقف</th><th>الهدف ١</th><th>R:R</th><th>الكمية</th><th>المخاطرة ر.س</th><th title="أ = دليل مؤكد إحصائياً · ب = داعم · ج = مضاد">الأدلة</th><th>تفاصيل</th>`,
     spectral:`${base}<th onclick="sortResults('spectral_edge')">تفوق نسبة الربح</th><th>عدد الإشارات</th><th>الحكم</th><th>تفاصيل</th>`,
   };
   return cols[_filter]||cols.all;
@@ -3053,6 +3069,10 @@ function renderResults(){
      (_spectralResults من runSpectralScanAll)، وليس على _advData/
      calcAllFilters — لأن شكل بياناته مختلف كلياً (نتائج backtest
      لا تحتوي masterScore/tat/snp/... الخ). فرع منفصل بالكامل. */
+  /* 🧭 غرفة القرار — مسار بيانات مستقل (DD.results) مبني فوق _advData
+     لكن بشكل مختلف تماماً: صفوفه قرارات لا قياسات. */
+  if(_filter==='decision'){ddRenderTable();return;}
+
   if(_filter==='spectral'){
     let sdata=[..._spectralResults];
     sdata.sort((a,b)=>(a.edgeWinRate-b.edgeWinRate)*_sortDir);
@@ -5560,6 +5580,820 @@ async function smartTimingAnalysis() {
     alert('❌ خطأ في بناء التقرير: ' + e.message);
   }
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   🧭 غرفة القرار (DECISION DESK) — الطبقة الأخيرة: من التحليل إلى القرار
+   ──────────────────────────────────────────────────────────────────────
+   كل ما سبق في هذه المنصة يقيس ويصف ويختبر. وهذه الطبقة تفعل شيئاً واحداً
+   فقط: تحوّل ما قيس إلى جملة تنفيذية — «اشترِ هذا بهذا السعر وبهذه الكمية،
+   وبع هذا الآن ولهذا السبب» — أو تقول صراحة «لا قرار اليوم».
+
+   المبدأ الحاكم، وهو نفس مبدأ بقية الملف: لا تُخترع أرقام احتمال. لا يوجد
+   «احتمال نجاح ٪». القرار هنا ناتج **قواعد صريحة معلنة** تمر على بوابات
+   متسلسلة، وكل بوابة تُعرض للمستخدم مع سبب المرور أو الرفض. الفرق بين
+   «قاعدة قرار» و«احتمال» فرق جوهري: الأولى قابلة للمراجعة والتعديل
+   والقياس، والثاني ادّعاء معرفة.
+
+   البوابات الست بالترتيب (أي رفض يوقف السلسلة):
+     ① جودة البيانات   ② السيولة والقابلية للتنفيذ   ③ نظام السوق
+     ④ الأدلة الفنية   ⑤ جودة نقطة الدخول   ⑥ المخاطرة وحجم المركز
+
+   وثلاث إضافات لم تكن موجودة في المنصة إطلاقاً:
+     • محرك الخروج (متى تبيع ما تملكه) — كانت المنصة كلها دخولاً بلا خروج.
+     • حرارة المحفظة وسقوف القطاع — المخاطرة كانت تُحسب لصفقة واحدة معزولة.
+     • سجل القرارات — يقيس أداء غرفة القرار نفسها بدل الادّعاء عنه.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const DD = {
+  cfg: {
+    capital: 100000,        /* رأس المال المخصص للمضاربة */
+    riskPct: 1,             /* المخاطرة القصوى لكل صفقة كنسبة من رأس المال */
+    maxHeatPct: 6,          /* أقصى مخاطرة مفتوحة إجمالاً في وقت واحد */
+    maxPositions: 8,
+    maxSectorPct: 30,       /* أقصى انكشاف على قطاع واحد كنسبة من رأس المال */
+    minRR: 1.5,             /* أقل عائد/مخاطرة مقبول للهدف الأول */
+    participationPct: 8,    /* أقصى نسبة من متوسط حجم التداول اليومي */
+    minTurnoverSAR: 750000, /* أقل قيمة تداول يومية وسيطة مقبولة */
+    maxHoldBars: 20,        /* الخروج الزمني */
+    trailATR: 2.5           /* مضاعف الوقف المتحرك (Chandelier) */
+  },
+  book: [],       /* المراكز المفتوحة */
+  journal: [],    /* سجل القرارات لقياس أداء الغرفة نفسها */
+  results: [],
+  regime: null,
+  ran: false,
+
+  load() {
+    try {
+      const c = JSON.parse(localStorage.getItem('dd_cfg') || 'null');
+      if (c) Object.assign(this.cfg, c);
+      this.book = JSON.parse(localStorage.getItem('dd_book') || '[]');
+      this.journal = JSON.parse(localStorage.getItem('dd_journal') || '[]');
+    } catch (e) { }
+  },
+  save() {
+    try {
+      localStorage.setItem('dd_cfg', JSON.stringify(this.cfg));
+      localStorage.setItem('dd_book', JSON.stringify(this.book));
+      localStorage.setItem('dd_journal', JSON.stringify(this.journal.slice(-400)));
+    } catch (e) { }
+  }
+};
+DD.load();
+
+const ddNum = v => (v == null || !isFinite(v)) ? null : +v;
+const ddMed = a => { const x = a.filter(isFinite).slice().sort((p, q) => p - q); return x.length ? (x.length % 2 ? x[(x.length - 1) / 2] : (x[x.length / 2 - 1] + x[x.length / 2]) / 2) : 0; };
+const ddFmt = n => n == null ? '—' : (+n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+/* ══════════════════════════════════════════════════════════════════════
+   ② بوابة السيولة — البوابة التي كانت غائبة تماماً
+   ──────────────────────────────────────────────────────────────────────
+   المنصة كانت ترتّب الأسهم بالنتيجة الفنية فقط. سهم قيمة تداوله اليومية
+   ٢٠٠ ألف ريال قد يتصدّر «الأقوى» بنتيجة ٩٢، ثم عند التنفيذ الفعلي يحرّك
+   أمرُك السعرَ ضدك بنسبة تلتهم الهدف كله. وقف الخسارة نفسه يصبح نظرياً:
+   لا يوجد من يشتري منك عند السعر الذي وضعته.
+
+   القاعدة هنا: قيمة التداول اليومية الوسيطة (لا المتوسط — جلسة واحدة
+   استثنائية تضخّم المتوسط)، وسقف مشاركة لا يتجاوز نسبة من الحجم اليومي.
+   ══════════════════════════════════════════════════════════════════════ */
+function ddLiquidity(sym) {
+  const cs = G.cans[sym];
+  if (!cs || cs.length < 20) return { ok: false, why: 'شموع غير كافية لقياس السيولة' };
+  const last = cs.slice(-20);
+  const turnovers = last.map(c => c.close * (c.volume || 0));
+  const medTurnover = ddMed(turnovers);
+  const medVol = ddMed(last.map(c => c.volume || 0));
+  const maxShares = Math.floor(medVol * DD.cfg.participationPct / 100);
+  const ok = medTurnover >= DD.cfg.minTurnoverSAR && maxShares >= 10;
+  return {
+    ok, medTurnover, medVol, maxShares,
+    why: ok
+      ? `قيمة تداول يومية وسيطة ${ddFmt(Math.round(medTurnover))} ر.س — سقف تنفيذ ${ddFmt(maxShares)} سهم (${DD.cfg.participationPct}٪ من الحجم)`
+      : `سيولة ضعيفة: قيمة التداول الوسيطة ${ddFmt(Math.round(medTurnover))} ر.س مقابل حد أدنى ${ddFmt(DD.cfg.minTurnoverSAR)} — التنفيذ سيحرّك السعر ضدك ووقف الخسارة يصبح نظرياً`
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ③ نظام السوق — اتساع السوق لا مؤشره
+   ──────────────────────────────────────────────────────────────────────
+   شراء الاختراقات في سوق هابط هو أسرع طريق لسلسلة وقفات متتالية، والسبب
+   إحصائي لا نفسي: نسبة نجاح الاختراق تنهار حين تكون أغلبية السوق تحت
+   متوسطاتها. تُقاس هنا بالاتساع (نسبة الأسهم فوق MA50) لا بمؤشر تاسي
+   المرجّح بالقيمة — لأن المؤشر قد يصعد بأربعة أسهم ثقيلة بينما ٧٠٪ من
+   السوق ينزف، وأنت تتداول من الـ٧٠٪ لا من الأربعة.
+
+   الأثر تنفيذي لا تزييني: مضاعف مخاطرة يضرب في حجم كل مركز.
+   ══════════════════════════════════════════════════════════════════════ */
+function ddRegime() {
+  const loaded = STKS.filter(s => G.cans[s.sym] && G.cans[s.sym].length >= 55 && !G.demo.has(s.sym));
+  if (loaded.length < 25) return { ok: false, why: 'عدد الأسهم المحمّلة ببيانات حقيقية غير كافٍ لقياس اتساع السوق', mult: 0.5, label: 'غير معلوم', color: '#9aa4b8' };
+  let above50 = 0, above20 = 0; const rocs = [];
+  for (const s of loaded) {
+    const cs = G.cans[s.sym], cl = cs.map(c => c.close), n = cl.length;
+    const ma50 = cl.slice(-50).reduce((a, b) => a + b, 0) / 50;
+    const ma20 = cl.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    if (cl[n - 1] > ma50) above50++;
+    if (cl[n - 1] > ma20) above20++;
+    if (n > 21) rocs.push((cl[n - 1] - cl[n - 21]) / cl[n - 21] * 100);
+  }
+  const b50 = +(above50 / loaded.length * 100).toFixed(1);
+  const b20 = +(above20 / loaded.length * 100).toFixed(1);
+  const medROC = +ddMed(rocs).toFixed(2);
+
+  let label, color, mult, note;
+  if (b50 >= 55 && medROC > 0) { label = 'سوق داعم (Risk-On)'; color = '#0ecf7e'; mult = 1.0; note = 'الاتساع إيجابي — حجم المركز الكامل مسموح'; }
+  else if (b50 >= 40) { label = 'سوق مختلط'; color = '#f5c842'; mult = 0.6; note = 'اتساع متوسط — يُخفَّض حجم كل مركز إلى 60٪ من المخاطرة المعتادة'; }
+  else { label = 'سوق ضاغط (Risk-Off)'; color = '#f04458'; mult = 0.3; note = 'أغلبية السوق تحت متوسطاتها — 30٪ فقط من حجم المركز المعتاد، ويُشترط دليل من الفئة (أ)'; }
+
+  return { ok: true, b50, b20, medROC, sample: loaded.length, label, color, mult, note };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ④ جدول الأدلة — مرتّبة بالفئة لا مجموعة في رقم واحد
+   ──────────────────────────────────────────────────────────────────────
+   الفئة (أ): أدلة اجتازت اختباراً إحصائياً أو تأكيداً متعدد العوامل.
+   الفئة (ب): أدلة داعمة، مفردة، لا تكفي وحدها لقرار.
+   الفئة (ج): أدلة **مضادة** — تُطرح ولا تُتجاهل. سهم بثلاث إشارات صعود
+              وإشارتَي توزيع ليس مثل سهم بثلاث إشارات صعود ولا شيء ضدها.
+   ══════════════════════════════════════════════════════════════════════ */
+function ddEvidence(d) {
+  const A = [], B = [], C = [];
+  const spec = _spectralResults.find(r => r.sym === d.sym);
+
+  /* ── الفئة (أ) — المؤكَّدة ── */
+  if (spec) A.push({ t: 'تفوّق طيفي مقاس تاريخياً', x: `+${spec.edgeWinRate} نقطة في نسبة الربح على ${spec.signalCount} إشارة، p = ${spec.pValueText}، اجتاز تصحيح Benjamini-Hochberg`, key: 'spectral' });
+  if (d.snp?.level === 'high' && d.snp?.dirUp) A.push({ t: 'قناص ما قبل الانطلاق (تأكيد عالٍ)', x: `تقاطع VCP + جفاف حجم + تباعد OBV + توافق زمني — درجة ${d.snp.score ?? '—'}`, key: 'sniper' });
+  if (d.fib618?.confirmed) A.push({ t: 'ارتداد فيبوناتشي ٦١.٨٪ مؤكَّد', x: 'ارتداد فعلي من المستوى، لا مجرد مرور به', key: 'fib' });
+  if (d.tat?.sniperBonus && d.tat?.dirUp) A.push({ t: 'توافق زمني متعدد الأدلة', x: 'تقاطع دورات غان/فيبوناتشي/دورة السهم الذاتية عند نفس المسافة الزمنية', key: 'time' });
+  if (d.sb?.alert) A.push({ t: 'رادار قاع الحيتان', x: `بصمة تجميع مؤسسي عند القاع — درجة ${d.sb.score ?? '—'}`, key: 'whale' });
+
+  /* ── الفئة (ب) — الداعمة ── */
+  if (d.instVol?.active && d.instVol.bullish) B.push({ t: 'حجم مؤسسي داعم', x: 'تجميع كبير الحجم بإغلاق قوي داخل المدى' });
+  if (d.macdX?.active && d.macdX.bullish && d.macdX.fresh) B.push({ t: 'تقاطع ماكد صاعد جديد', x: d.macdX.strengthening ? 'الهيستوجرام يتقوّى' : 'تقاطع حديث' });
+  if (d.hunter?.alert) B.push({ t: 'صيد النسبة', x: `درجة ${d.hunter.score}` });
+  if (d.revCandle?.active && d.revCandle.bullish) B.push({ t: 'شمعة انعكاسية صاعدة', x: d.revCandle.pattern || '' });
+  if (d.pregap?.alert) B.push({ t: 'احتمال فجوة سعرية', x: `${d.pregap.prob}٪` });
+  if (d.hidden?.detected) B.push({ t: 'سيولة مخفية', x: 'أوامر تجميع غير ظاهرة في الحجم المعلن' });
+  if (d.vz?.alert && d.vz.bullish) B.push({ t: 'انحراف سيولة إيجابي', x: `Z = ${d.vz.z?.toFixed?.(1) ?? d.vz.z}` });
+  if (d.rs?.alert && d.rs.rs > 1) B.push({ t: 'قوة نسبية على السوق', x: `RS = ${d.rs.rs?.toFixed?.(2)}` });
+  if (d.ma?.alert && d.ma.accel > 0) B.push({ t: 'تسارع زخم موجب', x: `التسارع ${d.ma.accel?.toFixed?.(2)}` });
+  if (d.falseBreak?.active && d.falseBreak.bullish) B.push({ t: 'كسر وهمي هبوطي مرتد', x: 'مصيدة بائعين — ارتداد فوق المستوى المكسور' });
+
+  /* ── الفئة (ج) — المضادة ── */
+  if (d.instVol?.active && d.instVol.bearish) C.push({ t: 'بصمة توزيع مؤسسي', x: 'حجم عالٍ بإغلاق ضعيف — تصريف لا تجميع' });
+  if (d.falseBreak?.active && d.falseBreak.bearish) C.push({ t: 'كسر وهمي صعودي', x: 'مصيدة مشترين — فشل الاختراق' });
+  if (d.macdX?.active && !d.macdX.bullish) C.push({ t: 'تقاطع ماكد هابط', x: '' });
+  if (d.revCandle?.active && d.revCandle.bearish) C.push({ t: 'شمعة انعكاسية هابطة', x: d.revCandle.pattern || '' });
+  if (d.snp?.level === 'high' && !d.snp?.dirUp) C.push({ t: 'قناص باتجاه هبوطي', x: '' });
+  if (d.tat?.active && !d.tat?.dirUp) C.push({ t: 'توافق زمني باتجاه هبوطي', x: '' });
+  if (d.bearAlerts >= 2) C.push({ t: `${d.bearAlerts} إشارات هبوطية نشطة`, x: 'من الفلاتر الأساسية' });
+
+  return { A, B, C, spec, net: A.length * 2 + B.length - C.length * 1.5 };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ⑥ حجم المركز — أربعة سقوف، والأصغر هو الملزم
+   ──────────────────────────────────────────────────────────────────────
+   المنصة كانت تعرض «المخاطرة ١٪ ورأس المال ١٠٠ ألف» وتحسب صفقة واحدة
+   معزولة. لكن ١٪ في ثماني صفقات مفتوحة = ٨٪ من رأس المال معرّضة دفعةً
+   واحدة، وإن كانت الصفقات في نفس القطاع فهي عملياً صفقة واحدة بحجم ثمانية
+   أضعاف — لأن أسهم القطاع الواحد تتحرك معاً في يوم الضغط.
+   ══════════════════════════════════════════════════════════════════════ */
+function ddSize(entry, stop, liq, sector, regimeMult) {
+  const riskPerShare = entry - stop;
+  if (!(riskPerShare > 0)) return { ok: false, why: 'وقف الخسارة فوق سعر الدخول — خطة غير صالحة' };
+
+  const openRisk = DD.book.reduce((a, p) => a + Math.max(0, (p.entry - p.stop) * p.qty), 0);
+  const heatCap = DD.cfg.capital * DD.cfg.maxHeatPct / 100;
+  const remainingHeat = Math.max(0, heatCap - openRisk);
+
+  const secExposure = DD.book.filter(p => p.sec === sector).reduce((a, p) => a + p.entry * p.qty, 0);
+  const secCap = Math.max(0, DD.cfg.capital * DD.cfg.maxSectorPct / 100 - secExposure);
+
+  const byRisk = Math.floor(DD.cfg.capital * (DD.cfg.riskPct / 100) * regimeMult / riskPerShare);
+  const byHeat = Math.floor(remainingHeat / riskPerShare);
+  const byLiq = liq.maxShares || 0;
+  const bySec = Math.floor(secCap / entry);
+
+  const caps = [
+    { n: byRisk, why: `مخاطرة ${DD.cfg.riskPct}٪ × مضاعف السوق ${regimeMult}` },
+    { n: byHeat, why: `حرارة المحفظة المتبقية (${ddFmt(Math.round(remainingHeat))} ر.س من سقف ${DD.cfg.maxHeatPct}٪)` },
+    { n: byLiq, why: `سقف السيولة (${DD.cfg.participationPct}٪ من الحجم اليومي)` },
+    { n: bySec, why: `سقف قطاع «${sector}» (${DD.cfg.maxSectorPct}٪ من رأس المال)` }
+  ];
+  const binding = caps.reduce((m, c) => c.n < m.n ? c : m, caps[0]);
+  const qty = Math.max(0, binding.n);
+
+  return {
+    ok: qty > 0, qty, riskPerShare: +riskPerShare.toFixed(2),
+    cost: +(qty * entry).toFixed(0), riskSAR: +(qty * riskPerShare).toFixed(0),
+    riskOfCapitalPct: +((qty * riskPerShare) / DD.cfg.capital * 100).toFixed(2),
+    binding, caps, openRisk: Math.round(openRisk), heatCap: Math.round(heatCap),
+    heatPctUsed: +(openRisk / DD.cfg.capital * 100).toFixed(2),
+    why: qty > 0 ? `السقف الملزِم: ${binding.why}` : `لا مساحة للمركز — السقف الملزِم: ${binding.why}`
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   🧭 القرار — سلسلة البوابات
+   ══════════════════════════════════════════════════════════════════════ */
+function ddDecide(d, regime) {
+  const sym = d.sym;
+  const gates = [];
+  const fail = (label, why) => { gates.push({ pass: false, label, why }); return { sym, name: d.name, price: d.price, pct: d.pct, action: 'reject', label: '⛔ مستبعد', color: '#7a8ba8', gates, why }; };
+  const pass = (label, why) => gates.push({ pass: true, label, why });
+
+  /* ① جودة البيانات */
+  if (G.demo.has(sym)) return fail('جودة البيانات', 'بيانات تجريبية عشوائية — لا قرار يُبنى عليها');
+  const cs = G.cans[sym];
+  if (!cs || cs.length < 60) return fail('جودة البيانات', `${cs?.length || 0} شمعة فقط — الحد الأدنى 60 لبناء خطة`);
+  pass('جودة البيانات', `${cs.length} شمعة حقيقية`);
+
+  /* ② السيولة */
+  const liq = ddLiquidity(sym);
+  if (!liq.ok) return fail('السيولة والتنفيذ', liq.why);
+  pass('السيولة والتنفيذ', liq.why);
+
+  /* ④ الأدلة (تُحسب قبل بوابة السوق لأن بوابة السوق تستعملها) */
+  const ev = ddEvidence(d);
+
+  /* ③ نظام السوق */
+  if (regime.mult <= 0.3 && ev.A.length === 0) return fail('نظام السوق', `${regime.label} — ولا يوجد دليل من الفئة (أ) يبرّر الشراء ضد اتجاه الاتساع`);
+  pass('نظام السوق', `${regime.label} — مضاعف حجم ${regime.mult}`);
+
+  /* ④ عتبة الأدلة */
+  if (ev.A.length === 0 && ev.B.length < 3) return fail('الأدلة الفنية', `لا دليل من الفئة (أ)، و${ev.B.length} أدلة داعمة فقط (المطلوب 3 على الأقل)`);
+  if (ev.C.length >= 3) return fail('الأدلة الفنية', `${ev.C.length} أدلة مضادة نشطة — تعارض يمنع القرار`);
+  if (d.masterScore < 55) return fail('الأدلة الفنية', `النتيجة الموحّدة ${d.masterScore} دون عتبة 55`);
+  pass('الأدلة الفنية', `${ev.A.length} من الفئة (أ) · ${ev.B.length} داعمة · ${ev.C.length} مضادة · النتيجة الموحّدة ${d.masterScore}`);
+
+  /* ⑤ الخطة وجودة الدخول */
+  const tp = calcTradePlan(sym);
+  if (!tp) return fail('الخطة التنفيذية', 'تعذّر بناء خطة دخول/وقف/هدف');
+  const verdict = calcEntryVerdict(sym, tp);
+  const ind = G.ind[sym] || {};
+  const atr = ind.atr > 0 ? ind.atr : d.price * 0.015;
+
+  const rr = tp.rrFirst;
+  const stopATR = +((tp.entry - tp.stop) / atr).toFixed(2);
+  if (!(rr >= DD.cfg.minRR)) return fail('المخاطرة/العائد', `العائد للهدف الأول ${rr ?? '—'}R دون الحد الأدنى ${DD.cfg.minRR}R — الهدف قريب جداً من الدخول مقارنة بالوقف`);
+  if (stopATR > 3.5) return fail('المخاطرة/العائد', `الوقف يبعد ${stopATR}×ATR — أوسع من أن يُدار؛ المركز سيكون صغيراً بلا جدوى`);
+  if (stopATR < 0.6) return fail('المخاطرة/العائد', `الوقف يبعد ${stopATR}×ATR فقط — أضيق من التذبذب اليومي الطبيعي، سيُضرب بالضجيج`);
+  pass('المخاطرة/العائد', `العائد ${rr}R · مسافة الوقف ${stopATR}×ATR`);
+
+  /* ⑥ حجم المركز */
+  const size = ddSize(tp.entry, tp.stop, liq, d.sec || SEC[sym[0]] || 'أخرى', regime.mult);
+  if (!size.ok) return fail('حجم المركز', size.why);
+  pass('حجم المركز', size.why);
+
+  /* ── صياغة القرار ── */
+  let action, label, color;
+  const vScore = verdict?.score ?? 50;
+  const strongA = ev.A.length >= 2;
+
+  if (vScore >= 58 && tp.planType === 'bounce') { action = 'buy'; label = '🟢 شراء الآن'; color = '#0ecf7e'; }
+  else if (vScore >= 58 && tp.planType === 'breakout') { action = 'buy_stop'; label = '🔵 شراء عند الاختراق'; color = '#4a9eff'; }
+  else if (vScore >= 45 && strongA) { action = 'buy_half'; label = '🟡 شراء نصف مركز'; color = '#f5c842'; }
+  else if (verdict?.bestEntry) { action = 'wait'; label = '⏳ انتظار سعر'; color = '#fb923c'; }
+  else { action = 'watch'; label = '👁 مراقبة'; color = '#7a8ba8'; }
+
+  /* نصف المركز = نصف الكمية فعلياً، لا مجرد وصف */
+  const qty = action === 'buy_half' ? Math.floor(size.qty / 2) : size.qty;
+
+  /* سعر التنفيذ الفعلي حسب نوع القرار */
+  const execPrice = action === 'buy_stop' ? tp.entry
+    : action === 'wait' ? verdict.bestEntry
+      : tp.entry;
+
+  const trigger =
+    action === 'buy' ? 'نفّذ عند السعر الحالي — الارتداد وقع فعلاً'
+      : action === 'buy_stop' ? `أمر شراء موقوف عند ${tp.entry} ر.س (فوق المقاومة) — لا تشترِ تحته`
+        : action === 'buy_half' ? 'نصف الكمية الآن، والنصف الثاني بعد إغلاق فوق الهدف الأول'
+          : action === 'wait' ? verdict.bestEntryWhy
+            : 'لا شرط تشغيل واضح — يبقى تحت المراقبة';
+
+  /* أفق زمني تقديري: كم جلسة يحتاج السهم نظرياً لبلوغ الهدف بمداه الطبيعي */
+  const sessionsToT1 = atr > 0 ? Math.ceil((tp.targets[0].price - execPrice) / atr) : null;
+
+  return {
+    sym, name: d.name, price: d.price, pct: d.pct, sec: d.sec,
+    action, label, color, gates, ev, tp, verdict, size, liq, atr, rr, stopATR,
+    qty, execPrice, trigger, sessionsToT1,
+    masterScore: d.masterScore,
+    rank: ev.A.length * 100 + ev.B.length * 10 + (rr || 0) * 5 + d.masterScore / 10 - ev.C.length * 20
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   🔴 محرك الخروج — الجزء الذي لم يكن موجوداً إطلاقاً
+   ──────────────────────────────────────────────────────────────────────
+   المنصة بأكملها كانت تجيب عن سؤال «ماذا أشتري؟» ولا تجيب أبداً عن
+   «متى أبيع ما أملك؟». وهذا هو السؤال الذي يحدّد النتيجة فعلياً: نسبة
+   الربح لا تصنع حساباً رابحاً، بل حجم الرابح مقابل الخاسر — وهو قرار خروج
+   بحت. القواعد الست أدناه تُفحص بالترتيب، والأولى المتحققة هي القرار.
+   ══════════════════════════════════════════════════════════════════════ */
+function ddExitCheck(p) {
+  const cs = G.cans[p.sym], cur = G.pr[p.sym];
+  if (!cs || !cur) return { act: 'hold', label: '— بيانات غير متاحة', color: '#7a8ba8', why: 'لم تصل بيانات هذا السهم بعد' };
+
+  const ind = G.ind[p.sym] || {};
+  const atr = ind.atr > 0 ? ind.atr : cur * 0.015;
+  const R = p.entry - p.stop;
+  const pnlR = R > 0 ? +((cur - p.entry) / R).toFixed(2) : 0;
+  const pnlPct = +((cur - p.entry) / p.entry * 100).toFixed(2);
+
+  /* الشموع منذ الدخول */
+  const after = cs.filter(c => (c.time * 1000) >= p.ts);
+  const barsHeld = Math.max(0, after.length - 1);
+  const hh = after.length ? Math.max(...after.map(c => c.high)) : cur;
+  const trail = +(hh - DD.cfg.trailATR * atr).toFixed(2);
+
+  const d = _advData.find(x => x.sym === p.sym);
+  const base = { pnlR, pnlPct, barsHeld, trail, hh: +hh.toFixed(2), atr: +atr.toFixed(2), cur };
+
+  /* ① كسر الوقف — غير قابل للتفاوض */
+  if (cur <= p.stop)
+    return { ...base, act: 'sell_all', label: '🔴 بِع كامل الكمية الآن', color: '#f04458', why: `السعر ${cur} عند/تحت وقف الخسارة ${p.stop}. الوقف ليس رأياً يُراجَع عند الوصول إليه — هو القرار الذي اتُّخذ وقت الدخول بعقل بارد.` };
+
+  /* ② الهدف الأول — جني جزئي ونقل الوقف للتعادل */
+  if (!p.t1Taken && p.t1 && cur >= p.t1)
+    return { ...base, act: 'sell_half', label: '🟡 بِع نصف الكمية', color: '#f5c842', qty: Math.floor(p.qty / 2), newStop: p.entry, why: `بلغ الهدف الأول ${p.t1}. بيع نصف الكمية ونقل الوقف إلى سعر الدخول ${p.entry} يحوّل الصفقة إلى مخاطرة صفرية، ويترك النصف الباقي يعمل بلا ضغط نفسي.` };
+
+  /* ③ الوقف المتحرك بعد تجاوز 1R */
+  if (pnlR >= 1 && cur < trail)
+    return { ...base, act: 'sell_all', label: '🟠 بِع — الوقف المتحرك', color: '#fb923c', why: `أعلى قمة منذ الدخول ${hh.toFixed(2)}، والوقف المتحرك (Chandelier ${DD.cfg.trailATR}×ATR) عند ${trail}. السعر ${cur} تحته — الربح المحقّق (${pnlR}R) يُحمى، لا يُعاد للسوق.` };
+
+  /* ④ انتفاء سبب الدخول */
+  if (d) {
+    const broken = [];
+    if (d.masterScore <= 40) broken.push(`النتيجة الموحّدة سقطت إلى ${d.masterScore}`);
+    if (d.instVol?.active && d.instVol.bearish) broken.push('ظهرت بصمة توزيع مؤسسي');
+    if (d.falseBreak?.active && d.falseBreak.bearish) broken.push('كسر وهمي صعودي — فشل الاختراق');
+    if (d.macdX?.active && !d.macdX.bullish && d.macdX.fresh) broken.push('تقاطع ماكد هابط جديد');
+    if (broken.length >= 2)
+      return { ...base, act: 'sell_all', label: '🔴 بِع — انتفى سبب الدخول', color: '#f04458', why: `الأساس الذي دخلتَ عليه لم يعد قائماً: ${broken.join(' · ')}. الاحتفاظ بعد انتفاء السبب ليس صبراً — هو تحوّل الصفقة إلى استثمار غير مقصود.` };
+    if (broken.length === 1 && pnlR < 0.5)
+      return { ...base, act: 'reduce', label: '🟠 خفّض المركز إلى النصف', color: '#fb923c', qty: Math.floor(p.qty / 2), why: `${broken[0]} — والصفقة لم تُحقّق بعد نصف وحدة مخاطرة (${pnlR}R). تخفيف الانكشاف أنسب من الخروج الكامل ما دام الوقف لم يُكسر.` };
+  }
+
+  /* ⑤ الخروج الزمني */
+  if (barsHeld >= DD.cfg.maxHoldBars && pnlR < 0.5)
+    return { ...base, act: 'sell_all', label: '⏱ بِع — خروج زمني', color: '#a78bfa', why: `${barsHeld} جلسة منذ الدخول والصفقة عند ${pnlR}R فقط. رأس المال المحتجَز في صفقة راكدة تكلفةٌ لا تظهر في كشف الحساب: هي الصفقات التي لم تدخلها لأن سيولتك مشغولة.` };
+
+  /* ⑥ ضغط السوق العام */
+  if (DD.regime && DD.regime.mult <= 0.3 && pnlR < 0.5)
+    return { ...base, act: 'reduce', label: '🟠 خفّض — ضغط السوق', color: '#fb923c', qty: Math.floor(p.qty / 2), why: `${DD.regime.label} (${DD.regime.b50}٪ فقط من السوق فوق MA50) والصفقة بلا ربح يحميها.` };
+
+  /* ── استمرار ── */
+  const nextStop = pnlR >= 1 ? trail : p.stop;
+  return {
+    ...base, act: 'hold', label: '🟢 استمر بالاحتفاظ', color: '#0ecf7e', newStop: nextStop,
+    why: `الصفقة عند ${pnlR}R (${pnlPct > 0 ? '+' : ''}${pnlPct}٪) بعد ${barsHeld} جلسة. الوقف الفعّال الآن: ${nextStop} ر.س${pnlR >= 1 ? ' (متحرك)' : ' (الأصلي)'}. الهدف القادم: ${p.t1 ?? '—'}.`
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ▶️ التشغيل
+   ══════════════════════════════════════════════════════════════════════ */
+function ddRun() {
+  if (!_advData.length) { alert('⚠️ شغّل «🔬 مسح شامل» أولاً — غرفة القرار تبني قرارها على نتائج المسح.'); return; }
+  DD.cfg.capital = +(document.getElementById('dd-cap')?.value || DD.cfg.capital) || 100000;
+  DD.cfg.riskPct = +(document.getElementById('dd-risk')?.value || DD.cfg.riskPct) || 1;
+  DD.save();
+
+  DD.regime = ddRegime();
+  const out = [];
+  for (const d of _advData) {
+    try { const r = ddDecide(d, DD.regime); if (r.action !== 'reject') out.push(r); } catch (e) { }
+  }
+  out.sort((a, b) => b.rank - a.rank);
+  DD.results = out;
+  DD.ran = true;
+
+  const fb = document.getElementById('fb-decision');
+  if (fb) fb.textContent = out.filter(r => r.action === 'buy' || r.action === 'buy_stop' || r.action === 'buy_half').length;
+  ddUpdateBar();
+  if (_filter === 'decision') renderResults();
+}
+window.ddRun = ddRun;
+
+function ddUpdateBar() {
+  const el = document.getElementById('dd-regime');
+  if (el && DD.regime) {
+    el.innerHTML = DD.regime.ok
+      ? `<b style="color:${DD.regime.color}">${DD.regime.label}</b> · اتساع ${DD.regime.b50}٪ فوق MA50 · مضاعف الحجم ${DD.regime.mult}`
+      : `<b style="color:#9aa4b8">${DD.regime.why}</b>`;
+  }
+  const h = document.getElementById('dd-heat');
+  if (h) {
+    const openRisk = DD.book.reduce((a, p) => a + Math.max(0, (p.entry - p.stop) * p.qty), 0);
+    const pct = DD.cfg.capital ? (openRisk / DD.cfg.capital * 100) : 0;
+    h.innerHTML = `🌡 حرارة المحفظة: <b style="color:${pct > DD.cfg.maxHeatPct * 0.8 ? '#f04458' : '#0ecf7e'}">${pct.toFixed(2)}٪</b> من ${DD.cfg.maxHeatPct}٪ · ${DD.book.length} مركز`;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   📋 الملخص التنفيذي — «اشترِ كذا · بِع كذا» في شاشة واحدة
+   ══════════════════════════════════════════════════════════════════════ */
+function ddBrief() {
+  if (!DD.ran) ddRun();
+  if (!DD.ran) return;
+
+  const SEC_ = 'background:#151b2b;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;margin-bottom:14px;';
+  const HEAD = 'color:#FFD700;font-weight:800;font-size:13.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,215,0,.15);';
+
+  /* ── قسم البيع أولاً: ما تملكه له أولوية على ما قد تشتريه ── */
+  const sells = DD.book.map(p => ({ p, e: ddExitCheck(p) }));
+  const urgent = sells.filter(s => s.e.act !== 'hold');
+  const holds = sells.filter(s => s.e.act === 'hold');
+
+  const sellHtml = !DD.book.length
+    ? '<div style="color:#9aa4b8">لا توجد مراكز مسجّلة. أضف مراكزك من زر «📓 مراكزي» ليتولّى المحرك قرار الخروج يومياً.</div>'
+    : (urgent.length ? urgent.map(s => `
+        <div style="padding:11px 13px;margin-bottom:9px;background:${s.e.color}12;border:1px solid ${s.e.color}55;border-right:4px solid ${s.e.color};border-radius:8px">
+          <div style="font-weight:800;font-size:14px">${s.e.label} — <span style="font-family:monospace">${s.p.sym}</span> ${s.p.name || ''}</div>
+          <div style="font-size:12px;margin-top:4px">الكمية: <b>${s.e.qty ? ddFmt(s.e.qty) + ' من ' + ddFmt(s.p.qty) : ddFmt(s.p.qty) + ' (الكل)'}</b>
+            · السعر الحالي <b>${s.e.cur}</b> · الوضع <b style="color:${s.e.pnlR >= 0 ? '#0ecf7e' : '#f04458'}">${s.e.pnlR}R (${s.e.pnlPct > 0 ? '+' : ''}${s.e.pnlPct}٪)</b></div>
+          <div style="font-size:12px;color:#c8d0e0;margin-top:5px">${s.e.why}</div>
+          ${s.e.newStop ? `<div style="font-size:12px;color:#FFD700;margin-top:4px">↳ انقل الوقف إلى <b>${s.e.newStop}</b> ر.س</div>` : ''}
+        </div>`).join('')
+      : '<div style="color:#0ecf7e">لا يوجد أمر بيع اليوم — كل المراكز ضمن قواعدها.</div>')
+    + (holds.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.08);font-size:12px;color:#9aa4b8">
+        <b>مستمرة بالاحتفاظ:</b> ${holds.map(s => `${s.p.sym} (${s.e.pnlR}R، الوقف ${s.e.newStop})`).join(' · ')}</div>` : '');
+
+  /* ── قسم الشراء ── */
+  const buys = DD.results.filter(r => ['buy', 'buy_stop', 'buy_half'].includes(r.action)).slice(0, 5);
+  const waits = DD.results.filter(r => r.action === 'wait').slice(0, 5);
+
+  const buyHtml = buys.length ? buys.map((r, i) => `
+    <div style="padding:11px 13px;margin-bottom:9px;background:${r.color}10;border:1px solid ${r.color}44;border-right:4px solid ${r.color};border-radius:8px">
+      <div style="font-weight:800;font-size:14px">${i + 1}. ${r.label} — <span style="font-family:monospace">${r.sym}</span> ${r.name}</div>
+      <div style="font-size:12.5px;margin-top:5px;line-height:1.9">
+        الدخول: <b style="color:#FFD700">${r.execPrice} ر.س</b> ·
+        الكمية: <b>${ddFmt(r.qty)} سهم</b> (تكلفة ${ddFmt(Math.round(r.qty * r.execPrice))} ر.س)<br>
+        الوقف: <b style="color:#f04458">${r.tp.stop}</b> ·
+        الهدف الأول: <b style="color:#0ecf7e">${r.tp.targets[0].price}</b> ·
+        العائد/المخاطرة: <b>1:${r.rr}</b> ·
+        المخاطرة الفعلية: <b>${ddFmt(Math.round(r.qty * r.size.riskPerShare))} ر.س (${(r.qty * r.size.riskPerShare / DD.cfg.capital * 100).toFixed(2)}٪)</b><br>
+        <span style="color:#9aa4b8">${r.trigger}</span>
+      </div>
+      <div style="font-size:11.5px;color:#9aa4b8;margin-top:5px">
+        الأدلة: ${r.ev.A.map(a => '🅰 ' + a.t).join(' · ') || 'لا شيء من الفئة (أ)'}${r.ev.B.length ? ' · ' + r.ev.B.length + ' داعمة' : ''}${r.ev.C.length ? ` · <span style="color:#f04458">${r.ev.C.length} مضادة</span>` : ''}
+      </div>
+      <button onclick="ddAddFromDecision('${r.sym}')" style="margin-top:7px;background:rgba(14,207,126,.12);border:1px solid rgba(14,207,126,.35);color:#0ecf7e;padding:3px 11px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit">➕ سجّل هذا المركز</button>
+    </div>`).join('')
+    : `<div style="color:#9aa4b8">لا يوجد قرار شراء اليوم يجتاز البوابات الست. هذه نتيجة صحيحة لا عطل — في ${DD.regime?.label || 'ظروف السوق الحالية'} يكون «لا صفقة» قراراً كامل الأهلية.</div>`;
+
+  const waitHtml = waits.length ? `<div style="margin-top:12px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.08)">
+      <div style="font-weight:700;margin-bottom:6px;color:#fb923c">⏳ أسهم بأدلة جيدة لكن السعر غير مناسب الآن — ضع تنبيهاً</div>
+      ${waits.map(r => `<div style="font-size:12px;margin-bottom:4px"><span style="font-family:monospace;color:#4a9eff">${r.sym}</span> ${r.name} — ادخل عند <b style="color:#FFD700">${r.execPrice}</b> ر.س · <span style="color:#9aa4b8">${r.trigger}</span></div>`).join('')}
+    </div>` : '';
+
+  const openRisk = DD.book.reduce((a, p) => a + Math.max(0, (p.entry - p.stop) * p.qty), 0);
+
+  const html = `
+    <div style="${SEC_}border-color:${DD.regime?.color || '#555'}55">
+      <div style="${HEAD}">🌍 نظام السوق اليوم</div>
+      ${DD.regime?.ok ? `
+      <div style="margin-bottom:6px">الحالة: <b style="color:${DD.regime.color};font-size:14px">${DD.regime.label}</b></div>
+      <div style="margin-bottom:6px">اتساع السوق: <b>${DD.regime.b50}٪</b> من ${DD.regime.sample} سهماً فوق MA50 · <b>${DD.regime.b20}٪</b> فوق MA20 · وسيط أداء 20 جلسة: <b>${DD.regime.medROC}٪</b></div>
+      <div style="font-size:12px;color:#c8d0e0">${DD.regime.note}</div>
+      <div style="margin-top:8px;font-size:11.5px;color:#9aa4b8">يُقاس الاتساع بعدّ الأسهم لا بمؤشر تاسي المرجّح بالقيمة: المؤشر قد يصعد بأربعة أسهم ثقيلة بينما أغلبية السوق تنزف، وأنت تتداول من الأغلبية.</div>
+      ` : `<div style="color:#f5c842">${DD.regime?.why || '—'}</div>`}
+    </div>
+
+    <div style="${SEC_}border-color:rgba(240,68,88,.3)">
+      <div style="${HEAD}">🔴 ما تبيعه اليوم</div>
+      ${sellHtml}
+    </div>
+
+    <div style="${SEC_}border-color:rgba(14,207,126,.3)">
+      <div style="${HEAD}">🟢 ما تشتريه اليوم</div>
+      ${buyHtml}
+      ${waitHtml}
+    </div>
+
+    <div style="${SEC_}">
+      <div style="${HEAD}">🌡 وضع المحفظة</div>
+      <div style="margin-bottom:6px">رأس المال: <b>${ddFmt(DD.cfg.capital)} ر.س</b> · المراكز المفتوحة: <b>${DD.book.length}</b> من ${DD.cfg.maxPositions}</div>
+      <div style="margin-bottom:6px">المخاطرة المفتوحة (الحرارة): <b style="color:${openRisk / DD.cfg.capital * 100 > DD.cfg.maxHeatPct * 0.8 ? '#f04458' : '#0ecf7e'}">${ddFmt(Math.round(openRisk))} ر.س = ${(openRisk / DD.cfg.capital * 100).toFixed(2)}٪</b> من سقف ${DD.cfg.maxHeatPct}٪</div>
+      <div style="font-size:11.5px;color:#9aa4b8">الحرارة هي مجموع ما ستخسره لو ضُربت كل أوقافك في يوم واحد. هذا سيناريو ليس نادراً: في يوم الضغط تتحرك أسهم القطاع الواحد معاً، فتُضرب الأوقاف معاً.</div>
+    </div>
+
+    <div style="${SEC_}border-color:rgba(240,68,88,.25);background:rgba(240,68,88,.04);margin-bottom:0">
+      <div style="color:#f04458;font-weight:800;font-size:13px;margin-bottom:8px">⚠️ ما هذه القائمة وما ليست</div>
+      <div style="margin-bottom:6px">• هذه مخرجات <b>قواعد قرار معلنة</b> طُبّقت على أسعار تاريخية — ليست توصية استثمارية ولا احتمال ربح.</div>
+      <div style="margin-bottom:6px">• لا تُعرض هنا «نسبة نجاح ٪» لأي قرار. النسبة الوحيدة القابلة للقياس في المنصة هي في «🧪 اختبار الإشارة الطيفية» بحجم عينتها وفاصل ثقتها.</div>
+      <div style="margin-bottom:6px">• القرارات لا تعرف أرباح الشركات ولا الإعلانات الجوهرية ولا التوزيعات ولا تعليق التداول. تحقّق من إعلانات «تداول» قبل أي تنفيذ.</div>
+      <div>• أوامر البيع أعلاه تُطبَّق على المراكز التي سجّلتها أنت. إن لم تسجّل مراكزك، لن يعرف المحرك ماذا تملك.</div>
+    </div>`;
+
+  openTimeReport('🧭 الملخص التنفيذي — قرارات اليوم', html);
+}
+window.ddBrief = ddBrief;
+
+/* ══════════════════════════════════════════════════════════════════════
+   📄 تقرير قرار مفصّل لسهم واحد — يعرض كل بوابة وسبب مرورها
+   ══════════════════════════════════════════════════════════════════════ */
+function ddReport(sym) {
+  const r = DD.results.find(x => x.sym === sym);
+  if (!r) { alert('لا يوجد قرار محسوب لهذا السهم — اضغط «🧭 احسب القرارات».'); return; }
+  const SEC_ = 'background:#151b2b;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;margin-bottom:14px;';
+  const HEAD = 'color:#FFD700;font-weight:800;font-size:13.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,215,0,.15);';
+
+  const gateHtml = r.gates.map(g => `
+    <div style="padding:7px 0;border-bottom:1px dashed rgba(255,255,255,.08)">
+      <div style="font-weight:700">${g.pass ? '<span style="color:#0ecf7e">✓</span>' : '<span style="color:#f04458">✗</span>'} ${g.label}</div>
+      <div style="font-size:12px;color:#9aa4b8;margin-top:2px">${g.why}</div>
+    </div>`).join('');
+
+  const evRow = (arr, tier, col) => arr.length ? arr.map(e => `
+    <div style="padding:6px 0;border-bottom:1px dashed rgba(255,255,255,.06)">
+      <b style="color:${col}">${tier}</b> ${e.t}${e.x ? `<div style="font-size:11.5px;color:#9aa4b8;margin-top:2px">${e.x}</div>` : ''}
+    </div>`).join('') : `<div style="font-size:12px;color:#3d4a5e;padding:4px 0">لا شيء</div>`;
+
+  const tgt = r.tp.targets.map((t, i) => `<div style="margin-bottom:4px">🎯 هدف ${i + 1}: <b style="color:#0ecf7e">${t.price}</b> — العائد ${t.rr}R <span style="font-size:11.5px;color:#9aa4b8">(${t.source})</span></div>`).join('');
+
+  const capHtml = r.size.caps.map(c => `<div style="margin-bottom:4px;${c.n === r.size.binding.n ? 'color:#FFD700;font-weight:700' : 'color:#9aa4b8'}">${c.n === r.size.binding.n ? '⟵ الملزِم · ' : ''}${ddFmt(c.n)} سهم — ${c.why}</div>`).join('');
+
+  const html = `
+    <div style="${SEC_}border-color:${r.color}55;background:${r.color}0a">
+      <div style="font-size:20px;font-weight:800;color:${r.color};margin-bottom:8px">${r.label}</div>
+      <div style="font-size:13px;line-height:2">
+        السعر الحالي: <b>${r.price}</b> ر.س ·
+        سعر التنفيذ: <b style="color:#FFD700">${r.execPrice}</b> ر.س ·
+        الكمية: <b>${ddFmt(r.qty)}</b> سهم<br>
+        وقف الخسارة: <b style="color:#f04458">${r.tp.stop}</b> ر.س ·
+        المخاطرة للسهم: <b>${r.size.riskPerShare}</b> ر.س ·
+        إجمالي المخاطرة: <b>${ddFmt(Math.round(r.qty * r.size.riskPerShare))}</b> ر.س
+        (${(r.qty * r.size.riskPerShare / DD.cfg.capital * 100).toFixed(2)}٪ من رأس المال)<br>
+        الأفق التقديري للهدف الأول: <b>${r.sessionsToT1 ?? '—'}</b> جلسة
+        <span style="font-size:11.5px;color:#9aa4b8">(بمداه اليومي الطبيعي ATR — ليس وعداً بتاريخ)</span>
+      </div>
+      <div style="margin-top:10px;padding:9px 11px;background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.2);border-radius:6px">
+        <b>شرط التنفيذ:</b> ${r.trigger}
+      </div>
+    </div>
+
+    <div style="${SEC_}">
+      <div style="${HEAD}">🚪 البوابات الست</div>
+      ${gateHtml}
+      <div style="margin-top:9px;font-size:11.5px;color:#9aa4b8">البوابات متسلسلة: أي رفض يوقف السلسلة ولا يُعوَّض بقوة بوابة أخرى. سهم ممتاز فنياً وضعيف السيولة يُرفض — لأن الخطة التي لا تُنفَّذ ليست خطة.</div>
+    </div>
+
+    <div style="${SEC_}">
+      <div style="${HEAD}">🧾 جدول الأدلة</div>
+      <div style="margin-bottom:9px"><b style="color:#0ecf7e">الفئة (أ) — مؤكَّدة إحصائياً أو متعددة العوامل</b>${evRow(r.ev.A, '🅰', '#0ecf7e')}</div>
+      <div style="margin-bottom:9px"><b style="color:#4a9eff">الفئة (ب) — داعمة</b>${evRow(r.ev.B, '🅱', '#4a9eff')}</div>
+      <div><b style="color:#f04458">الفئة (ج) — مضادة (تُطرح)</b>${evRow(r.ev.C, '🅲', '#f04458')}</div>
+      ${r.ev.spec ? `<div style="margin-top:10px;padding:9px 11px;background:rgba(14,207,126,.08);border:1px solid rgba(14,207,126,.25);border-radius:6px;font-size:12px">
+        🔬 <b>الرقم الوحيد المقاس هنا:</b> الإشارة الطيفية على هذا السهم تفوّقت على خط الأساس بـ <b>${r.ev.spec.edgeWinRate}</b> نقطة في نسبة الربح عبر <b>${r.ev.spec.signalCount}</b> إشارة، بقيمة احتمال <b>p = ${r.ev.spec.pValueText}</b> بعد تصحيح الاختبارات المتعددة. هذه ليست نسبة نجاح القرار الحالي — هي أداء تاريخي مقاس لإشارة واحدة من عدة أدلة.
+      </div>` : ''}
+    </div>
+
+    <div style="${SEC_}">
+      <div style="${HEAD}">📐 الخطة والأهداف</div>
+      <div style="margin-bottom:6px">نوع الخطة: <b>${r.tp.planType === 'bounce' ? 'ارتداد مؤكد' : r.tp.planType === 'breakout' ? 'اختراق' : r.tp.planType}</b> — ${r.tp.planWhy}</div>
+      <div style="margin-bottom:6px">مصدر الوقف: <span style="color:#9aa4b8">${r.tp.stopSource}</span> · مسافته ${r.stopATR}×ATR</div>
+      ${tgt}
+      <div style="margin-top:8px">الدعوم القريبة: <b style="color:#0ecf7e">${r.tp.supports.slice(0, 3).map(s => s.price).join(' · ') || '—'}</b></div>
+      <div>المقاومات القريبة: <b style="color:#f04458">${r.tp.resistances.slice(0, 3).map(s => s.price).join(' · ') || '—'}</b></div>
+    </div>
+
+    <div style="${SEC_}">
+      <div style="${HEAD}">📏 كيف حُسب حجم المركز</div>
+      ${capHtml}
+      <div style="margin-top:8px;font-size:12px;color:#c8d0e0">أربعة سقوف مستقلة، والأصغر هو الملزِم. حساب المخاطرة لصفقة معزولة عن بقية المحفظة هو الخطأ الأكثر تكلفة في إدارة رأس المال: ١٪ في ثماني صفقات = ٨٪ دفعةً واحدة، وإن كانت في قطاع واحد فهي عملياً صفقة واحدة بثمانية أضعاف الحجم.</div>
+      <div style="margin-top:6px;font-size:12px">حرارة المحفظة الحالية: <b>${r.size.heatPctUsed}٪</b> من سقف ${DD.cfg.maxHeatPct}٪ · سقف السيولة: ${ddFmt(r.liq.maxShares)} سهم</div>
+    </div>
+
+    <div style="${SEC_}">
+      <div style="${HEAD}">🧠 قراءة نقطة الدخول</div>
+      <div style="margin-bottom:8px;font-size:14px"><b style="color:${r.verdict?.vColor}">${r.verdict?.verdict || '—'}</b> (درجة ${r.verdict?.score ?? '—'}/100)</div>
+      ${(r.verdict?.reasons || []).map(x => `<div style="margin-bottom:4px">${x.t === 'up' ? '<span style="color:#0ecf7e">▲</span>' : x.t === 'dn' ? '<span style="color:#f04458">▼</span>' : '<span style="color:#9aa4b8">◆</span>'} ${x.x}</div>`).join('')}
+      ${r.verdict && !r.verdict.isCurrentGood ? `<div style="margin-top:9px;padding:9px 11px;background:rgba(251,146,60,.08);border:1px solid rgba(251,146,60,.28);border-radius:6px"><b>أفضل نقطة دخول:</b> ${r.verdict.bestEntry ?? '—'} ر.س — ${r.verdict.bestEntryWhy}</div>` : ''}
+    </div>
+
+    <div style="${SEC_}border-color:rgba(167,139,250,.3)">
+      <div style="${HEAD}">🔴 قواعد الخروج المسبقة (اعرفها قبل الدخول)</div>
+      <div style="margin-bottom:5px">① كسر ${r.tp.stop} ر.س ⟵ خروج كامل، بلا مراجعة.</div>
+      <div style="margin-bottom:5px">② بلوغ ${r.tp.targets[0].price} ر.س ⟵ بيع نصف الكمية ونقل الوقف إلى ${r.execPrice} (تعادل).</div>
+      <div style="margin-bottom:5px">③ بعد تجاوز 1R ⟵ وقف متحرك = أعلى قمة − ${DD.cfg.trailATR}×ATR (حالياً ${(r.atr * DD.cfg.trailATR).toFixed(2)} ر.س تحت القمة).</div>
+      <div style="margin-bottom:5px">④ انتفاء دليلين من أدلة الدخول ⟵ خروج كامل حتى لو لم يُكسر الوقف.</div>
+      <div style="margin-bottom:5px">⑤ مرور ${DD.cfg.maxHoldBars} جلسة والربح دون 0.5R ⟵ خروج زمني.</div>
+      <div>⑥ انقلاب نظام السوق إلى ضاغط والصفقة بلا ربح ⟵ تخفيف النصف.</div>
+      <div style="margin-top:9px;font-size:11.5px;color:#9aa4b8">كتابة قواعد الخروج قبل الدخول هي الفارق العملي بين خطة وبين رأي. بعد الدخول يصبح كل قرار خروج قراراً تحت ضغط الربح أو الخسارة، وهو أسوأ وقت لصناعته.</div>
+    </div>
+
+    <div style="${SEC_}border-color:rgba(240,68,88,.25);background:rgba(240,68,88,.04);margin-bottom:0">
+      <div style="color:#f04458;font-weight:800;font-size:13px;margin-bottom:8px">⚠️ حدود هذا القرار</div>
+      <div style="margin-bottom:6px">• مخرَج قواعد معلنة على بيانات سعرية تاريخية — ليس توصية ولا احتمال ربح.</div>
+      <div style="margin-bottom:6px">• لا يتضمن أرباح الشركة ولا إعلاناتها ولا التوزيعات ولا تعليق التداول.</div>
+      <div>• الأفق الزمني للهدف تقدير من متوسط المدى اليومي، وليس تاريخاً متوقعاً.</div>
+    </div>`;
+
+  openTimeReport(`🧭 قرار — ${r.sym} ${r.name}`, html);
+}
+window.ddReport = ddReport;
+
+/* ══════════════════════════════════════════════════════════════════════
+   📓 دفتر المراكز
+   ══════════════════════════════════════════════════════════════════════ */
+function ddAddFromDecision(sym) {
+  const r = DD.results.find(x => x.sym === sym);
+  if (!r) return;
+  const qty = +prompt(`عدد الأسهم المشتراة من ${sym} (المقترح ${r.qty}):`, r.qty);
+  if (!qty || qty <= 0) return;
+  const entry = +prompt(`سعر التنفيذ الفعلي:`, r.execPrice);
+  if (!entry || entry <= 0) return;
+  DD.book.push({
+    id: Date.now(), sym, name: r.name, sec: r.sec, qty, entry: +entry.toFixed(2),
+    stop: r.tp.stop, t1: r.tp.targets[0].price, t2: r.tp.targets[1]?.price ?? null,
+    ts: Date.now(), t1Taken: false, why: r.label
+  });
+  DD.save(); ddUpdateBar();
+  alert(`✅ سُجّل المركز: ${qty} سهم من ${sym} عند ${entry} ر.س\nالوقف ${r.tp.stop} · الهدف الأول ${r.tp.targets[0].price}`);
+  if (document.getElementById('tar-overlay')?.style.display === 'block') ddBook();
+}
+window.ddAddFromDecision = ddAddFromDecision;
+
+function ddAddManual() {
+  const sym = prompt('رمز السهم (مثال 2222):'); if (!sym) return;
+  if (!NAMES[sym]) { alert('رمز غير معروف'); return; }
+  const qty = +prompt('عدد الأسهم:'); if (!qty || qty <= 0) return;
+  const entry = +prompt('سعر الشراء:'); if (!entry || entry <= 0) return;
+  const stop = +prompt('وقف الخسارة:'); if (!stop || stop <= 0 || stop >= entry) { alert('الوقف يجب أن يكون أقل من سعر الشراء'); return; }
+  const t1 = +prompt('الهدف الأول (اختياري — اتركه فارغاً لحسابه تلقائياً 2R):', (entry + (entry - stop) * 2).toFixed(2));
+  DD.book.push({
+    id: Date.now(), sym, name: NAMES[sym], sec: SEC[sym[0]] || 'أخرى', qty,
+    entry: +entry.toFixed(2), stop: +stop.toFixed(2),
+    t1: t1 > 0 ? +t1.toFixed(2) : +(entry + (entry - stop) * 2).toFixed(2), t2: null,
+    ts: Date.now(), t1Taken: false, why: 'إدخال يدوي'
+  });
+  DD.save(); ddUpdateBar(); ddBook();
+}
+window.ddAddManual = ddAddManual;
+
+function ddCloseP(id) {
+  const i = DD.book.findIndex(p => p.id === id); if (i < 0) return;
+  const p = DD.book[i];
+  const cur = G.pr[p.sym] || p.entry;
+  DD.journal.push({ sym: p.sym, entry: p.entry, exit: cur, qty: p.qty, stop: p.stop, opened: p.ts, closed: Date.now(), pnlPct: +((cur - p.entry) / p.entry * 100).toFixed(2), R: p.entry - p.stop > 0 ? +((cur - p.entry) / (p.entry - p.stop)).toFixed(2) : null });
+  DD.book.splice(i, 1); DD.save(); ddUpdateBar(); ddBook();
+}
+window.ddCloseP = ddCloseP;
+
+function ddHalfP(id) {
+  const p = DD.book.find(x => x.id === id); if (!p) return;
+  const half = Math.floor(p.qty / 2); if (half < 1) { ddCloseP(id); return; }
+  p.qty -= half; p.t1Taken = true; p.stop = Math.max(p.stop, p.entry);
+  DD.save(); ddUpdateBar(); ddBook();
+}
+window.ddHalfP = ddHalfP;
+
+function ddBook() {
+  const SEC_ = 'background:#151b2b;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;margin-bottom:14px;';
+  const HEAD = 'color:#FFD700;font-weight:800;font-size:13.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,215,0,.15);';
+
+  const rows = DD.book.map(p => {
+    const e = ddExitCheck(p);
+    return `
+    <div style="padding:11px 13px;margin-bottom:9px;background:${e.color}10;border:1px solid ${e.color}44;border-right:4px solid ${e.color};border-radius:8px">
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+        <b style="font-family:monospace;color:#4a9eff;font-size:14px">${p.sym}</b>
+        <span>${p.name || ''}</span>
+        <b style="margin-right:auto;color:${e.color}">${e.label}</b>
+      </div>
+      <div style="font-size:12px;margin-top:5px;line-height:1.9">
+        ${ddFmt(p.qty)} سهم · دخول ${p.entry} · الحالي <b>${e.cur ?? '—'}</b> ·
+        <b style="color:${e.pnlR >= 0 ? '#0ecf7e' : '#f04458'}">${e.pnlR}R (${e.pnlPct > 0 ? '+' : ''}${e.pnlPct}٪)</b><br>
+        الوقف ${p.stop} · الهدف ${p.t1 ?? '—'} · ${e.barsHeld} جلسة · أعلى قمة ${e.hh ?? '—'} · الوقف المتحرك ${e.trail ?? '—'}
+      </div>
+      <div style="font-size:12px;color:#c8d0e0;margin-top:5px">${e.why}</div>
+      <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">
+        <button onclick="ddHalfP(${p.id})" style="background:rgba(245,200,66,.12);border:1px solid rgba(245,200,66,.35);color:#f5c842;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit">بِعت النصف</button>
+        <button onclick="ddCloseP(${p.id})" style="background:rgba(240,68,88,.12);border:1px solid rgba(240,68,88,.35);color:#f04458;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit">أغلقت المركز</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  const closed = DD.journal.slice(-30);
+  const wins = closed.filter(j => j.R > 0).length;
+  const avgR = closed.length ? +(closed.reduce((a, j) => a + (j.R || 0), 0) / closed.length).toFixed(2) : null;
+
+  const html = `
+    <div style="${SEC_}">
+      <div style="${HEAD}">📓 المراكز المفتوحة (${DD.book.length})</div>
+      ${rows || '<div style="color:#9aa4b8">لا توجد مراكز مسجّلة. سجّل ما تملكه ليتولّى محرك الخروج قرار البيع يومياً — بدون ذلك تبقى المنصة أداة دخول فقط.</div>'}
+      <button onclick="ddAddManual()" style="margin-top:8px;background:rgba(74,158,255,.12);border:1px solid rgba(74,158,255,.35);color:#4a9eff;padding:5px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-family:inherit">➕ إضافة مركز يدوياً</button>
+    </div>
+
+    <div style="${SEC_}">
+      <div style="${HEAD}">📊 سجل الصفقات المغلقة (${DD.journal.length})</div>
+      ${closed.length ? `
+        <div style="margin-bottom:6px">آخر ${closed.length} صفقة: <b>${wins}</b> رابحة · <b>${closed.length - wins}</b> خاسرة · متوسط النتيجة <b style="color:${avgR > 0 ? '#0ecf7e' : '#f04458'}">${avgR}R</b></div>
+        <div style="font-size:11.5px;color:#9aa4b8;margin-bottom:9px">
+          ${closed.length < 30
+      ? `⚠️ العينة ${closed.length} صفقة فقط — أصغر من أن تُقاس منها نسبة نجاح ذات معنى. تُعرض للتتبع لا للحكم. الفارق بين 12/20 و8/20 قد يكون صدفة محضة.`
+      : 'العينة كافية للتتبع، وتبقى نتيجة حساب واحد في فترة واحدة — لا تُعمَّم.'}
+        </div>
+        ${closed.slice().reverse().slice(0, 12).map(j => `<div style="font-size:12px;margin-bottom:3px;font-family:monospace">${j.sym} — ${j.entry} ← ${j.exit} · <b style="color:${j.R > 0 ? '#0ecf7e' : '#f04458'}">${j.R}R</b> (${j.pnlPct > 0 ? '+' : ''}${j.pnlPct}٪)</div>`).join('')}`
+      : '<div style="color:#9aa4b8">لم تُغلق صفقات بعد. السجل هو الطريقة الوحيدة لقياس أداء هذه القواعد فعلياً بدل الاعتقاد بها.</div>'}
+    </div>
+
+    <div style="${SEC_}margin-bottom:0">
+      <div style="${HEAD}">⚙️ الإعدادات</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;font-size:12px">
+        <label>رأس المال (ر.س)<input id="ddc-cap" value="${DD.cfg.capital}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+        <label>مخاطرة الصفقة ٪<input id="ddc-risk" value="${DD.cfg.riskPct}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+        <label>سقف حرارة المحفظة ٪<input id="ddc-heat" value="${DD.cfg.maxHeatPct}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+        <label>سقف القطاع ٪<input id="ddc-sec" value="${DD.cfg.maxSectorPct}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+        <label>أقل عائد/مخاطرة<input id="ddc-rr" value="${DD.cfg.minRR}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+        <label>أقل قيمة تداول يومية (ر.س)<input id="ddc-turn" value="${DD.cfg.minTurnoverSAR}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+        <label>الخروج الزمني (جلسات)<input id="ddc-hold" value="${DD.cfg.maxHoldBars}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+        <label>مضاعف الوقف المتحرك ATR<input id="ddc-trail" value="${DD.cfg.trailATR}" style="width:100%;margin-top:3px;background:#0c1020;border:1px solid rgba(255,255,255,.12);color:#dde3f0;border-radius:4px;padding:5px;font-family:inherit"></label>
+      </div>
+      <button onclick="ddSaveCfg()" style="margin-top:10px;background:rgba(14,207,126,.12);border:1px solid rgba(14,207,126,.35);color:#0ecf7e;padding:5px 16px;border-radius:5px;cursor:pointer;font-size:12px;font-family:inherit">💾 حفظ وإعادة الحساب</button>
+    </div>`;
+
+  openTimeReport('📓 مراكزي وإدارة المخاطر', html);
+}
+window.ddBook = ddBook;
+
+function ddSaveCfg() {
+  const g = id => +(document.getElementById(id)?.value || 0);
+  if (g('ddc-cap') > 0) DD.cfg.capital = g('ddc-cap');
+  if (g('ddc-risk') > 0) DD.cfg.riskPct = g('ddc-risk');
+  if (g('ddc-heat') > 0) DD.cfg.maxHeatPct = g('ddc-heat');
+  if (g('ddc-sec') > 0) DD.cfg.maxSectorPct = g('ddc-sec');
+  if (g('ddc-rr') > 0) DD.cfg.minRR = g('ddc-rr');
+  if (g('ddc-turn') > 0) DD.cfg.minTurnoverSAR = g('ddc-turn');
+  if (g('ddc-hold') > 0) DD.cfg.maxHoldBars = g('ddc-hold');
+  if (g('ddc-trail') > 0) DD.cfg.trailATR = g('ddc-trail');
+  DD.save();
+  const capEl = document.getElementById('dd-cap'); if (capEl) capEl.value = DD.cfg.capital;
+  const rkEl = document.getElementById('dd-risk'); if (rkEl) rkEl.value = DD.cfg.riskPct;
+  closeTimeReport();
+  ddRun();
+}
+window.ddSaveCfg = ddSaveCfg;
+
+/* ══════════════════════════════════════════════════════════════════════
+   🎨 عرض جدول القرارات
+   ══════════════════════════════════════════════════════════════════════ */
+function ddRenderTable() {
+  const body = document.getElementById('rtbody');
+  if (!DD.ran) {
+    body.innerHTML = `<tr><td colspan="12" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
+      غرفة القرار تحوّل نتائج المسح إلى أوامر تنفيذية.<br>
+      ① شغّل «🔬 مسح شامل» · ② (اختياري) «🔄 امسح الآن» في تبويب الإشارة الطيفية · ③ اضغط «🧭 احسب القرارات» أعلاه.
+    </td></tr>`;
+    _visibleSyms = []; return;
+  }
+  if (!DD.results.length) {
+    body.innerHTML = `<tr><td colspan="12" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
+      لا يوجد سهم اجتاز البوابات الست اليوم.<br>
+      <span style="color:#9aa4b8;font-size:11px">هذه نتيجة صحيحة لا عطل: في ${DD.regime?.label || 'ظروف السوق الحالية'} يكون «لا صفقة» قراراً كامل الأهلية. اضغط «📋 الملخص التنفيذي» لمعرفة أي بوابة أوقفت أقرب المرشحين.</span>
+    </td></tr>`;
+    _visibleSyms = []; return;
+  }
+
+  /* ترتيب: أعمدة الأساس قابلة للفرز بالنقر، وما عداها يبقى على ترتيب
+     الأولوية (rank) لأن ترتيب القرارات ليس فرزاً عددياً بل أولوية تنفيذ. */
+  let rows = [...DD.results];
+  if (['sym', 'price', 'pct'].includes(_sortCol)) {
+    rows.sort((a, b) => {
+      const va = _sortCol === 'sym' ? +a.sym : a[_sortCol];
+      const vb = _sortCol === 'sym' ? +b.sym : b[_sortCol];
+      return (va - vb) * _sortDir;
+    });
+  }
+
+  _visibleSyms = rows.map(r => r.sym);
+  if (_focusedIdx >= _visibleSyms.length) _focusedIdx = _visibleSyms.length - 1;
+
+  body.innerHTML = rows.map((r, idx) => `
+    <tr data-idx="${idx}" class="${_focusedIdx === idx ? 'kb-focus' : ''}" onclick="selectStock('${r.sym}');setFocusedRow(${idx})" style="cursor:pointer;border-right:3px solid ${r.color}">
+      <td style="font-weight:700;color:var(--bl);font-family:'IBM Plex Mono',monospace">${r.sym}</td>
+      <td style="max-width:90px;overflow:hidden;text-overflow:ellipsis">${r.name}</td>
+      <td style="font-family:monospace">${r.price.toFixed(2)}</td>
+      <td style="color:${r.pct >= 0 ? 'var(--up)' : 'var(--dn)'};font-family:monospace">${r.pct >= 0 ? '+' : ''}${r.pct.toFixed(2)}%</td>
+      <td><span style="color:${r.color};font-weight:700;white-space:nowrap">${r.label}</span></td>
+      <td style="font-family:monospace;color:#FFD700;font-weight:700">${r.execPrice}</td>
+      <td style="font-family:monospace;color:var(--dn)">${r.tp.stop}</td>
+      <td style="font-family:monospace;color:var(--up)">${r.tp.targets[0].price}</td>
+      <td style="font-family:monospace;font-weight:700">1:${r.rr}</td>
+      <td style="font-family:monospace">${ddFmt(r.qty)}</td>
+      <td style="font-family:monospace;color:var(--t2)">${ddFmt(Math.round(r.qty * r.size.riskPerShare))}</td>
+      <td style="white-space:nowrap">
+        <span title="أدلة الفئة أ" style="color:#0ecf7e;font-weight:700">${r.ev.A.length}أ</span> ·
+        <span title="أدلة داعمة" style="color:#4a9eff">${r.ev.B.length}ب</span>${r.ev.C.length ? ` · <span title="أدلة مضادة" style="color:#f04458">${r.ev.C.length}ج</span>` : ''}
+      </td>
+      <td><button onclick="event.stopPropagation();ddReport('${r.sym}')" style="background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.25);color:#FFD700;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:calc(var(--base-font)*0.75);font-family:inherit">القرار كاملاً</button></td>
+    </tr>`).join('');
+}
+
 
 // ✅ تعريف الدوال للأزرار
 window.smartPrediction = smartPredictionAdvanced;
