@@ -365,6 +365,17 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <span id="dd-regime" style="font-size:10px;color:var(--t2)">اضغط «احسب القرارات» لقياس نظام السوق</span>
       <span id="dd-heat" style="font-size:10px;color:var(--t2);margin-right:auto"></span>
     </div>
+    <div id="radar-bar" style="display:none;padding:8px 12px;border-bottom:1px solid var(--bd);align-items:center;gap:10px;flex-wrap:wrap;background:rgba(255,107,53,.05)">
+      <button onclick="buildRadar()" class="scan-btn" style="background:rgba(255,107,53,.14);border:1px solid rgba(255,107,53,.4);color:#ff6b35;flex-shrink:0">📡 احسب الرادار</button>
+      <span style="font-size:10px;color:var(--t3)">أفق البحث:</span>
+      <select id="radar-horizon" onchange="buildRadar()" style="width:96px;background:var(--c3);border:1px solid var(--bd2);color:var(--t1);border-radius:4px;padding:3px;font-size:10px;font-family:inherit">
+        <option value="5">5 جلسات</option><option value="10" selected>10 جلسات</option><option value="20">20 جلسة</option>
+      </select>
+      <label style="font-size:10px;color:var(--t3);display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="checkbox" id="radar-strict" onchange="buildRadar()"> الدورات المؤكدة خارج العيّنة فقط
+      </label>
+      <span id="radar-status" style="font-size:10px;color:var(--t2);margin-right:auto">اضغط «احسب الرادار» — يفحص كل سهم عن أقرب انعطاف زمني متوقع</span>
+    </div>
     <div id="spectral-scan-bar" style="display:none;padding:8px 12px;border-bottom:1px solid var(--bd);align-items:center;gap:10px;background:rgba(255,215,0,.04)">
       <button id="spectral-scan-btn" onclick="runSpectralScanAll()" class="scan-btn scan-sec" style="background:rgba(255,215,0,.12)!important;border-color:rgba(255,215,0,.3)!important;color:#FFD700!important;flex-shrink:0">🔄 امسح الآن لكل الأسهم</button>
       <span id="spectral-scan-prog" style="font-size:11px;color:var(--t3)">لم يتم المسح بعد — اضغط الزر لبدء اختبار كل الأسهم</span>
@@ -2854,26 +2865,10 @@ function calcAllFilters(sym,marketROC){
   if(heavyConfirmCount>=3)masterScore+=10;
   masterScore=Math.max(0,Math.min(100,Math.round(masterScore)));
 
-  /* 📡 RADAR — أقرب نافذة زمنية حرجة قادمة لهذا السهم (خلال 0-2 يوم تقويمي
-     تحديداً)، مبنية على نفس محرك الدورات المستخدم بالتحليل الزمني الفردي.
-     محسوبة هنا أثناء المسح الكامل حتى يقدر تبويب "رادار الحركة المتوقعة"
-     يفرز كل السوق دفعة واحدة بدل تكرار الحساب لكل سهم عند الطلب. */
-  let radar=null;
-  if(tat.pivotIdx!=null&&cs.length>=60){
-    const pivotObj={i:tat.pivotIdx,p:tat.pivotPrice,type:tat.pivotType};
-    const dcForRadar=tat.detectedCycle;
-    const upcoming=buildUpcomingTimeWindows(cs,pivotObj,dcForRadar);
-    const nearest=upcoming.length?upcoming[0]:null;
-    if(nearest&&nearest.daysLeft<=2){
-      /* 🛠️ المحرك الجديد يرجع الحقل باسم `date` — وكان الرادار يقرأ
-         `estDate` فينتج "Invalid Date" في عمود التاريخ بتبويب الرادار. */
-      radar={daysLeft:nearest.daysLeft,label:nearest.label,estDate:nearest.date,barsAhead:nearest.barsAhead,
-        dirUp:tat.dirUp,strongSR:tat.strongSR,srReason:tat.srReason,
-        confirmed:tat.priceTimeConvergence?.confirmed||false};
-    }
-  }
-
-  return{sym,vz,ma,rs,sq,ab,fg,hidden,pregap,fvgr,ew,harm,hunter,tat,snp,sb,fib618,falseBreak,macdX,instVol,revCandle,sig,cls,score,masterScore,bullAlerts,bearAlerts,radar};
+  /* 📡 الرادار لم يعد يُحسب هنا. كان يستدعي buildUpcomingTimeWindows لكل
+     سهم داخل المسح — كلفة على كل سهم مقابل نتيجة تُرمى غالباً، لأن الشرط
+     كان «خلال يومين تقويميين». صار مصدراً مستقلاً يُبنى عند فتح تبويبه. */
+  return{sym,vz,ma,rs,sq,ab,fg,hidden,pregap,fvgr,ew,harm,hunter,tat,snp,sb,fib618,falseBreak,macdX,instVol,revCandle,sig,cls,score,masterScore,bullAlerts,bearAlerts};
 }
 
 /* ══ SCAN ENGINE ══ */
@@ -2928,8 +2923,8 @@ function updateBadges(){
   const fbFalsebreak=document.getElementById('fb-falsebreak');if(fbFalsebreak)fbFalsebreak.textContent=falseBreakActive;
   const whaleActive=_advData.filter(d=>d.sb?.alert).length;
   const fbWhale=document.getElementById('fb-whale');if(fbWhale)fbWhale.textContent=whaleActive;
-  const radarActive=_advData.filter(d=>!!d.radar).length;
-  const fbRadar=document.getElementById('fb-radar');if(fbRadar)fbRadar.textContent=radarActive;
+  /* شارة الرادار تُحدَّث من buildRadar لا من المسح — الرادار مصدر مستقل الآن */
+  const fbRadar=document.getElementById('fb-radar');if(fbRadar)fbRadar.textContent=_radarData.length;
   _updateSpectralBadge();
 }
 
@@ -2940,13 +2935,15 @@ function setFilter(f,el){
   el.classList.add('on');
   if(f==='master'){_sortCol='master';_sortDir=-1;}/* always rank strongest-first when entering the unified tab */
   if(f==='whale'){_sortCol='sb_s';_sortDir=-1;}
-  if(f==='radar'){_sortCol='radar_d';_sortDir=-1;}/* الأقرب زمنياً (اليوم/غداً) أولاً */
   if(f==='spectral'){_sortCol='spectral_edge';_sortDir=-1;}
   const ddBar=document.getElementById('dd-bar');
   if(ddBar)ddBar.style.display=(f==='decision')?'flex':'none';
   if(f==='decision'){_sortCol='dd';_sortDir=-1;if(!DD.ran&&_advData.length)ddRun();}
   const scanBar=document.getElementById('spectral-scan-bar');
   if(scanBar)scanBar.style.display=(f==='spectral')?'flex':'none';
+  const radarBar=document.getElementById('radar-bar');
+  if(radarBar)radarBar.style.display=(f==='radar')?'flex':'none';
+  if(f==='radar'&&!_radarBuilt&&_advData.length)buildRadar();
   renderResults();
 }
 function toggleBuySell(type,btn){
@@ -3054,7 +3051,7 @@ function getHeaders(){
     harmonic:`${base}<th>النموذج</th><th>اكتمال</th><th>الإشارة</th>${end}`,
     hunter:`${base}<th>درجة</th><th>إنذارات</th><th>الحالة</th>${end}`,
     time:`${base}<th onclick="sortResults('time_d')">المسافة الزمنية</th><th>الدورة المطابقة</th><th>الحالة</th><th title="عدد الأدلة الزمنية المستقلة المتوافقة (غان شموع/غان تقويمي/فيبوناتشي/دورة السهم/مربع غان)">قوة التوافق</th>${end}`,
-    radar:`${base}<th onclick="sortResults('radar_d')">التوقع الزمني</th><th>الاتجاه المرجّح</th><th>الدعم/المقاومة</th><th>تقاطع سعر-زمن</th>${end}`,
+    radar:`${base}<th title="عدد جلسات التداول حتى الانعطاف المتوقع، مع نطاق عدم اليقين">⏱ متى</th><th>نوع الانعطاف</th><th title="الدورة الطيفية أقوى من النافذة الكلاسيكية لأنها مقاسة على هذا السهم">المصدر</th><th title="هل أثبتت الدورة إصابتها على بيانات لم ترها؟">التحقق</th><th>مستوى المراقبة</th><th onclick="sortResults('master')">🏆 النتيجة</th><th>شرح</th>`,
     sniper:`${base}<th onclick="sortResults('snp')">Sniper Score</th><th>المتوافقة</th><th>الحالة</th>${end}`,
     fib618:`${base}<th onclick="sortResults('fib_s')">مستوى فيبوناتشي</th><th>المسافة</th><th>الحالة</th>${end}`,
     falsebreak:`${base}<th onclick="sortResults('fb_s')">المستوى المكسور</th><th>النوع</th><th>الحالة</th>${end}`,
@@ -3069,6 +3066,137 @@ function getHeaders(){
   return cols[_filter]||cols.all;
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   📡 رادار الحركة المتوقعة — أُعيد بناؤه بالكامل
+   ──────────────────────────────────────────────────────────────────────
+   النسخة السابقة كانت تُحسب داخل المسح الشامل، ولا تُبقي إلا سهماً نافذته
+   الزمنية خلال يومين تقويميين، ومصدرها الوحيد نوافذ غان/فيبوناتشي
+   الكلاسيكية — أرقام مفروضة من خارج السهم. النتيجة الحتمية: تبويب فارغ
+   أو صف أو صفّان بلا أساس مقاس.
+
+   البناء الجديد يقوم على ثلاثة تغييرات:
+   ① المصدر الأول صار الدورة الطيفية المقاسة على السهم نفسه (spectralPro)
+      مع نطاق عدم يقين معلن، والنافذة الكلاسيكية تنزل إلى مرتبة احتياطية
+      مصرَّح بضعفها.
+   ② الأفق قابل للضبط (5/10/20 جلسة) بدل يومين ثابتين.
+   ③ يُحسب عند فتح التبويب لا داخل المسح، فلا يُبطئ المسح الشامل، ونتائجه
+      مخزّنة في مصدر بيانات مستقل تماماً كتبويب الإشارة الطيفية.
+   ══════════════════════════════════════════════════════════════════════ */
+let _radarData=[],_radarBuilt=false;
+
+function buildRadar(){
+  if(!_advData.length){ alert('⚠️ شغّل «🔬 مسح شامل» أولاً — الرادار يفحص الأسهم التي مسحتها.'); return; }
+  const horizon=+(document.getElementById('radar-horizon')?.value||10);
+  const strict=!!document.getElementById('radar-strict')?.checked;
+  const st=document.getElementById('radar-status');
+  if(st)st.textContent='⏳ جاري الفحص…';
+
+  const out=[];
+  for(const d of _advData){
+    const sym=d.sym;
+    if(G.demo.has(sym))continue;                       /* بيانات تجريبية لا تُرصد */
+    const cs=G.cans[sym];
+    if(!cs||cs.length<80)continue;                     /* أقل من 80 جلسة لا يحتمل قياس دورة */
+
+    let ev=null;
+    /* ① الدورة الطيفية — المصدر الوحيد الذي يعطي نافذة بعدم يقين مقاس */
+    let tm=null;
+    try{ tm=(typeof ddTiming==='function')?ddTiming(sym):null; }catch(e){}
+    if(tm&&tm.ok&&tm.significant&&tm.turns&&tm.turns.length){
+      const t=tm.turns.find(x=>x.barsAhead<=horizon);
+      if(t)ev={bars:t.barsAhead,sd:t.sdBars,lo:t.loBars,hi:t.hiBars,type:t.type,
+               usable:!!t.usable,coherent:!!tm.coherent,strong:true,
+               src:'دورة طيفية '+tm.period+' جلسة',srcDetail:'p = '+tm.pText+' · إشارة/ضجيج '+tm.snr,
+               period:tm.period,cyclePos:tm.cyclePos};
+    }
+    /* ② احتياطي: النافذة الكلاسيكية — تُعرض موسومةً بضعفها */
+    if(!ev&&!strict&&d.tat&&d.tat.pivotIdx!=null){
+      try{
+        const w=buildUpcomingTimeWindows(cs,{i:d.tat.pivotIdx,p:d.tat.pivotPrice,type:d.tat.pivotType},d.tat.detectedCycle);
+        const n0=(w||[]).find(x=>x.barsAhead<=horizon);
+        if(n0)ev={bars:n0.barsAhead,sd:null,type:(d.tat.dirUp?'valley':'peak'),
+                  usable:false,coherent:false,strong:false,
+                  src:'نافذة كلاسيكية',srcDetail:n0.label};
+      }catch(e){}
+    }
+    if(!ev)continue;
+    if(strict&&!(ev.strong&&ev.coherent&&ev.usable))continue;
+
+    /* مستوى المراقبة: أقرب دعم تحت السعر لانعطاف صعودي، وأقرب مقاومة فوقه لهبوطي */
+    let watchLvl=null,watchWhy='';
+    try{
+      const sr=calcSupportResistance(cs,G.ind[sym],d.price);
+      if(ev.type==='valley'&&sr.supports[0]){watchLvl=sr.supports[0].price;watchWhy='أقرب دعم — '+sr.supports[0].sources.join(' + ');}
+      else if(ev.type==='peak'&&sr.resistances[0]){watchLvl=sr.resistances[0].price;watchWhy='أقرب مقاومة — '+sr.resistances[0].sources.join(' + ');}
+    }catch(e){}
+
+    /* الترتيب: القوة أولاً ثم القرب. تاريخ بلا مصدر مقاس لا يسبق تاريخاً مقاساً. */
+    const rscore=(ev.strong?1000:0)+(ev.coherent?400:0)+(ev.usable?200:0)
+                 +Math.max(0,60-ev.bars*3)+(d.masterScore||50)/5;
+
+    out.push({...d,radar:ev,watchLvl,watchWhy,rscore});
+  }
+
+  out.sort((a,b)=>b.rscore-a.rscore);
+  _radarData=out; _radarBuilt=true;
+
+  const strong=out.filter(r=>r.radar.strong).length;
+  const conf=out.filter(r=>r.radar.coherent).length;
+  if(st)st.innerHTML=out.length
+    ? `✅ <b>${out.length}</b> سهم أمامه انعطاف خلال ${horizon} جلسة · <b style="color:#0ecf7e">${strong}</b> بدورة طيفية دالة · <b style="color:#FFD700">${conf}</b> منها أثبتت إصابتها خارج العيّنة`
+    : `لا سهم أمامه انعطاف متوقع خلال ${horizon} جلسة${strict?' بالشروط المشدّدة':''}. وسّع الأفق أو ارفع التشديد — والقائمة الفارغة نتيجة صحيحة لا عطل.`;
+  const fb=document.getElementById('fb-radar'); if(fb)fb.textContent=out.length;
+  if(_filter==='radar')renderResults();
+}
+window.buildRadar=buildRadar;
+
+function renderRadarTable(){
+  const body=document.getElementById('rtbody');
+  if(!_radarBuilt){
+    body.innerHTML=`<tr><td colspan="11" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
+      ① شغّل <b>🔬 مسح شامل</b> · ② اضغط <b>📡 احسب الرادار</b> أعلاه.<br>
+      <span style="font-size:11px">الرادار يفحص كل سهم عن أقرب انعطاف زمني متوقع، ويرتّب بالمصدر الأقوى لا بالأقرب تاريخاً.</span></td></tr>`;
+    _visibleSyms=[]; return;
+  }
+  if(!_radarData.length){
+    body.innerHTML=`<tr><td colspan="11" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
+      لا سهم أمامه انعطاف متوقع ضمن الأفق المحدد.<br>
+      <span style="font-size:11px;color:#9aa4b8">وسّع الأفق من القائمة أعلاه. أغلب الأسهم لا تتحرك بدورات قابلة للقياس، والقائمة الفارغة نتيجة صحيحة.</span></td></tr>`;
+    _visibleSyms=[]; return;
+  }
+  _visibleSyms=_radarData.map(r=>r.sym);
+  if(_focusedIdx>=_visibleSyms.length)_focusedIdx=_visibleSyms.length-1;
+
+  body.innerHTML=_radarData.map((r,idx)=>{
+    const e=r.radar;
+    const when=e.bars===0?'اليوم':e.bars===1?'الجلسة القادمة':`بعد ${e.bars} جلسة`;
+    const band=e.sd!=null?`<span style="color:var(--t3);font-size:calc(var(--base-font)*0.72)"> ±${e.sd} (${e.lo}–${e.hi})</span>`:'';
+    const typeTxt=e.type==='valley'
+      ?'<span style="color:var(--up);font-weight:700">🟢 قاع — نشاط صعودي</span>'
+      :'<span style="color:var(--dn);font-weight:700">🔴 قمة — نشاط هبوطي</span>';
+    const srcCol=e.strong?'var(--up)':'var(--t3)';
+    const verify=e.strong
+      ? (e.coherent?'<span style="color:#0ecf7e;font-weight:700" title="الدورة أصابت مواعيد انعطاف لم ترها في بيانات محجوزة">✅ مؤكدة خارج العيّنة</span>'
+                   :'<span style="color:#f5c842" title="دالة إحصائياً لكن لم تُختبر إصابتها خارج العيّنة">⚠ غير مؤكدة</span>')
+      : '<span style="color:var(--t3)" title="أرقام غان/فيبوناتشي مفروضة من خارج السهم — للمراقبة فقط">— نافذة كلاسيكية</span>';
+    const usable=e.strong&&!e.usable?'<br><span style="color:#f5c842;font-size:calc(var(--base-font)*0.7)">نطاق أوسع من ربع دورة — للتنبيه لا للتنفيذ</span>':'';
+    return `<tr data-idx="${idx}" class="${_focusedIdx===idx?'kb-focus':''}" onclick="selectStock('${r.sym}');setFocusedRow(${idx})" style="cursor:pointer;border-right:3px solid ${e.strong?'var(--up)':'var(--t3)'}">
+      <td style="font-weight:700;color:var(--bl);font-family:'IBM Plex Mono',monospace">${r.sym}</td>
+      <td style="max-width:90px;overflow:hidden;text-overflow:ellipsis">${r.name}</td>
+      <td style="font-family:monospace">${r.price>0?r.price.toFixed(2):'—'}</td>
+      <td style="color:${r.pct>=0?'var(--up)':'var(--dn)'};font-family:monospace">${r.pct>=0?'+':''}${r.pct.toFixed(2)}%</td>
+      <td style="font-family:monospace;font-weight:700;color:${e.bars<=2?'var(--up)':'var(--gd)'}">${when}${band}</td>
+      <td>${typeTxt}</td>
+      <td style="color:${srcCol}" title="${e.srcDetail||''}">${e.src}${e.period?`<br><span style="color:var(--t3);font-size:calc(var(--base-font)*0.7)">${e.srcDetail}</span>`:''}</td>
+      <td style="font-size:calc(var(--base-font)*0.78)">${verify}${usable}</td>
+      <td style="font-family:monospace">${r.watchLvl??'—'}${r.watchWhy?`<br><span style="color:var(--t3);font-size:calc(var(--base-font)*0.7)">${r.watchWhy}</span>`:''}</td>
+      <td><span class="scb"><span class="scf" style="width:${r.masterScore}%;background:${r.masterScore>=75?'var(--up)':r.masterScore>=55?'var(--gd)':'var(--t2)'}"></span></span><b>${r.masterScore}</b></td>
+      <td><button onclick="event.stopPropagation();G.sel='${r.sym}';smartTimingAnalysis()" style="background:rgba(255,107,53,.12);border:1px solid rgba(255,107,53,.3);color:#ff6b35;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:calc(var(--base-font)*0.75);font-family:inherit">⏰ التحليل الزمني</button></td>
+    </tr>`;
+  }).join('');
+}
+
 /* ══ RENDER TABLE ══ */
 function renderResults(){
   document.getElementById('rthead').innerHTML='<tr>'+getHeaders()+'</tr>';
@@ -3080,6 +3208,7 @@ function renderResults(){
   /* 🧭 غرفة القرار — مسار بيانات مستقل (DD.results) مبني فوق _advData
      لكن بشكل مختلف تماماً: صفوفه قرارات لا قياسات. */
   if(_filter==='decision'){ddRenderTable2();return;}
+  if(_filter==='radar'){renderRadarTable();return;}
 
   if(_filter==='spectral'){
     let sdata=[..._spectralResults];
@@ -3128,7 +3257,6 @@ function renderResults(){
          don't show up under tabs that are meant to flag upside opportunities.
          Toggle _showBearish to see the bearish/rejected side instead. */
       if(_filter==='time')return d.tat.active&&(_showBearish?!d.tat.dirUp:d.tat.dirUp);
-      if(_filter==='radar')return !!d.radar;
       if(_filter==='sniper')return d.snp.level!=='low'&&(_showBearish?!d.snp.dirUp:d.snp.dirUp);
       if(_filter==='fib618')return _showBearish?false:(d.fib618.confirmed||d.fib618.inZone);
       if(_filter==='falsebreak')return d.falseBreak.active&&(_showBearish?d.falseBreak.bearish:d.falseBreak.bullish);
@@ -3158,7 +3286,6 @@ function renderResults(){
       case'ab_s':av=a.ab.score;bv=b.ab.score;break;
       case'fg_c':av=a.fg.count;bv=b.fg.count;break;
       case'time_d':av=a.tat.timeBonus;bv=b.tat.timeBonus;break;
-      case'radar_d':av=a.radar?-a.radar.daysLeft:-999;bv=b.radar?-b.radar.daysLeft:-999;break;/* الأقرب زمنياً أولاً (قيمة أعلى = أقرب) */
       case'snp':av=a.snp.composite;bv=b.snp.composite;break;
       case'fib_s':av=a.fib618.score;bv=b.fib618.score;break;
       case'master':av=a.masterScore;bv=b.masterScore;break;
@@ -3192,12 +3319,6 @@ function renderResults(){
       const strengthColor=d.tat.strength==='قوي'?'var(--up)':d.tat.strength==='متوسط'?'var(--gd)':d.tat.strength==='ضعيف'?'var(--t3)':'var(--t3)';
       const strengthCell=`<span style="font-weight:700;color:${strengthColor}" title="${d.tat.evidenceCount||0} من 5 أدلة زمنية متوافقة (غان شموع/غان تقويمي/فيبوناتشي/دورة السهم/مربع غان)">${d.tat.strength||'—'}</span>`;
       midCols=`<td style="font-family:monospace;font-weight:600">${d.tat.candleDistance} شمعة${d.tat.calendarDays!=null?` (${d.tat.calendarDays}ي)`:''}</td><td>${d.tat.cycleNum?tag(tatCol,`${d.tat.cycleType} ${d.tat.cycleNum}`):tag('na','—')}</td><td>${d.tat.badge?tag(tatCol,d.tat.badge):tag('na','محايد')}</td><td>${strengthCell}</td>`;
-    }else if(_filter==='radar'){
-      const r=d.radar;
-      const daysLabel=r.daysLeft===0?'اليوم':r.daysLeft===1?'غداً':`بعد ${r.daysLeft} يوم`;
-      const radarCol=r.dirUp?'s4':'s1';
-      const timingCell=`<span style="font-weight:700;color:${r.daysLeft===0?'var(--up)':'var(--gd)'}" title="${r.label} — ${r.estDate.toLocaleDateString('ar-SA')}">${daysLabel}</span>`;
-      midCols=`<td style="font-family:monospace">${timingCell}</td><td>${tag(radarCol,r.dirUp?'▲ صعودي':'▼ هبوطي')}</td><td>${r.strongSR?tag('na',r.srReason):tag('na','بدون دعم واضح')}</td><td>${r.confirmed?tag('s4','✅ مؤكد'):tag('na','غير مؤكد')}</td>`;
     }else if(_filter==='sniper'){
       const snpCol=d.snp.confluenceMax?'pu':d.snp.level==='high'?(d.snp.dirUp?'s4':'s1'):d.snp.level==='medium'?'s3':'na';
       midCols=`<td style="font-family:monospace;font-weight:700;color:${d.snp.composite>=60?'var(--up)':d.snp.composite>=35?'var(--gd)':'var(--t2)'}">${d.snp.composite}</td><td>${tag(snpCol,`${d.snp.firedCount}/4`)}</td><td>${d.snp.badge?tag(snpCol,d.snp.badge):tag('na','—')}</td>`;
@@ -7271,22 +7392,7 @@ window.smartPricing = smartPricingAdvanced;
 window.smartTimingAnalysis = smartTimingAnalysis;
 
 </script>
-     TADAWUL FILTERS PRO — طبقة الواجهة والقرار (v3.1)
-     ──────────────────────────────────────────────────────────────────────
-     هذه الطبقة صارت جزءاً من الملف — كتلة v1 القديمة حُذفت نهائياً
-     لأن v3 كانت تُبطلها عند التحميل، فبقاؤها وزن ميّت وخطر تعارض.
 
-     ما أصلحته v3:
-       ① الأرقام غير المتوافقة: كان الدخول من زناد الاختراق بينما الوقف
-          والهدف والعائد من السعر الحالي — فينتج صف مثل
-          السعر 32.06 · الدخول 36.15 · الهدف 36.04 · الوقف 31.62
-          (هدف تحت الدخول، ووقف يبعد 12٪). الآن كل رقم في الصف
-          مشتقّ من نقطة دخول واحدة، والصف الذي لا يستقيم يُحذف.
-       ② «مرشّح احتياطي» ← «مرشّح مراقبة» مع سبب ظاهر لكل سهم.
-       ③ المسح الشامل يحمّل سنة كاملة بدل ٣ أشهر — دونها تعجز
-          «الجاهزية» و«الطيف» و«النافذة» وتظهر كلها «—».
-       ④ تقريب الأسعار: 14.4399995803833 ← 14.44
-     ══════════════════════════════════════════════════════════════════════ -->
 
 <style id="tp-css-v3">
 @media (max-width:900px){
