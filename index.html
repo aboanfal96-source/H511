@@ -7178,6 +7178,417 @@ window.smartPricing = smartPricingAdvanced;
 window.smartTimingAnalysis = smartTimingAnalysis;
 
 </script>
+<!-- ══════════════════════════════════════════════════════════════════════
+     TADAWUL FILTERS PRO — حزمة الإضافة v1
+     الصقها كما هي مباشرة قبل ‏</body>‎ في ملفك (بعد آخر <script> موجود).
+     لا تعدّل شيئاً في الملف الأصلي — هذه الحزمة تعمل فوقه.
+
+     ما تفعله:
+       ① إصلاح الجوال: المنصة تفتح وتُمرَّر وتُقرأ على الشاشة الصغيرة.
+       ② «وضع المضارب»: بطاقات تقول ادخل هنا / اخرج هنا / بهذه الكمية.
+       ③ غرفة القرار تعرض ٢٠ فرصة دائماً (مرتبة، ومع تمييز صريح
+          بين ما اجتاز كل البوابات وما هو مرشّح احتياطي).
+       ④ Market Brain مخفي افتراضياً مع زر 🧠 لإظهاره/إخفائه.
+       ⑤ تنبيهات الخروج للمراكز المسجّلة تظهر أعلى القائمة بالأحمر.
+     ══════════════════════════════════════════════════════════════════════ -->
+
+<style id="tp-addon-css">
+/* ══ ① الجوال — الملف الأصلي يقفل التمرير على body ويجعل اللوحتين
+      flex بارتفاع ثابت، فتنهار القائمة على الشاشة الصغيرة ولا تظهر ══ */
+@media (max-width:900px){
+  html{height:auto!important;overflow-y:auto!important;overflow-x:hidden!important;-webkit-text-size-adjust:100%}
+  body{height:auto!important;min-height:100dvh;overflow-y:auto!important;overflow-x:hidden!important;display:block!important}
+  .main{display:block!important;overflow:visible!important;min-height:0!important;padding-bottom:64px!important}
+  .filters-panel{width:100%!important;min-width:0!important;border-left:none!important;border-bottom:1px solid var(--bd);overflow:visible!important}
+  .right-panel{width:100%!important;min-width:0!important;overflow:visible!important}
+  .results-wrap{max-height:none!important;overflow-x:auto!important;overflow-y:visible!important;-webkit-overflow-scrolling:touch;flex:none!important}
+  .rtbl{min-width:760px}
+  .top{position:sticky;top:0;z-index:130}
+  .ftabs{position:sticky;top:38px;z-index:120;background:var(--c1)}
+  .ftab{padding:9px 13px;font-size:11px}
+  .scan-bar{gap:5px;padding:8px}
+  .scan-btn{padding:6px 12px;font-size:11px}
+  #chart-area{min-height:300px;max-height:58vh}
+  .ai-panel,.tp-panel{max-height:none!important}
+  .tp-grid{grid-template-columns:1fr}
+  .stock-search input{width:118px}
+  .stock-search input:focus{width:150px}
+  .ss-drop{width:min(82vw,270px)}
+  #tar-overlay{padding:8px!important}
+  #tar-body{font-size:13px!important}
+}
+
+/* ══ ④ زر Market Brain العائم ══ */
+#tp-ib-toggle{
+  position:fixed;left:10px;bottom:10px;z-index:1000;width:38px;height:38px;border-radius:50%;
+  border:1px solid rgba(255,215,0,.35);background:#0c1020;color:#FFD700;font-size:16px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 14px rgba(0,0,0,.6);transition:bottom .3s,transform .12s;font-family:inherit
+}
+#tp-ib-toggle:active{transform:scale(.92)}
+
+/* ══ ② بطاقات وضع المضارب ══ */
+#dd-simple{display:none;padding:8px}
+#dd-simple.on{display:block}
+.tps-head{padding:9px 12px;margin-bottom:9px;border-radius:9px;background:var(--c2);
+  border:1px solid var(--bd);font-size:11.5px;line-height:1.8;color:var(--t2)}
+.tps-head b{color:var(--t1)}
+.tpc{border:1px solid var(--bd);border-right:4px solid var(--c,#7a8ba8);border-radius:10px;
+  background:var(--c2);margin-bottom:9px;overflow:hidden}
+.tpc-h{display:flex;align-items:baseline;gap:7px;padding:9px 11px 0;flex-wrap:wrap}
+.tpc-rank{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--t3);min-width:20px}
+.tpc-sym{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:800;color:var(--bl)}
+.tpc-nm{font-size:12px;color:var(--t2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tpc-badge{font-size:11px;font-weight:800;color:var(--c);white-space:nowrap}
+.tpc-act{margin:8px 11px;padding:9px 11px;border-radius:7px;background:rgba(255,215,0,.06);
+  border:1px solid rgba(255,215,0,.2);font-size:13px;font-weight:700;line-height:1.75;color:var(--t1)}
+.tpc-act b{color:#FFD700;font-family:'IBM Plex Mono',monospace}
+.tpc-g{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--bd);margin:0 11px;border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.tpc-g>div{background:var(--c3);padding:7px 4px;text-align:center}
+.tpc-g i{display:block;font-style:normal;font-size:9px;color:var(--t3);margin-bottom:2px}
+.tpc-g b{font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:800}
+.tpc-money{margin:8px 11px 0;font-size:12px;color:var(--t2);line-height:1.8}
+.tpc-when{margin:5px 11px 0;font-size:11.5px;color:var(--t2);line-height:1.8}
+.tpc-exit{margin:8px 11px;padding:8px 10px;border-radius:7px;background:rgba(240,68,88,.05);
+  border:1px solid rgba(240,68,88,.2);font-size:11.5px;line-height:1.85;color:#c8d0e0}
+.tpc-exit b{color:#f04458;font-family:'IBM Plex Mono',monospace}
+.tpc-foot{display:flex;gap:6px;padding:0 11px 10px;flex-wrap:wrap;align-items:center}
+.tpc-btn{padding:5px 13px;border-radius:5px;cursor:pointer;font-size:11.5px;font-family:inherit;font-weight:700;border:1px solid}
+.tpc-btn.buy{background:rgba(14,207,126,.12);border-color:rgba(14,207,126,.35);color:#0ecf7e}
+.tpc-btn.info{background:rgba(255,215,0,.1);border-color:rgba(255,215,0,.25);color:#FFD700}
+.tpc-why{font-size:10.5px;color:var(--t3);margin-right:auto}
+.tpx{border:1px solid rgba(240,68,88,.4);border-right:4px solid #f04458;border-radius:10px;
+  background:rgba(240,68,88,.07);padding:10px 12px;margin-bottom:9px;font-size:12.5px;line-height:1.85}
+.tpx b{color:#f04458}
+@media (max-width:520px){
+  .tpc-g{grid-template-columns:repeat(2,1fr)}
+  .tpc-g b{font-size:15px}
+}
+#tp-simple-btn{padding:4px 11px;border-radius:5px;cursor:pointer;font-size:10px;font-family:inherit;
+  font-weight:700;border:1px solid rgba(34,211,238,.35);background:rgba(34,211,238,.1);color:#22d3ee;flex-shrink:0}
+#tp-simple-btn.on{background:rgba(34,211,238,.25);border-color:#22d3ee}
+</style>
+
+<script id="tp-addon-js">
+(function(){
+'use strict';
+
+/* ملاحظة منهجية مقصودة: هذه الحزمة لا تُضيف أي رقم احتمال جديد ولا نسبة
+   نجاح. كل ما تفعله هو إعادة صياغة ما حسبه المحرك أصلاً في صيغة أمر
+   تنفيذي، وترتيبه، وإظهاره على الجوال. الفرق بين «قاعدة قرار» و«توقّع»
+   محفوظ كما هو في الملف الأصلي. */
+
+var TP={};
+
+/* ═══════════════════ ④ Market Brain — إخفاء وإظهار ═══════════════════ */
+function initIBToggle(){
+  var ib=document.getElementById('ib'), main=document.querySelector('.main');
+  if(!ib||!main)return;
+  var hidden = localStorage.getItem('tp_ib_hidden')!=='0';   /* مخفي افتراضياً */
+  var btn=document.createElement('button');
+  btn.id='tp-ib-toggle';
+  document.body.appendChild(btn);
+
+  function apply(){
+    ib.style.display = hidden ? 'none' : '';
+    if(!hidden && ib.classList.contains('opened')) main.style.paddingBottom='';
+    main.style.paddingBottom = hidden ? '0' : '';
+    if(window.matchMedia('(max-width:900px)').matches) main.style.paddingBottom = hidden?'12px':'64px';
+    btn.textContent = hidden ? '🧠' : '✕';
+    btn.title = hidden ? 'إظهار Market Brain' : 'إخفاء Market Brain';
+    btn.style.bottom = hidden ? '10px' : '54px';
+    setTimeout(resizeCharts,60);
+  }
+  btn.onclick=function(){
+    hidden=!hidden;
+    localStorage.setItem('tp_ib_hidden', hidden?'1':'0');
+    if(!hidden && typeof toggleIB==='function' && !document.getElementById('ib-bd').classList.contains('open')) toggleIB();
+    apply();
+  };
+  apply();
+}
+function resizeCharts(){
+  try{
+    if(window.G && G.lwChart){
+      var ct=document.getElementById('lw-chart');
+      if(ct) G.lwChart.applyOptions({width:ct.clientWidth,height:ct.clientHeight});
+    }
+  }catch(e){}
+}
+window.addEventListener('resize',function(){clearTimeout(TP._rz);TP._rz=setTimeout(resizeCharts,150);});
+window.addEventListener('orientationchange',function(){setTimeout(resizeCharts,300);});
+
+/* ═══════════════ ③ إكمال غرفة القرار إلى ٢٠ فرصة ═══════════════
+   المنطق: البوابتان غير القابلتين للتفاوض (جودة البيانات، السيولة) تبقيان
+   إلزاميتين حتى للمرشّح الاحتياطي — لأن سهماً بلا سيولة خطته غير قابلة
+   للتنفيذ أصلاً، ووقفه نظري. أما بوابات الأدلة والعائد فتُخفَّف، ويُصرَّح
+   صراحةً بالبوابة التي لم يجتزها، وتُنصَّف كميته. الترتيب يبقى واحداً:
+   الأعلى جاهزيةً أولاً. */
+function buildBackup(d){
+  try{
+    var sym=d.sym;
+    if(G.demo.has(sym))return null;
+    var cs=G.cans[sym]; if(!cs||cs.length<60)return null;
+    var liq=ddLiquidity(sym); if(!liq.ok)return null;
+    var tp=calcTradePlan(sym); if(!tp)return null;
+    var ind=G.ind[sym]||{};
+    var atr=ind.atr>0?ind.atr:d.price*0.015;
+    var risk=tp.entry-tp.stop; if(!(risk>0))return null;
+    var stopATR=+(risk/atr).toFixed(2);
+    if(stopATR>4.0||stopATR<0.5)return null;          /* وقف غير قابل للإدارة */
+
+    var ev=ddEvidence(d);
+    if(ev.C.length>=4)return null;                     /* تعارض صريح */
+
+    var launch = (typeof ddLaunch==='function') ? ddLaunch(sym,d) : null;
+    var fr     = (typeof ddFrac==='function')   ? ddFrac(sym)     : null;
+    var tm     = (typeof ddTiming==='function') ? ddTiming(sym)   : null;
+
+    var fracTarget=null,fracSrc=null,fracUp=null;
+    if(fr&&fr.ok&&fr.target&&fr.target>tp.entry*1.005){
+      fracTarget=fr.target; fracSrc=fr.targetSource;
+      fracUp=+((fracTarget-tp.entry)/tp.entry*100).toFixed(2);
+    }
+    var rr = fracTarget ? +((fracTarget-tp.entry)/risk).toFixed(2) : tp.rrFirst;
+    if(!(rr>0))return null;
+
+    var size=ddSize(tp.entry,tp.stop,liq,d.sec||SEC[sym[0]]||'أخرى',DD.regime.mult);
+    if(!size.ok||size.qty<1)return null;
+    var qty=Math.max(1,Math.floor(size.qty/2));        /* احتياطي = نصف مركز */
+
+    /* سبب عدم اجتيازه للبوابة الكاملة — يُعرض للمستخدم حرفياً */
+    var miss=[];
+    if(DD.mode==='launch'){
+      if(!launch) miss.push('تعذّر حساب الجاهزية');
+      else if(launch.score<DD.cfg.minLaunch) miss.push('الجاهزية '+launch.score+' دون العتبة '+DD.cfg.minLaunch);
+      if(d.masterScore<35) miss.push('النتيجة الموحّدة '+d.masterScore+' دون 35');
+      if(rr<1) miss.push('العائد '+rr+'R دون 1R');
+    }else{
+      if(ev.A.length===0&&ev.B.length<3) miss.push('لا دليل مؤكد و'+ev.B.length+' أدلة داعمة فقط');
+      if(d.masterScore<55) miss.push('النتيجة الموحّدة '+d.masterScore+' دون 55');
+      if(rr<DD.cfg.minRR) miss.push('العائد '+rr+'R دون '+DD.cfg.minRR+'R');
+    }
+    if(ev.C.length) miss.push(ev.C.length+' أدلة مضادة نشطة');
+    if(!miss.length) miss.push('لم يجتز بوابة داخلية');
+
+    var trigPrice = (fr&&fr.ok&&fr.target1) ? +(fr.target1*1.003).toFixed(2) : +(tp.entry*1.004).toFixed(2);
+    var finalTarget = fracTarget!=null ? fracTarget : tp.targets[0].price;
+    var verdict = (typeof calcEntryVerdict==='function') ? calcEntryVerdict(sym,tp) : null;
+
+    return {
+      sym:sym,name:d.name,price:d.price,pct:d.pct,sec:d.sec,mode:DD.mode,
+      action:'watch', label:'🟠 مرشّح احتياطي', color:'#fb923c', tier:'B',
+      gates:[{pass:true,label:'جودة البيانات',why:cs.length+' شمعة حقيقية'},
+             {pass:true,label:'السيولة والتنفيذ',why:liq.why},
+             {pass:false,label:'بوابة الترشيح الكاملة',why:miss.join(' · ')}],
+      ev:ev,tp:tp,verdict:verdict,size:size,liq:liq,atr:atr,rr:rr,
+      rrSrc:fracTarget?'هدف فراكتالي':'هدف هيكلي',stopATR:stopATR,
+      launch:launch,timing:tm,frac:fr,
+      fracTarget:fracTarget,fracSrc:fracSrc,fracUp:fracUp,
+      finalTarget:finalTarget,qty:qty,execPrice:trigPrice,
+      trigger:'مراقبة فقط — '+miss[0]+'. لا تدخل إلا بإغلاق فوق '+trigPrice+' ر.س.',
+      sessionsToT: atr>0 ? Math.ceil((finalTarget-trigPrice)/atr) : null,
+      masterScore:d.masterScore, missWhy:miss,
+      rank: -1000 + (launch?launch.score:0)*8 + (rr||0)*4 + d.masterScore/10 - ev.C.length*20
+    };
+  }catch(e){ return null; }
+}
+
+function padToTarget(n){
+  try{
+    if(!DD.ran||!DD.regime)return;
+    DD.results.forEach(function(r){ if(!r.tier) r.tier='A'; });
+    if(DD.results.length>=n)return;
+    var have={}; DD.results.forEach(function(r){have[r.sym]=1;});
+    var extras=[];
+    for(var i=0;i<_advData.length;i++){
+      var d=_advData[i];
+      if(have[d.sym])continue;
+      var c=buildBackup(d);
+      if(c)extras.push(c);
+    }
+    extras.sort(function(a,b){return b.rank-a.rank;});
+    DD.results=DD.results.concat(extras.slice(0,n-DD.results.length));
+  }catch(e){console.warn('[addon] padToTarget',e);}
+}
+
+var _origRun = window.ddRun2 || window.ddRun;
+function ddRunPadded(){
+  _origRun();
+  padToTarget(20);
+  var a=DD.results.filter(function(r){return r.tier==='A';}).length;
+  var b=DD.results.length-a;
+  var el=document.getElementById('dd-count');
+  if(el) el.innerHTML='<b style="color:#0ecf7e">'+a+'</b> اجتاز كل البوابات · <b style="color:#fb923c">'+b+'</b> مرشّح احتياطي';
+  var fb=document.getElementById('fb-decision'); if(fb)fb.textContent=DD.results.length;
+  if(typeof _filter!=='undefined' && _filter==='decision') renderResults();
+}
+window.ddRun=ddRunPadded; window.ddRun2=ddRunPadded;
+
+/* ═══════════════ ② وضع المضارب — بطاقات بدل الجدول ═══════════════ */
+var SIMPLE = (localStorage.getItem('tp_simple')!==null)
+  ? localStorage.getItem('tp_simple')==='1'
+  : window.matchMedia('(max-width:900px)').matches;   /* افتراضياً مفعّل على الجوال */
+
+function simpleHost(){
+  var h=document.getElementById('dd-simple');
+  if(!h){
+    h=document.createElement('div'); h.id='dd-simple';
+    var bar=document.getElementById('dd-bar');
+    if(bar&&bar.parentNode) bar.parentNode.insertBefore(h,bar.nextSibling);
+    else document.getElementById('filters-panel').appendChild(h);
+  }
+  return h;
+}
+function initSimpleBtn(){
+  var bar=document.getElementById('dd-bar'); if(!bar||document.getElementById('tp-simple-btn'))return;
+  var b=document.createElement('button');
+  b.id='tp-simple-btn'; b.textContent='📱 وضع المضارب';
+  b.onclick=function(){
+    SIMPLE=!SIMPLE; localStorage.setItem('tp_simple',SIMPLE?'1':'0');
+    b.classList.toggle('on',SIMPLE); renderResults();
+  };
+  b.classList.toggle('on',SIMPLE);
+  bar.insertBefore(b,bar.firstChild.nextSibling);
+}
+
+function money(n){ return (n==null||!isFinite(n))?'—':Math.round(n).toLocaleString('en-US'); }
+
+function actionLine(r){
+  var p=r.price, x=r.execPrice;
+  switch(r.action){
+    case 'buy':      return 'اشترِ الآن من السوق — السعر <b>'+p.toFixed(2)+'</b> ر.س.';
+    case 'buy_stop': return 'لا تشترِ الآن. ضع أمر شراء موقوف عند <b>'+x+'</b> ر.س. إن لم يصلها فلا صفقة.';
+    case 'buy_half': return 'اشترِ <b>نصف</b> الكمية الآن فقط، والنصف الثاني بعد إغلاق فوق <b>'+r.finalTarget+'</b>.';
+    case 'wait':     return 'انتظر. لا تدخل إلا عند <b>'+x+'</b> ر.س — الدخول فوقها مطاردة سعر.';
+    default:         return 'مراقبة فقط اليوم. لا أمر تنفيذ.';
+  }
+}
+function whenLine(r){
+  var t=r.timing;
+  if(!t||!t.ok) return 'التوقيت: لا يوجد قياس زمني — القرار من السعر وحده.';
+  if(!t.significant) return 'التوقيت: لا دورة زمنية مؤكدة على هذا السهم — القرار من السعر وحده (وهذه حال أغلب الأسهم).';
+  if(t.nextValley) return 'التوقيت: قاع الدورة متوقع خلال <b>'+t.nextValley.barsAhead+'±'+t.nextValley.sdBars+'</b> جلسة'+(t.coherent?' — الدورة أصابت سابقاً خارج العيّنة.':' — الدورة لم تُثبت إصابتها خارج العيّنة، خذها كتنبيه لا كإشارة.');
+  return 'التوقيت: دورة '+t.period+' جلسة، الموقع الحالي '+t.cyclePos+'٪'+(t.risingPhase?' (مرحلة صاعدة).':'.');
+}
+
+function cardHTML(r,i){
+  var risk = r.qty*(r.execPrice - r.tp.stop);
+  var gain = r.qty*(r.finalTarget - r.execPrice);
+  var lp   = ((r.execPrice-r.tp.stop)/r.execPrice*100).toFixed(1);
+  var gp   = ((r.finalTarget-r.execPrice)/r.execPrice*100).toFixed(1);
+  var ready = r.launch?(' · جاهزية '+r.launch.score+'/100'):'';
+  return ''+
+  '<div class="tpc" style="--c:'+r.color+'">'+
+    '<div class="tpc-h">'+
+      '<span class="tpc-rank">'+(i+1)+'.</span>'+
+      '<span class="tpc-sym">'+r.sym+'</span>'+
+      '<span class="tpc-nm">'+r.name+'</span>'+
+      '<span class="tpc-badge">'+r.label+'</span>'+
+    '</div>'+
+    '<div class="tpc-act">'+actionLine(r)+'</div>'+
+    '<div class="tpc-g">'+
+      '<div><i>ادخل عند</i><b style="color:#FFD700">'+r.execPrice+'</b></div>'+
+      '<div><i>اخرج خسارة</i><b style="color:#f04458">'+r.tp.stop+'</b></div>'+
+      '<div><i>اخرج ربح</i><b style="color:#0ecf7e">'+r.finalTarget+'</b></div>'+
+      '<div><i>الكمية</i><b>'+money(r.qty)+'</b></div>'+
+    '</div>'+
+    '<div class="tpc-money">لو ضُرب الوقف: <b style="color:#f04458">−'+money(risk)+' ر.س</b> ('+lp+'٪) · '+
+      'لو بلغ الهدف: <b style="color:#0ecf7e">+'+money(gain)+' ر.س</b> ('+gp+'٪) · العائد/المخاطرة <b>1:'+r.rr+'</b></div>'+
+    '<div class="tpc-when">'+whenLine(r)+ready+'</div>'+
+    '<div class="tpc-exit">'+
+      '🔴 <b>اخرج فوراً</b> إذا أغلق تحت <b>'+r.tp.stop+'</b> — بلا مراجعة.<br>'+
+      '🟡 بِع <b>نصف</b> الكمية عند <b>'+r.finalTarget+'</b> وانقل الوقف إلى <b>'+r.execPrice+'</b> (تعادل).<br>'+
+      '⏱ إن مرّت <b>'+DD.cfg.maxHoldBars+'</b> جلسة والسهم واقف — اخرج وحرّر السيولة.'+
+    '</div>'+
+    '<div class="tpc-foot">'+
+      '<button class="tpc-btn buy" onclick="event.stopPropagation();ddAddFromDecision(\''+r.sym+'\')">✅ سجّل المركز</button>'+
+      '<button class="tpc-btn info" onclick="event.stopPropagation();ddReport2(\''+r.sym+'\')">📄 التفاصيل</button>'+
+      '<span class="tpc-why">'+(r.tier==='B'?('احتياطي: '+r.missWhy[0]):(r.ev.A.length+' دليل مؤكد · '+r.ev.B.length+' داعم'+(r.ev.C.length?' · '+r.ev.C.length+' مضاد':'')))+'</span>'+
+    '</div>'+
+  '</div>';
+}
+
+function exitAlertsHTML(){
+  if(!DD.book.length) return '';
+  var out=[];
+  for(var i=0;i<DD.book.length;i++){
+    var p=DD.book[i], e;
+    try{ e=ddExitCheck(p); }catch(err){ continue; }
+    if(e.act==='hold') continue;
+    out.push('<div class="tpx"><b>'+e.label+' — '+p.sym+' '+(p.name||'')+'</b><br>'+
+      'الكمية: <b>'+money(e.qty||p.qty)+'</b> من '+money(p.qty)+' · السعر '+e.cur+' · الوضع '+e.pnlR+'R ('+(e.pnlPct>0?'+':'')+e.pnlPct+'٪)<br>'+
+      '<span style="color:#c8d0e0">'+e.why+'</span>'+
+      (e.newStop?'<br>↳ انقل الوقف إلى <b>'+e.newStop+'</b> ر.س':'')+
+      '<div style="margin-top:6px"><button class="tpc-btn info" onclick="ddBook()">📓 إدارة المراكز</button></div></div>');
+  }
+  if(!out.length) return '<div class="tps-head" style="border-color:rgba(14,207,126,.3)">✅ لا يوجد أمر بيع اليوم — كل مراكزك المسجّلة ضمن قواعدها.</div>';
+  return '<div class="tps-head" style="border-color:rgba(240,68,88,.4);color:#f04458"><b>🔴 نفّذ هذه أولاً — قرارات خروج على مراكزك</b></div>'+out.join('');
+}
+
+function renderCards(){
+  var host=simpleHost(); host.classList.add('on');
+  var wrap=document.getElementById('results-wrap'); if(wrap)wrap.style.display='none';
+
+  if(!DD.ran){
+    host.innerHTML='<div class="tps-head">① اضغط <b>🔬 مسح شامل</b> · ② ثم <b>🧭 احسب القرارات</b>.<br>بعدها ستظهر هنا أفضل ٢٠ فرصة بصيغة: ادخل هنا · اخرج هنا · بهذه الكمية.</div>';
+    return;
+  }
+  var rows=DD.results.slice(0,20);
+  var a=rows.filter(function(r){return r.tier==='A';}).length;
+  var reg=DD.regime&&DD.regime.ok
+    ? '<b style="color:'+DD.regime.color+'">'+DD.regime.label+'</b> — '+DD.regime.b50+'٪ من السوق فوق MA50 · حجم المركز مضروب في '+DD.regime.mult
+    : (DD.regime?DD.regime.why:'—');
+
+  host.innerHTML =
+    exitAlertsHTML()+
+    '<div class="tps-head">🌍 '+reg+'<br>'+
+      '📋 <b>'+rows.length+'</b> فرصة معروضة · <b style="color:#0ecf7e">'+a+'</b> اجتازت كل البوابات · '+
+      '<b style="color:#fb923c">'+(rows.length-a)+'</b> مرشّح احتياطي (نصف مركز، ومكتوب سبب عدم اجتيازه).<br>'+
+      '<span style="color:var(--t3)">الترتيب بالأولوية لا بالربح المتوقع. لا توجد نسبة نجاح هنا لأنها لا تُحسب من الشارت.</span></div>'+
+    (rows.length?rows.map(cardHTML).join(''):'<div class="tps-head">لا فرصة اجتازت العتبات في هذا الوضع. جرّب الوضع الآخر أو خفّض عتبة الجاهزية من 📓 مراكزي ← الإعدادات.</div>');
+}
+function hideCards(){
+  var h=document.getElementById('dd-simple'); if(h)h.classList.remove('on');
+  var wrap=document.getElementById('results-wrap'); if(wrap)wrap.style.display='';
+}
+
+/* اعتراض العرض: البطاقات في وضع المضارب، والجدول فيما عداه */
+var _origTable = window.ddRenderTable2;
+window.ddRenderTable2 = function(){
+  if(SIMPLE){
+    try{ renderCards(); }catch(e){ console.warn('[addon] cards',e); hideCards(); _origTable(); }
+    if(DD.ran) _visibleSyms = DD.results.slice(0,20).map(function(r){return r.sym;});
+  }else{
+    hideCards();
+    _origTable();
+  }
+};
+var _origRender = window.renderResults;
+window.renderResults = function(){
+  _origRender();
+  if(typeof _filter!=='undefined' && _filter!=='decision') hideCards();
+};
+
+/* ═══════════════ التشغيل ═══════════════ */
+function boot(){
+  initIBToggle();
+  initSimpleBtn();
+  simpleHost();
+  /* فتح غرفة القرار مباشرة على الجوال — هي الشاشة التي يحتاجها المضارب */
+  if(window.matchMedia('(max-width:900px)').matches && localStorage.getItem('tp_seen')!=='1'){
+    localStorage.setItem('tp_seen','1');
+    var tab=document.querySelector('.ftab[onclick*="\'decision\'"]');
+    if(tab && typeof setFilter==='function') setFilter('decision',tab);
+  }
+  setTimeout(resizeCharts,300);
+}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot);
+else boot();
+window.addEventListener('load',function(){setTimeout(boot,400);});
+
+})();
+</script>
 
 </body>
 </html>
