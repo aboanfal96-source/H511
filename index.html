@@ -237,6 +237,30 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-thumb{background:var(--c4);border-radius:2px}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* ══ 📋 العرض المبسّط — تبويب واحد: قائمة الجاهزة + شارت أسفلها ══ */
+#simple-mode-toggle{padding:5px 12px;border-radius:14px;cursor:pointer;font-size:10px;font-weight:700;border:1px solid rgba(14,207,126,.35);background:rgba(14,207,126,.08);color:#0ecf7e;font-family:inherit;margin-left:4px;transition:all .15s}
+#simple-mode-toggle.on{background:rgba(14,207,126,.28);box-shadow:0 0 0 2px rgba(14,207,126,.18)}
+#simple-bar{display:none;align-items:center;gap:10px;padding:12px 14px;background:linear-gradient(135deg,rgba(14,207,126,.13),rgba(255,215,0,.06));border-bottom:2px solid rgba(14,207,126,.35);flex-wrap:wrap}
+#simple-title{font-size:15px;font-weight:800;color:#0ecf7e}
+#simple-status{font-size:11px;color:var(--t2)}
+#simple-refresh,#simple-exit{padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;border:1px solid;font-family:inherit}
+#simple-refresh{background:rgba(74,158,255,.12);border-color:rgba(74,158,255,.35);color:#4a9eff}
+#simple-exit{background:rgba(255,255,255,.04);border-color:var(--bd2);color:var(--t2);margin-right:auto}
+body.simple-view #ftabs,
+body.simple-view .scan-bar,
+body.simple-view #radar-bar,
+body.simple-view #spectral-scan-bar,
+body.simple-view #dd-bar,
+body.simple-view #hint-bull,
+body.simple-view #hint-kb,
+body.simple-view .resize-handle{display:none!important}
+body.simple-view #simple-bar{display:flex}
+body.simple-view .main{flex-direction:column!important}
+body.simple-view .filters-panel{width:100%!important;min-width:0!important;max-height:50vh;border-left:none!important;border-bottom:2px solid var(--bd)}
+body.simple-view .right-panel{width:100%!important;min-width:0!important}
+@media(max-width:900px){body.simple-view .filters-panel{max-height:56vh}}
+
 /* ══════════════════════════════════════════════════
 /* ══════════════════════════════════════════════════
 /* ══ MARKET BRAIN ══ */
@@ -303,6 +327,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
     <div class="ss-drop" id="ss-drop"></div>
   </div>
   <div class="top-r">
+    <button id="simple-mode-toggle" onclick="toggleSimpleMode()" title="عرض مبسّط: قائمة واحدة بالأسهم الجاهزة فقط + الشارت أسفلها">📋 العرض المبسّط</button>
     <div class="zoom-ctrl">
       <button class="zoom-btn" onclick="zoomUI(-1)" title="تصغير">−</button>
       <span id="zoom-val">100%</span>
@@ -348,7 +373,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <div class="ftab" onclick="setFilter('instvol',this)"><span class="ficon">🏦</span> حجم مؤسسي <span class="fbadge" id="fb-instvol" style="background:rgba(251,146,60,.12);color:#fb923c;border-color:rgba(251,146,60,.25)">0</span></div>
       <div class="ftab" onclick="setFilter('revcandle',this)"><span class="ficon">🕯️</span> شمعة انعكاسية <span class="fbadge" id="fb-revcandle" style="background:rgba(236,72,153,.12);color:#ec4899;border-color:rgba(236,72,153,.25)">0</span></div>
     </div>
-    <div style="padding:6px 12px;font-size:9px;color:var(--t3);border-bottom:1px solid var(--bd)">⏱ و 🎯 و 📐 تعرض افتراضياً الإشارات الصعودية المؤكدة فقط (ارتداد فعلي، مو مجرد مرور بالمستوى)</div>
+    <div id="hint-bull" style="padding:6px 12px;font-size:9px;color:var(--t3);border-bottom:1px solid var(--bd)">⏱ و 🎯 و 📐 تعرض افتراضياً الإشارات الصعودية المؤكدة فقط (ارتداد فعلي، مو مجرد مرور بالمستوى)</div>
     <div id="dd-bar" style="display:none;padding:8px 12px;border-bottom:1px solid var(--bd);align-items:center;gap:9px;flex-wrap:wrap;background:linear-gradient(135deg,rgba(14,207,126,.05),rgba(255,215,0,.03))">
       <button onclick="ddRun()" class="scan-btn" style="background:rgba(14,207,126,.14);border:1px solid rgba(14,207,126,.4);color:#0ecf7e;flex-shrink:0">🧭 احسب القرارات</button>
       <div style="display:flex;gap:0;border:1px solid var(--bd2);border-radius:5px;overflow:hidden;flex-shrink:0">
@@ -383,7 +408,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <button id="spectral-scan-btn" onclick="runSpectralScanAll()" class="scan-btn scan-sec" style="background:rgba(255,215,0,.12)!important;border-color:rgba(255,215,0,.3)!important;color:#FFD700!important;flex-shrink:0">🔄 امسح الآن لكل الأسهم</button>
       <span id="spectral-scan-prog" style="font-size:11px;color:var(--t3)">لم يتم المسح بعد — اضغط الزر لبدء اختبار كل الأسهم</span>
     </div>
-    <div style="padding:5px 12px;font-size:9px;color:var(--t3);border-bottom:1px solid var(--bd)">⌨️ تنقل: <b style="color:var(--t2)">↑↓</b> صفوف · <b style="color:var(--t2)">←→</b> تبويبات · <b style="color:var(--t2)">Enter</b> فتح السهم · <b style="color:var(--t2)">Space</b> فتح + شرح · <b style="color:var(--t2)">1-9</b> قفز لتبويب · <b style="color:var(--t2)">Esc</b> إلغاء</div>
+    <div id="hint-kb" style="padding:5px 12px;font-size:9px;color:var(--t3);border-bottom:1px solid var(--bd)">⌨️ تنقل: <b style="color:var(--t2)">↑↓</b> صفوف · <b style="color:var(--t2)">←→</b> تبويبات · <b style="color:var(--t2)">Enter</b> فتح السهم · <b style="color:var(--t2)">Space</b> فتح + شرح · <b style="color:var(--t2)">1-9</b> قفز لتبويب · <b style="color:var(--t2)">Esc</b> إلغاء</div>
 
     <!-- Scan Controls -->
     <div class="scan-bar">
@@ -8001,6 +8026,107 @@ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded'
 else boot();
 window.addEventListener('load',function(){setTimeout(boot,500);});
 
+})();
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   📋 العرض المبسّط — Simplified View
+   عرض مبسّط بتبويب واحد: قائمة «الأسهم الجاهزة الآن» (من غرفة القرار،
+   وضع «جاهزة للانطلاق» الذي يشترط توافقاً فنياً + توافقاً زمنياً معاً)
+   والشارت أسفلها مباشرة مع كل أدوات التكبير والرسم كما هي.
+   كل الفلاتر الأخرى تبقى موجودة وتعمل في الخلفية (المسح الشامل يغذّيها
+   جميعاً) لكنها لا تُعرض — الهدف تبسيط الواجهة لا تعطيل المحرّك.
+   ══════════════════════════════════════════════════════════════ */
+(function(){
+  const LS_KEY='tp_simple_view';
+  let simpleTimer=null, simpleBusy=false;
+
+  function isSimpleMode(){
+    const v=localStorage.getItem(LS_KEY);
+    if(v===null) return true; /* أول زيارة على الإطلاق: افتراضياً مبسّط — المنصة مُهداة */
+    return v==='1';
+  }
+
+  function ensureBar(){
+    if(document.getElementById('simple-bar')) return;
+    const bar=document.createElement('div');
+    bar.id='simple-bar';
+    bar.innerHTML=
+      '<span id="simple-title">📈 الأسهم الجاهزة الآن</span>'+
+      '<span id="simple-status">جاري التجهيز…</span>'+
+      '<button id="simple-refresh" onclick="simpleRefreshNow()">🔄 تحديث</button>'+
+      '<button id="simple-exit" onclick="toggleSimpleMode()">↩️ الوضع الكامل (لكل الفلاتر)</button>';
+    const panel=document.getElementById('filters-panel');
+    if(panel) panel.insertBefore(bar, panel.firstChild);
+  }
+
+  function forceCards(){
+    const btn=document.getElementById('tp-simple-btn');
+    if(btn && !btn.classList.contains('on')) btn.click();
+  }
+
+  function goDecisionTab(){
+    const tab=[...document.querySelectorAll('.ftab')].find(t=>(t.getAttribute('onclick')||'').includes("'decision'"));
+    if(tab && typeof setFilter==='function') setFilter('decision', tab);
+  }
+
+  async function simpleRefresh(first){
+    if(simpleBusy) return; simpleBusy=true;
+    const status=document.getElementById('simple-status');
+    try{
+      if(status) status.textContent = first ? '⏳ جاري تجهيز القائمة — قد يستغرق دقيقة…' : '⏳ يجري التحديث…';
+      if(typeof _advData==='undefined' || !_advData.length){
+        if(typeof runFullScan==='function') await runFullScan();
+      }
+      forceCards();
+      if(typeof ddRun==='function') ddRun();
+      goDecisionTab();
+      if(status){
+        const t=(typeof Tm==='function')?Tm():new Date().toLocaleTimeString('ar-SA',{hour:'2-digit',minute:'2-digit'});
+        status.textContent='✅ آخر تحديث: '+t;
+      }
+    }catch(e){
+      if(status) status.textContent='⚠️ تعذّر التحديث الآن — ستتم إعادة المحاولة تلقائياً';
+      console.warn('[simple-view]',e);
+    }
+    simpleBusy=false;
+  }
+  window.simpleRefreshNow=function(){ simpleRefresh(false); };
+
+  async function simpleBoot(){
+    ensureBar();
+    document.body.classList.add('simple-view');
+    updateToggleBtn();
+    await simpleRefresh(true);
+    if(simpleTimer) clearInterval(simpleTimer);
+    /* تحديث تلقائي كل 5 دقائق دون أي تدخل من المستخدم */
+    simpleTimer=setInterval(()=>simpleRefresh(false), 5*60*1000);
+  }
+
+  function exitSimpleView(){
+    document.body.classList.remove('simple-view');
+    if(simpleTimer){clearInterval(simpleTimer);simpleTimer=null;}
+    updateToggleBtn();
+  }
+
+  function updateToggleBtn(){
+    const b=document.getElementById('simple-mode-toggle');
+    if(b) b.classList.toggle('on', isSimpleMode());
+  }
+
+  window.toggleSimpleMode=function(){
+    if(isSimpleMode()){ localStorage.setItem(LS_KEY,'0'); exitSimpleView(); }
+    else{ localStorage.setItem(LS_KEY,'1'); simpleBoot(); }
+  };
+
+  function init(){
+    updateToggleBtn();
+    if(isSimpleMode()) simpleBoot();
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(init,700));
+  else setTimeout(init,700);
+  window.addEventListener('load',()=>setTimeout(()=>{ updateToggleBtn(); if(isSimpleMode() && !simpleTimer) simpleBoot(); },900));
 })();
 </script>
 
