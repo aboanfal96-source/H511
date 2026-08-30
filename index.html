@@ -255,11 +255,17 @@ body.simple-view #dd-bar,
 body.simple-view #hint-bull,
 body.simple-view #hint-kb,
 body.simple-view .resize-handle{display:none!important}
-body.simple-view #simple-bar{display:flex}
-body.simple-view .main{flex-direction:column!important}
-body.simple-view .filters-panel{width:100%!important;min-width:0!important;max-height:50vh;border-left:none!important;border-bottom:2px solid var(--bd)}
-body.simple-view .right-panel{width:100%!important;min-width:0!important}
-@media(max-width:900px){body.simple-view .filters-panel{max-height:56vh}}
+body.simple-view #simple-bar{display:flex;flex-shrink:0}
+body.simple-view .main{flex-direction:column!important;overflow:hidden!important}
+body.simple-view .filters-panel{width:100%!important;min-width:0!important;height:48vh!important;max-height:48vh!important;flex:none!important;border-left:none!important;border-bottom:2px solid var(--bd);overflow:hidden!important}
+body.simple-view #dd-simple{flex:1;min-height:0;overflow-y:auto!important;-webkit-overflow-scrolling:touch;padding:8px 12px}
+body.simple-view .right-panel{width:100%!important;min-width:0!important;flex:1;min-height:0}
+@media(max-width:900px){
+  body.simple-view{overflow-y:auto!important;height:auto!important;min-height:100dvh}
+  body.simple-view .main{overflow-y:auto!important;height:auto!important}
+  body.simple-view .filters-panel{height:52vh!important;max-height:52vh!important}
+  body.simple-view .right-panel{min-height:60vh}
+}
 
 /* ══════════════════════════════════════════════════
 /* ══════════════════════════════════════════════════
@@ -7852,7 +7858,7 @@ function cardHTML(r,i){
   var risk=r.qty*(r.execPrice-r.tp.stop), gain=r.qty*(r.finalTarget-r.execPrice);
   var lp=((r.execPrice-r.tp.stop)/r.execPrice*100).toFixed(1);
   var gp=((r.finalTarget-r.execPrice)/r.execPrice*100).toFixed(1);
-  return '<div class="tpc" style="--c:'+r.color+'">'+
+  return '<div class="tpc" style="--c:'+r.color+';cursor:pointer" onclick="selectStock(\''+r.sym+'\');document.getElementById(\'chart-block\')?.scrollIntoView({behavior:\'smooth\',block:\'start\'})">'+
     '<div class="tpc-h"><span class="tpc-rank">'+(i+1)+'.</span>'+
       '<span class="tpc-sym">'+r.sym+'</span><span class="tpc-nm">'+r.name+'</span>'+
       '<span class="tpc-badge">'+r.label+'</span></div>'+
