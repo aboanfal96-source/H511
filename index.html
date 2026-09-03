@@ -438,6 +438,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <button class="pat-btn" id="pat-ew-btn" onclick="togglePattern('ew')"><span>🌊</span> إيليوت</button>
       <button class="pat-btn" id="pat-wolfe-btn" onclick="togglePattern('wolfe')"><span>🐺</span> موجة الذئب</button>
       <button class="pat-btn" id="pat-chan-btn" onclick="togglePattern('channel')"><span>📐</span> القناة السعرية</button>
+      <button class="pat-btn" id="pat-frac-btn" onclick="togglePattern('frac')"><span>🎯</span> الفراكتال</button>
       <button class="pat-clear" onclick="clearPatterns()">مسح الرسم ✕</button>
     </div>
     <div class="pat-info" id="pat-info"></div>
@@ -1163,7 +1164,7 @@ function parseY(res,sym){
   const last=cs[cs.length-1],pv=+(m.previousClose||m.chartPreviousClose||cs[cs.length-2]?.close||last.open).toFixed(2);
   return{sym,cs,price:+(m.regularMarketPrice||last.close).toFixed(2),pv,hi:last.high,lo:last.low,op:last.open,vo:last.volume};
 }
-function applyY(sym,d){G.demo.delete(sym);G.failed.delete(sym);G.cans[sym]=d.cs;G.pr[sym]=d.price;G.op[sym]=d.op;G.hi[sym]=d.hi;G.lo[sym]=d.lo;G.vo[sym]=d.vo;G.ch[sym]=+(d.price-d.pv).toFixed(2);G.pc[sym]=+((d.price-d.pv)/d.pv*100).toFixed(2);calcInd(sym);if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];}
+function applyY(sym,d){G.demo.delete(sym);G.failed.delete(sym);G.cans[sym]=d.cs;G.pr[sym]=d.price;G.op[sym]=d.op;G.hi[sym]=d.hi;G.lo[sym]=d.lo;G.vo[sym]=d.vo;G.ch[sym]=+(d.price-d.pv).toFixed(2);G.pc[sym]=+((d.price-d.pv)/d.pv*100).toFixed(2);calcInd(sym);if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];if(G.fracCache)delete G.fracCache[sym];}
 /* 🛠️ إصلاح: حُذف الاعتماد على وسطاء CORS عامّين (allorigins / corsproxy).
    ثلاثة أسباب: (1) أطراف ثالثة غير موثوقة تتوسّط كل طلبات السوق،
    (2) لا ضمان توفّر ولا اتفاقية خدمة — تسقط بلا إنذار فتبقى المنصة على
@@ -1471,180 +1472,369 @@ function calcFVGRebalance(cs){
 }
 
 /* ══ ELLIOTT & HARMONIC ══ */
-function calcZigZag(cs,depth=4){if(!cs||cs.length<depth*2)return[];const n=cs.length,pvts=[];for(let i=depth;i<n-depth;i++){const isH=cs[i].high>=Math.max(...cs.slice(i-depth,i).map(c=>c.high))&&cs[i].high>=Math.max(...cs.slice(i+1,i+depth+1).map(c=>c.high));const isL=cs[i].low<=Math.min(...cs.slice(i-depth,i).map(c=>c.low))&&cs[i].low<=Math.min(...cs.slice(i+1,i+depth+1).map(c=>c.low));if(isH)pvts.push({i,p:cs[i].high,type:'H'});if(isL)pvts.push({i,p:cs[i].low,type:'L'});}pvts.sort((a,b)=>a.i-b.i);const clean=[];for(const pv of pvts){if(!clean.length){clean.push(pv);continue;}const last=clean[clean.length-1];if(last.type===pv.type){if(pv.type==='H'&&pv.p>last.p)clean[clean.length-1]=pv;else if(pv.type==='L'&&pv.p<last.p)clean[clean.length-1]=pv;}else{if(Math.abs(pv.p-last.p)/last.p*100>=0.3)clean.push(pv);}}return clean;}
-
-function detectHarmonic(cs){
-  const zz=calcZigZag(cs,3);if(zz.length<4)return null;
-  const DEFS=[['Gartley',.58,.65,.35,.9,1.2,1.7,.73,.82,true],['Bat',.35,.52,.35,.9,1.6,2.7,.82,.9,true],['Butterfly',.73,.82,.35,.9,1.6,2.26,1.25,1.4,false],['Crab',.35,.62,.35,.9,2.22,3.14,1.58,1.66,true],['Shark',.44,.52,1.1,1.65,1.6,2.26,.85,1.15,true],['Cypher',.38,.62,1.1,1.44,.7,.8,.77,.82,true]];
-
-  /* ══ 1) LIVE / STILL-FORMING SETUP — checked FIRST and preferred ══
-     X-A-B-C are the last 4 CONFIRMED zigzag pivots; D has genuinely not
-     happened yet — we measure the live/current price as a tentative D so
-     the user sees the setup with the last leg still open, *before* price
-     arrives at the target, instead of only ever seeing it after the fact. */
-  const tail=zz.slice(-4);
-  let live=null;
-  if(tail.length===4){
-    const[X,A,B,C]=tail;
-    const XA=Math.abs(A.p-X.p),AB=Math.abs(B.p-A.p),BC=Math.abs(C.p-B.p);
-    if(XA&&AB&&BC){
-      const rXAB=AB/XA,rABC=BC/AB;
-      const liveP=cs[cs.length-1].close;
-      const dirBC=Math.sign(C.p-B.p)||1,dirCD=-dirBC; /* CD alternates direction vs BC, standard harmonic structure */
-      const CD=Math.abs(liveP-C.p),rBCD=BC>0?CD/BC:0;
-      let bestLive=null,bestLiveScore=0;
-      for(const[name,xl,xh,al,ah,bl,bh,,,bull]of DEFS){
-        if(rXAB<xl||rXAB>xh||rABC<al||rABC>ah)continue;
-        if(rBCD>bh*1.08)continue; /* already blown well past the whole PRZ — no longer "still forming" */
-        const score=100-Math.abs(rXAB-(xl+xh)/2)/(xl+xh)*40-Math.abs(rABC-(al+ah)/2)/(al+ah)*30;
-        if(score>bestLiveScore){
-          bestLiveScore=score;
-          const zoneA=C.p+dirCD*bl*BC,zoneB=C.p+dirCD*bh*BC;
-          const zoneLo=Math.min(zoneA,zoneB),zoneHi=Math.max(zoneA,zoneB);
-          const bullish=bull?(dirCD<0):(dirCD>0);
-          const pts=[{i:X.i,time:cs[X.i].time,price:X.p,label:'X'},{i:A.i,time:cs[A.i].time,price:A.p,label:'A'},{i:B.i,time:cs[B.i].time,price:B.p,label:'B'},{i:C.i,time:cs[C.i].time,price:C.p,label:'C'},{i:cs.length-1,time:cs[cs.length-1].time,price:liveP,label:'D؟ (الآن)'}];
-          const pct=Math.max(0,Math.min(100,Math.round(rBCD/bl*100)));
-          bestLive={name,sig:bullish?'شراء':'بيع',forming:true,live:true,completion:Math.min(99,pct),score:Math.round(score),points:pts,
-            targets:{t1:+zoneLo.toFixed(2),t2:+zoneHi.toFixed(2),t3:+A.p.toFixed(2),sl:+(bullish?X.p-Math.abs(A.p-X.p)*0.06:X.p+Math.abs(A.p-X.p)*0.06).toFixed(2),bullish},
-            why:`نموذج ${name} ${bullish?'صعودي':'هبوطي'} — لسا ما اكتمل (${Math.min(99,pct)}%) — منطقة الارتداد المتوقعة (PRZ) بين ${Math.min(zoneA,zoneB).toFixed(2)} و ${Math.max(zoneA,zoneB).toFixed(2)} — النسب: XAB=${rXAB.toFixed(3)} ABC=${rABC.toFixed(3)}`};
-        }
-      }
-      live=bestLive;
+/* ══════════════════════════════════════════════════════════════════════
+   ZIGZAG — أُضيف وسيط عتبة نسبية اختيارية (كان مثبّتاً على 0.3٪).
+   السلوك الافتراضي لم يتغيّر، فبقية المنصة تستدعيه بوسيطين فقط.
+   ══════════════════════════════════════════════════════════════════════ */
+function calcZigZag(cs,depth=4,minPct=0.3){
+  if(!cs||cs.length<depth*2)return[];
+  const n=cs.length,pvts=[];
+  for(let i=depth;i<n-depth;i++){
+    let isH=true,isL=true;
+    for(let j=i-depth;j<=i+depth;j++){
+      if(j===i)continue;
+      if(cs[j].high>cs[i].high)isH=false;
+      if(cs[j].low<cs[i].low)isL=false;
+    }
+    if(isH)pvts.push({i,p:cs[i].high,type:'H'});
+    if(isL)pvts.push({i,p:cs[i].low,type:'L'});
+  }
+  pvts.sort((a,b)=>a.i-b.i);
+  const clean=[];
+  for(const pv of pvts){
+    if(!clean.length){clean.push(pv);continue;}
+    const last=clean[clean.length-1];
+    if(last.type===pv.type){
+      if(pv.type==='H'&&pv.p>last.p)clean[clean.length-1]=pv;
+      else if(pv.type==='L'&&pv.p<last.p)clean[clean.length-1]=pv;
+    }else{
+      if(Math.abs(pv.p-last.p)/last.p*100>=minPct)clean.push(pv);
     }
   }
-  if(live)return live;
-
-  /* ══ 2) Fallback: most recent COMPLETED pattern (all 5 points already
-     confirmed pivots) — shown only when no live/still-forming setup
-     qualifies, purely for historical reference. ══ */
-  let best=null,bestScore=0;
-  for(let xi=0;xi<=zz.length-5;xi++){const X=zz[xi],A=zz[xi+1],B=zz[xi+2],C=zz[xi+3],D=zz[xi+4];const XA=Math.abs(A.p-X.p);if(!XA)continue;const AB=Math.abs(B.p-A.p),BC=Math.abs(C.p-B.p),CD=Math.abs(D.p-C.p);if(!AB||!BC)continue;const rXAB=AB/XA,rABC=BC/AB,rBCD=BC>0?CD/BC:0;for(const[name,xl,xh,al,ah,bl,bh,,,bull]of DEFS){if(rXAB<xl||rXAB>xh||rABC<al||rABC>ah)continue;const bcdOk=rBCD>=bl&&rBCD<=bh;if(!bcdOk)continue;const score=100-Math.abs(rXAB-(xl+xh)/2)/(xl+xh)*40-Math.abs(rABC-(al+ah)/2)/(al+ah)*30-Math.abs(rBCD-(bl+bh)/2)/(bl+bh)*30;if(score>bestScore){bestScore=score;const bullish=bull?(D.p<X.p):(D.p>X.p);
-    const pts=[{i:X.i,time:cs[X.i].time,price:X.p,label:'X'},{i:A.i,time:cs[A.i].time,price:A.p,label:'A'},{i:B.i,time:cs[B.i].time,price:B.p,label:'B'},{i:C.i,time:cs[C.i].time,price:C.p,label:'C'},{i:D.i,time:cs[D.i].time,price:D.p,label:'D'}];
-    const cdLen=C.p-D.p;
-    const t1=D.p+0.382*cdLen,t2=D.p+0.618*cdLen,t3=A.p;
-    const xaBuf=Math.abs(A.p-X.p)*0.06;
-    const sl=bullish?X.p-xaBuf:X.p+xaBuf;
-    best={name,sig:bullish?'شراء':'بيع',forming:false,live:false,completion:100,score:Math.round(score),points:pts,
-      targets:{t1:+t1.toFixed(2),t2:+t2.toFixed(2),t3:+t3.toFixed(2),sl:+sl.toFixed(2),bullish},
-      why:`نموذج ${name} ${bullish?'صعودي':'هبوطي'} — مكتمل بالكامل (تاريخي) — النسب: XAB=${rXAB.toFixed(3)} ABC=${rABC.toFixed(3)} BCD=${rBCD.toFixed(3)}`};}}}
-  return best;
+  return clean;
 }
 
-function detectElliott(cs){
-  const cl=cs.map(c=>c.close),n=cl.length;if(n<30)return{sig:'محايد',wave:0,why:'بيانات غير كافية',points:[]};
-  const zz=calcZigZag(cs,3);
+/* أداة صغيرة: تقاطع مجالين سعريين */
+function _ovl(a,b){const lo=Math.max(a[0],b[0]),hi=Math.min(a[1],b[1]);return hi>=lo?[lo,hi]:null;}
+function _mid(r){return (r[0]+r[1])/2;}
+/* انحراف مِعياري 0..1 عن منتصف المجال (0 = مثالي، 1 = على الحافة) */
+function _dev(v,r){const m=(r[0]+r[1])/2,h=(r[1]-r[0])/2||1e-9;return Math.min(1.5,Math.abs(v-m)/h);}
+/* متوسط المسافة الزمنية بين الشموع — لإسقاط الأهداف للأمام */
+function _barStep(cs){
+  const n=cs.length;if(n<3)return 86400;
+  const d=[];for(let i=n-1;i>Math.max(0,n-30);i--)d.push(cs[i].time-cs[i-1].time);
+  d.sort((a,b)=>a-b);return d[Math.floor(d.length/2)]||86400;
+}
 
-  /* ══ Preferred: catch the wave at its START — take the last 3 confirmed
-     zigzag pivots (A→B an impulsive leg, B→C a pullback), check the
-     pullback is a Fibonacci-consistent correction (23.6%–85% of the
-     impulse), and if C is genuinely the most recent pivot (the next leg
-     hasn't run far yet), report this as a fresh launch point rather than
-     only recognizing the wave after it is already well underway. ══ */
-  if(zz.length>=3){
-    const[A,B,C]=zz.slice(-3);
-    const legAB=B.p-A.p,legBC=C.p-B.p;
-    if(legAB&&Math.sign(legBC)===-Math.sign(legAB)){
-      const retr=Math.abs(legBC/legAB);
-      if(retr>=0.236&&retr<=0.85){
-        const bullish=legAB>0;
-        const liveP=cl[n-1];
-        /* progressed already correctly reflects "how far along the expected
-           next leg" for EITHER direction, because dividing by the signed
-           legAB cancels the sign automatically:
-             bullish (legAB>0): liveP>C.p (rising) → positive/positive → +
-             bearish (legAB<0): liveP<C.p (falling) → negative/negative → +
-           A previous version re-multiplied by an extra ±1 here, which
-           double-flipped the bearish case and clamped it to 0 no matter
-           how far the move had actually progressed. */
-        const progressed=(liveP-C.p)/legAB;
-        const freshness=Math.max(0,Math.min(150,Math.round(progressed*100)));
-        const points=[
-          {i:A.i,time:cs[A.i].time,price:A.p,label:'P1'},
-          {i:B.i,time:cs[B.i].time,price:B.p,label:'P2'},
-          {i:C.i,time:cs[C.i].time,price:C.p,label:'P3'},
-          {i:n-1,time:cs[n-1].time,price:liveP,label:'؟ (الآن)'}
+/* ══════════════════════════════════════════════════════════════════════
+   🦋 HARMONIC — إعادة كتابة كاملة
+
+   ما الذي كان مكسوراً في النسخة السابقة:
+   ① نسبة D (وهي أهم نسبة في النموذج كله، وهي التي تفرّق جارتلي عن بات
+      عن الفراشة) كانت موجودة في الجدول لكن **لم تُقرأ أبداً**: حلقة
+      التفكيك `for(const[name,xl,xh,al,ah,bl,bh,,,bull]of DEFS)` تتخطّى
+      العمودين السابع والثامن بفاصلتين فارغتين. النتيجة: أي هيكل خماسي
+      تقريباً كان يُسمّى «جارتلي».
+   ② اتجاه النموذج كان يُقرأ من عمود ثابت في الجدول (`bull`)، وهو معكوس
+      للفراشة، ثم يُطبَّق بمعيارين مختلفين متناقضين في الفرعين: الفرع
+      الحيّ يقيس `dirCD`، والفرع المكتمل يقيس `D.p<X.p`. نموذج جارتلي
+      صعودي سليم يعطي D فوق X دائماً، فكان يُصنّف «بيع».
+   ③ منطقة PRZ كانت مبنيّة على إسقاط BC فقط، وتجاهلت ارتداد XA — وهي
+      الساق التي تُعرّف النموذج أصلاً. النموذج بلا تقاطع بين الحسابين
+      ليس نموذجاً، وكان يُقبل.
+   ④ الفرع المكتمل يختار أعلى نتيجة في التاريخ كله لا الأحدث، رغم أن
+      التعليق يقول «الأحدث».
+   ⑤ حقل `targets.t1/t2` يعني حافة PRZ في فرع، وهدف ربح في فرع آخر.
+
+   الاتجاه الآن هندسي بحت ولا يحتاج عموداً في الجدول:
+   نموذج صعودي ⇔ X قاع ⇔ A أعلى من X ⇔ D قاع نشتري عنده. انتهى.
+   ══════════════════════════════════════════════════════════════════════ */
+const HARM_DEFS=[
+  /* الاسم        AB/XA          BC/AB          CD/BC          نسبة D        مرجع D */
+  {name:'Gartley',  ab:[.550,.700],bc:[.382,.886],cd:[1.13,2.24], d:[.750,.830], dRef:'XA'},
+  {name:'Bat',      ab:[.350,.550],bc:[.382,.886],cd:[1.618,2.90],d:[.850,.930], dRef:'XA'},
+  {name:'Alt Bat',  ab:[.320,.420],bc:[.382,.886],cd:[2.00,3.618],d:[1.10,1.20], dRef:'XA'},
+  {name:'Butterfly',ab:[.750,.830],bc:[.382,.886],cd:[1.618,2.90],d:[1.20,1.45], dRef:'XA'},
+  {name:'Crab',     ab:[.382,.660],bc:[.382,.886],cd:[2.24,4.00], d:[1.55,1.72], dRef:'XA'},
+  {name:'DeepCrab', ab:[.850,.930],bc:[.382,.886],cd:[2.00,3.90], d:[1.55,1.72], dRef:'XA'},
+  {name:'Shark',    ab:[.382,.700],bc:[1.13,1.70], cd:[1.55,2.30],d:[.850,1.13], dRef:'XC'},
+  {name:'Cypher',   ab:[.382,.660],bc:[1.13,1.45], cd:[1.20,2.20],d:[.750,.820], dRef:'XC'}
+];
+
+/* يبني مجال PRZ لنموذج واحد على أساس X A B C — أو null إن لم يتقاطع
+   إسقاط BC مع ارتداد XA/XC (وهذا وحده يرفض معظم الإشارات الكاذبة). */
+function _harmPRZ(def,X,A,B,C){
+  const XA=A.p-X.p,AB=B.p-A.p,BC=C.p-B.p,XC=C.p-X.p;
+  if(!XA||!AB||!BC)return null;
+  const rAB=Math.abs(AB/XA),rBC=Math.abs(BC/AB);
+  if(rAB<def.ab[0]||rAB>def.ab[1])return null;
+  if(rBC<def.bc[0]||rBC>def.bc[1])return null;
+  const dirCD=-Math.sign(BC)||1;                 /* CD معاكسة لـ BC دائماً */
+  const zBC=[C.p+dirCD*def.cd[0]*Math.abs(BC), C.p+dirCD*def.cd[1]*Math.abs(BC)];
+  const base=def.dRef==='XC'?Math.abs(XC):Math.abs(XA);
+  const anchor=def.dRef==='XC'?C.p:A.p;
+  const zD =[anchor+dirCD*def.d[0]*base, anchor+dirCD*def.d[1]*base];
+  const a=[Math.min(...zBC),Math.max(...zBC)],b=[Math.min(...zD),Math.max(...zD)];
+  const przRange=_ovl(a,b);
+  if(!przRange)return null;
+  return{rAB,rBC,dirCD,XA,BC,XC,base,anchor,prz:przRange,zBC:a,zD:b};
+}
+
+/* نسب نقطة D فعلية (للنموذج المكتمل) */
+function _harmD(def,X,A,B,C,Dp){
+  const XA=A.p-X.p,BC=C.p-B.p,XC=C.p-X.p;
+  const rCD=Math.abs((Dp-C.p)/BC);
+  const rD=def.dRef==='XC'?Math.abs((Dp-C.p)/XC):Math.abs((Dp-A.p)/XA);
+  return{rCD,rD};
+}
+
+function _harmTargets(X,A,C,Dp,bullish){
+  const AD=A.p-Dp;
+  const t1=+(Dp+0.382*AD).toFixed(2);
+  const t2=+(Dp+0.618*AD).toFixed(2);
+  const t3=+A.p.toFixed(2);
+  const buf=Math.abs(A.p-X.p)*0.05;
+  const anchor=bullish?Math.min(X.p,Dp):Math.max(X.p,Dp);
+  const sl=+(bullish?anchor-buf:anchor+buf).toFixed(2);
+  return{t1,t2,t3,c:+C.p.toFixed(2),sl,bullish};
+}
+
+function detectHarmonic(cs){
+  if(!cs||cs.length<40)return null;
+  const zz=calcZigZag(cs,3,0.6);
+  if(zz.length<4)return null;
+  const n=cs.length,liveP=cs[n-1].close,step=_barStep(cs);
+
+  /* ───── ① الإعداد الحيّ: X-A-B-C محاور مؤكدة، و D لم يتشكّل بعد ───── */
+  let live=null,liveScore=-1;
+  {
+    const tail=zz.slice(-4);
+    if(tail.length===4){
+      const[X,A,B,C]=tail;
+      const bullish=A.p>X.p;                    /* ← الاتجاه هندسي بحت */
+      for(const def of HARM_DEFS){
+        const g=_harmPRZ(def,X,A,B,C);
+        if(!g)continue;
+        /* السعر يجب أن يتحرك فعلاً في اتجاه CD، لا أن يمدّ BC */
+        const moved=(liveP-C.p)*g.dirCD;
+        if(moved<0)continue;
+        const[przLo,przHi]=g.prz;
+        const nearEdge=g.dirCD>0?przLo:przHi;
+        const farEdge =g.dirCD>0?przHi:przLo;
+        /* تجاوز المنطقة كلها بهامش = لم يعد «قيد التكوّن» */
+        if((liveP-farEdge)*g.dirCD>Math.abs(farEdge-nearEdge)*0.5+Math.abs(g.XA)*0.05)continue;
+        const need=Math.abs(nearEdge-C.p)||1e-9;
+        const pct=Math.max(1,Math.min(99,Math.round(Math.abs(liveP-C.p)/need*100)));
+        const score=100-(_dev(g.rAB,def.ab)*30+_dev(g.rBC,def.bc)*25);
+        if(score<=liveScore)continue;
+        liveScore=score;
+        const Dproj=_mid(g.prz);
+        const tg=_harmTargets(X,A,C,Dproj,bullish);
+        const pts=[
+          {i:X.i,time:cs[X.i].time,price:X.p,label:'X'},
+          {i:A.i,time:cs[A.i].time,price:A.p,label:'A'},
+          {i:B.i,time:cs[B.i].time,price:B.p,label:'B'},
+          {i:C.i,time:cs[C.i].time,price:C.p,label:'C'},
+          {i:n-1,time:cs[n-1].time,price:liveP,label:'D؟'}
         ];
-        const targetExt=+(C.p+1.618*legAB).toFixed(2);
-        const targetEq=+(C.p+legAB).toFixed(2);
-        const stage=freshness<25?'بداية طازجة':freshness<80?'الموجة بدأت وتتقدم':'الموجة متقدمة جداً — الحذر من دخول متأخر';
-        return{
-          sig:bullish?'شراء':'بيع',wave:bullish?1:-1,
-          desc:`${bullish?'ارتداد صاعد':'ارتداد هابط'} بعد تصحيح ${(retr*100).toFixed(0)}%`,
-          why:`تصحيح ${(retr*100).toFixed(0)}% لآخر موجتين ثم استئناف الاتجاه ${bullish?'صعوداً':'هبوطاً'} — ${stage} (${freshness}% من طول الموجة المتوقعة قُطع فعلياً) — ملاحظة: هذا آخر تصحيح فيبوناتشي متسق، مو عدّ إليوت كامل موثّق من الأصل`,
-          points,bullBias:bullish,fresh:freshness<50,
-          target:{price:targetExt,label:'هدف امتداد 1.618×',basis:'ext1618'},
-          target2:{price:targetEq,label:'هدف تعادل 1.0×',basis:'equality'}
+        live={
+          name:def.name,sig:bullish?'شراء':'بيع',forming:true,live:true,
+          completion:pct,score:Math.round(score),points:pts,
+          prz:[+przLo.toFixed(2),+przHi.toFixed(2)],
+          projection:{from:{time:cs[n-1].time,price:liveP},to:{time:cs[n-1].time+step*Math.max(2,Math.round((C.i-B.i)*0.6)),price:+Dproj.toFixed(2)}},
+          targets:{...tg,przLo:+przLo.toFixed(2),przHi:+przHi.toFixed(2)},
+          why:`نموذج ${def.name} ${bullish?'صعودي':'هبوطي'} قيد التكوّن (${pct}٪ من مسار ساق CD) — منطقة الارتداد PRZ بين ${przLo.toFixed(2)} و ${przHi.toFixed(2)} (تقاطع إسقاط BC مع ارتداد ${def.dRef}) — النسب: AB/XA=${g.rAB.toFixed(3)} BC/AB=${g.rBC.toFixed(3)}`
         };
       }
     }
   }
-
-  /* ══ Fallback: broad ROC-based market-stage read when no clean fresh
-     pivot structure is available (still useful context, just not a
-     precise entry point). ══ */
-  const roc=d=>n>d?((cl[n-1]-cl[n-1-d])/cl[n-1-d]*100):0;
-  const r3=+roc(3).toFixed(2),r7=+roc(7).toFixed(2),r14=+roc(14).toFixed(2),r30=+roc(30).toFixed(2);
-  let wave=0,sig='محايد',desc='',why='';
-  if(r30>10&&r14>5&&r7>2){wave=3;sig='شراء';desc='الموجة ③ الدافعة';why=`ROC30=+${r30}% ROC14=+${r14}% ROC7=+${r7}% ← الموجة الثالثة (أقوى موجات الصعود) — تنبيه: قد تكون متقدمة، ليست بداية طازجة`;}
-  else if(r30>6&&r7<0){wave=4;sig='محايد';desc='الموجة ④ تصحيحية';why=`صعود 30 يوم +${r30}% لكن تراجع أسبوعي ${r7}% ← تصحيح طبيعي`;}
-  else if(r30>4&&r7>0&&r3<-1){wave=5;sig='بيع';desc='الموجة ⑤ نهاية';why=`الموجة الخامسة تستنفد — ROC3 سلبي ${r3}% ← نهاية الصعود`;}
-  else if(r30<-8&&r14<-4){wave=-1;sig='بيع';desc='موجة C هبوطية';why=`هبوط حاد — ROC30=${r30}% ROC14=${r14}% ← موجة C تصحيحية`;}
-  else if(r7>0&&r14<0){wave=1;sig='شراء';desc='الموجة ① بداية صعود';why=`انعكاس أسبوعي +${r7}% بعد هبوط ← بداية موجة صاعدة جديدة`;}
-  else{why='لا موجة واضحة';}
-
-  /* Only ever label points 0-1-2-3-4-5 as a genuine impulse if it actually
-     satisfies the core Elliott rules — previously ANY 6 zigzag pivots got
-     labeled this way with zero validation, which could (and did) draw a
-     rule-violating, simply wrong wave count on the chart. */
-  function impulseValid(p0,p1,p2,p3,p4,p5){
-    const up=p1.p>p0.p; /* overall direction of wave 1 */
-    const w1=Math.abs(p1.p-p0.p),w3=Math.abs(p3.p-p2.p),w5=Math.abs(p5.p-p4.p);
-    if(up){
-      if(p2.p<=p0.p)return false;      /* rule: wave 2 must not retrace 100%+ of wave 1 */
-      if(p4.p<=p1.p)return false;      /* rule: wave 4 must not overlap wave 1's price territory */
-    }else{
-      if(p2.p>=p0.p)return false;
-      if(p4.p>=p1.p)return false;
+  /* ───── ② نموذج مكتمل — الأحدث أولاً، لا الأعلى نتيجةً في التاريخ ───── */
+  let done=null;
+  for(let xi=zz.length-5;xi>=0;xi--){
+    const X=zz[xi],A=zz[xi+1],B=zz[xi+2],C=zz[xi+3],D=zz[xi+4];
+    const bullish=A.p>X.p;
+    let best=null,bs=-1;
+    for(const def of HARM_DEFS){
+      const g=_harmPRZ(def,X,A,B,C);
+      if(!g)continue;
+      if(Math.sign(D.p-C.p)!==g.dirCD)continue;
+      const{rCD,rD}=_harmD(def,X,A,B,C,D.p);
+      if(rCD<def.cd[0]||rCD>def.cd[1])continue;
+      if(rD<def.d[0]||rD>def.d[1])continue;
+      const score=100-(_dev(g.rAB,def.ab)*22+_dev(g.rBC,def.bc)*18+_dev(rCD,def.cd)*25+_dev(rD,def.d)*35);
+      if(score>bs){bs=score;best={def,g,rCD,rD,score};}
     }
-    if(w3<=w1&&w3<=w5)return false;    /* rule: wave 3 must never be the shortest of 1/3/5 */
-    return true;
-  }
-  function partialImpulseValid(p0,p1,p2,p3,p4){
-    const up=p1.p>p0.p;
-    if(up){ if(p2.p<=p0.p)return false; if(p4.p<=p1.p)return false; }
-    else{ if(p2.p>=p0.p)return false; if(p4.p>=p1.p)return false; }
-    const w1=Math.abs(p1.p-p0.p),w3=Math.abs(p3.p-p2.p);
-    if(w3<=w1*0.4)return false; /* wave 3 shouldn't be a tiny fraction of wave 1 this early */
-    return true;
-  }
-  const tail=zz.slice(-6);
-  let points=[];
-  if(tail.length>=6){
-    const[p0,p1,p2,p3,p4,p5]=tail.slice(-6);
-    if(impulseValid(p0,p1,p2,p3,p4,p5)){
-      points=[p0,p1,p2,p3,p4,p5].map((pv,idx)=>({i:pv.i,time:cs[pv.i].time,price:pv.p,label:['0','1','2','3','4','5'][idx]}));
-    }
-  }
-  if(!points.length&&tail.length>=5){
-    const last5=tail.slice(-5);
-    if(partialImpulseValid(...last5)){
-      points=last5.map((pv,idx)=>({i:pv.i,time:cs[pv.i].time,price:pv.p,label:['0','1','2','3','4'][idx]}));
-    }
-  }
-  if(!points.length&&tail.length>=4){
-    /* Couldn't validate an impulse either way — fall back to just the last
-       confirmed corrective leg (0-A-B-C) instead of a fabricated count */
-    const last4=tail.slice(-4);
-    points=last4.map((pv,idx)=>({i:pv.i,time:cs[pv.i].time,price:pv.p,label:['0','A','B','C'][idx]}));
+    if(!best)continue;
+    const tg=_harmTargets(X,A,C,D.p,bullish);
+    const barsSince=n-1-D.i;
+    const stale=barsSince>Math.max(15,Math.round(n*0.12));
+    const pts=['X','A','B','C','D'].map((lb,k)=>{const pv=zz[xi+k];return{i:pv.i,time:cs[pv.i].time,price:pv.p,label:lb};});
+    done={
+      name:best.def.name,sig:bullish?'شراء':'بيع',forming:false,live:false,
+      completion:100,score:Math.round(best.score),points:pts,stale,barsSince,
+      targets:tg,
+      why:`نموذج ${best.def.name} ${bullish?'صعودي':'هبوطي'} مكتمل عند D منذ ${barsSince} شمعة${stale?' — قديم، للمرجع التاريخي فقط':''} — النسب: AB/XA=${best.g.rAB.toFixed(3)} BC/AB=${best.g.rBC.toFixed(3)} CD/BC=${best.rCD.toFixed(3)} D/${best.def.dRef}=${best.rD.toFixed(3)}`
+    };
+    break;
   }
 
-  const byLbl=l=>points.find(p=>p.label===l);
-  const p0=byLbl('0'),p1=byLbl('1'),p2=byLbl('2'),p4=byLbl('4'),pA=byLbl('A'),pB=byLbl('B');
-  let target=null;
-  if(p4&&p0&&p1){const w1=p1.price-p0.price;target={price:+(p4.price+w1).toFixed(2),label:'هدف الموجة ⑤ (تعادل مع الموجة ①)',basis:'equality'};}
-  else if(p2&&p0&&p1){const w1=p1.price-p0.price;target={price:+(p2.price+1.618*w1).toFixed(2),label:'هدف الموجة ③ (امتداد 1.618×)',basis:'ext1618'};}
-  else if(pB&&p0&&pA){const wA=pA.price-p0.price;target={price:+(pB.price+wA).toFixed(2),label:'هدف الموجة C (تعادل مع الموجة A)',basis:'equality'};}
-  return{sig,wave,desc,why,points,bullBias:wave>0,target,fresh:false};
+  /* الأولوية: نموذج اكتمل للتوّ (D محور مؤكد قريب) أولى من قراءة «حيّة»
+     تُعيد تسمية النقاط نفسها بإزاحة واحدة. بعد ذلك: الحيّ، ثم القديم. */
+  if(done&&done.barsSince<=12)return done;
+  if(live)return live;
+  return done;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   🌊 ELLIOTT — إعادة كتابة كاملة
+
+   ما الذي كان مكسوراً:
+   ① الفرع «المفضّل» في الأعلى كان يعود (return) قبل أن يصل التنفيذ إلى
+      كود التحقّق من الموجة الدافعة إطلاقاً. وشرطه (آخر ثلاثة محاور +
+      تصحيح بين 23.6٪ و85٪) يتحقّق في معظم الأسهم معظم الوقت. النتيجة
+      العملية: **عدّ إليوت 1-2-3-4-5 لم يكن يُرسم تقريباً أبداً**، وكان
+      يُرسم بدله ثلاث نقاط مسمّاة P1/P2/P3 وهي ليست موجات إليوت أصلاً.
+   ② كود التحقّق نفسه كان يفحص آخر ستة محاور فقط. إن انتهت الدافعة قبل
+      محورين، لا شيء يُعثر عليه، فيسقط إلى «آخر أربعة محاور = 0-A-B-C»
+      بلا أي تحقّق — أي عدّ مُختلَق، وهو بالضبط ما ينفي التعليق فعله.
+   ③ الإشارة (sig/wave) تُشتقّ من ROC، والنقاط والهدف من الزيجزاج،
+      بلا رابط بينهما: يمكن أن يقول «الموجة ⑤ بيع» ويرسم 0-A-B-C.
+   ④ لا يوجد وقف خسارة، ولا تُفحص قاعدة أن الموجة ③ تتجاوز نهاية ①.
+
+   الآن: مسح نوافذ منزلق على الزيجزاج بثلاثة أعماق، بقواعد إليوت الثلاث
+   الصارمة، ويعيد الموجة الجارية + هدفها + وقفها.
+   ══════════════════════════════════════════════════════════════════════ */
+function _ewValidate(pv){
+  const p0=pv[0],p1=pv[1],p2=pv[2];
+  if(!p0||!p1||!p2)return null;
+  const up=p1.p>p0.p,s=up?1:-1;
+  for(let i=1;i<pv.length;i++){
+    const want=(i%2===1)?s:-s;
+    if(Math.sign(pv[i].p-pv[i-1].p)!==want)return null;   /* تعاقب سليم */
+  }
+  const w1=Math.abs(p1.p-p0.p);if(!w1)return null;
+  const r2=Math.abs(p2.p-p1.p)/w1;
+  if(r2>=1)return null;                    /* قاعدة ①: الموجة ② لا تبتلع ① */
+  if(r2<0.14)return null;                  /* تصحيح ضحل جداً ليكون موجة ② */
+  const o={up,w1,r2,pen:0,p0,p1,p2};
+  if(r2<0.382||r2>0.786)o.pen+=8;
+  if(pv.length>=4){
+    const p3=pv[3];
+    if(up?p3.p<=p1.p:p3.p>=p1.p)return null;  /* الموجة ③ لازم تتجاوز نهاية ① */
+    o.w3=Math.abs(p3.p-p2.p);o.p3=p3;
+    if(o.w3<w1*0.618)o.pen+=12;
+    if(o.w3<w1)o.pen+=6;
+  }
+  if(pv.length>=5){
+    const p4=pv[4];
+    if(up?p4.p<=p1.p:p4.p>=p1.p)return null;  /* قاعدة ③: لا تداخل مع أرض ① */
+    const r4=Math.abs(p4.p-o.p3.p)/o.w3;
+    if(r4>=1)return null;
+    if(r4<0.14||r4>0.618)o.pen+=8;
+    if(Math.abs(r4-o.r2)<0.10)o.pen+=5;      /* إرشاد التناوب */
+    o.p4=p4;o.r4=r4;
+  }
+  if(pv.length>=6){
+    const p5=pv[5];
+    o.w5=Math.abs(p5.p-o.p4.p);o.p5=p5;
+    if(o.w3<o.w1&&o.w3<o.w5)return null;      /* قاعدة ②: ③ ليست الأقصر */
+    if(up?p5.p<=o.p3.p:p5.p>=o.p3.p)o.pen+=14;/* موجة خامسة مبتورة */
+  }
+  return o;
+}
+
+/* اتساق السعر الحيّ مع الموجة المفترض أنها جارية — بدون هذا الفحص يمكن
+   أن يُعرض «الموجة ④ التصحيحية جارية» والسعر فوق قمة الموجة ③ فعلاً. */
+function _ewLiveOk(len,v,win,liveP){
+  const d=v.up?1:-1;
+  if(len===3)return (liveP-win[2].p)*d>0;
+  if(len===4)return (liveP-win[3].p)*d<0 && (liveP-win[1].p)*d>0;
+  if(len===5)return (liveP-win[4].p)*d>0;
+  return true;
+}
+
+function _ewScan(cs,zz){
+  if(!zz||zz.length<3)return null;
+  const n=cs.length,liveP=cs[n-1].close;let best=null;
+  for(let len=6;len>=3;len--){
+    for(let s=zz.length-len;s>=0;s--){
+      const win=zz.slice(s,s+len);
+      const v=_ewValidate(win);
+      if(!v)continue;
+      /* حجم بنيوي: عدّ إليوت على تمايل 1٪ ليس عدّاً — إنه ضجيج مُسمّى */
+      const span=Math.abs(win[len-1].p-win[0].p)/win[0].p*100;
+      if(span<5||v.w1/win[0].p*100<1.5)continue;
+      if(!_ewLiveOk(len,v,win,liveP))continue;
+      const recency=win[len-1].i/(n-1);
+      const sc=len*12+recency*45-v.pen;
+      if(!best||sc>best.sc)best={win,len,v,sc};
+    }
+  }
+  return best;
+}
+
+function detectElliott(cs){
+  const NONE={sig:'محايد',wave:0,desc:'',why:'لا يوجد عدّ إليوت صالح',points:[],target:null,target2:null,bullBias:false,fresh:false,stop:null};
+  if(!cs||cs.length<40)return{...NONE,why:'بيانات غير كافية لعدّ موجات'};
+  const n=cs.length,liveP=cs[n-1].close,step=_barStep(cs);
+
+  let best=null;
+  for(const[depth,mp]of[[4,0.8],[3,0.5],[5,1.2]]){
+    const c=_ewScan(cs,calcZigZag(cs,depth,mp));
+    if(c&&(!best||c.sc>best.sc))best=c;
+  }
+  if(!best)return NONE;
+
+  const{win,len,v}=best,up=v.up,dir=up?1:-1;
+  const P=(pv,lb)=>({i:pv.i,time:cs[pv.i].time,price:pv.p,label:lb});
+  const step2=step*Math.max(3,Math.round((win[len-1].i-win[0].i)/(len*1.2)));
+  const fut=cs[n-1].time+step2;
+
+  let points,sig,wave,desc,why,target=null,target2=null,stop=null,projection=null,fresh=false;
+
+  if(len===3){
+    /* 0-1-2 مؤكدة → الموجة ③ هي الجارية الآن */
+    points=[P(win[0],'0'),P(win[1],'①'),P(win[2],'②'),{i:n-1,time:cs[n-1].time,price:liveP,label:'③ الآن'}];
+    const t1=+(win[2].p+dir*1.618*v.w1).toFixed(2),t2=+(win[2].p+dir*2.618*v.w1).toFixed(2);
+    const prog=Math.max(0,Math.round((liveP-win[2].p)*dir/(t1-win[2].p)*100));
+    sig=up?'شراء':'بيع';wave=up?3:-3;desc='الموجة ③ الجارية';
+    target={price:t1,label:'هدف الموجة ③ (امتداد 1.618× للموجة ①)',basis:'ext1618'};
+    target2={price:t2,label:'امتداد ممتد 2.618×',basis:'ext2618'};
+    stop={price:+(win[2].p-dir*Math.abs(v.w1)*0.06).toFixed(2),label:'وقف تحت نهاية الموجة ②'};
+    projection={from:{time:cs[n-1].time,price:liveP},to:{time:fut,price:t1}};
+    fresh=prog<40;
+    why=`عدّ صالح: 0-①-② مؤكدة والموجة ③ جارية — الموجة ② صحّحت ${(v.r2*100).toFixed(0)}٪ من ①، وقُطع ${Math.min(150,prog)}٪ من مسافة الهدف. القواعد الثلاث محقّقة.`;
+  }else if(len===4){
+    /* 0-1-2-3 مؤكدة → الموجة ④ تصحيحية جارية، ثم ⑤ */
+    points=[P(win[0],'0'),P(win[1],'①'),P(win[2],'②'),P(win[3],'③'),{i:n-1,time:cs[n-1].time,price:liveP,label:'④ الآن'}];
+    const w4lo=+(win[3].p-dir*0.382*v.w3).toFixed(2);
+    const w5=+(w4lo+dir*v.w1).toFixed(2);
+    sig='محايد';wave=up?4:-4;desc='الموجة ④ التصحيحية';
+    target={price:w4lo,label:'منطقة انتهاء الموجة ④ (0.382 من ③)',basis:'w4zone'};
+    target2={price:w5,label:'هدف الموجة ⑤ بعدها (تعادل مع ①)',basis:'equality'};
+    stop={price:+(win[1].p+dir*Math.abs(v.w1)*0.02).toFixed(2),label:'إبطال العدّ: دخول أرض الموجة ①'};
+    why=`عدّ صالح: 0-①-②-③ مؤكدة والموجة ④ التصحيحية جارية — الشراء يكون عند انتهاء ④ لا الآن. يُبطل العدّ إن دخل السعر أرض الموجة ① عند ${win[1].p.toFixed(2)}.`;
+  }else if(len===5){
+    /* 0-1-2-3-4 مؤكدة → الموجة ⑤ هي الجارية */
+    points=[P(win[0],'0'),P(win[1],'①'),P(win[2],'②'),P(win[3],'③'),P(win[4],'④'),{i:n-1,time:cs[n-1].time,price:liveP,label:'⑤ الآن'}];
+    const eq=+(win[4].p+dir*v.w1).toFixed(2);
+    const ext=+(win[4].p+dir*0.618*Math.abs(win[3].p-win[0].p)).toFixed(2);
+    const prog=Math.max(0,Math.round((liveP-win[4].p)*dir/((eq-win[4].p)||1e-9)*100));
+    sig=up?'شراء':'بيع';wave=up?5:-5;desc='الموجة ⑤ الأخيرة';
+    target={price:eq,label:'هدف الموجة ⑤ (تعادل مع الموجة ①)',basis:'equality'};
+    target2={price:ext,label:'هدف بديل 0.618× لطول 0→③',basis:'ext0618'};
+    stop={price:+(win[4].p-dir*Math.abs(v.w3)*0.05).toFixed(2),label:'وقف تحت نهاية الموجة ④'};
+    projection={from:{time:cs[n-1].time,price:liveP},to:{time:fut,price:eq}};
+    fresh=prog<40;
+    why=`عدّ صالح: 0-①-②-③-④ مؤكدة والموجة ⑤ جارية (${Math.min(150,prog)}٪ من الهدف) — الموجة ⑤ آخر موجات الدافعة، فالمخاطرة أعلى وما بعدها تصحيح للدورة كاملة.`;
+  }else{
+    /* 0-1-2-3-4-5 مكتملة → الدافعة انتهت، المتوقّع تصحيح A-B-C */
+    points=[P(win[0],'0'),P(win[1],'①'),P(win[2],'②'),P(win[3],'③'),P(win[4],'④'),P(win[5],'⑤')];
+    const span=win[5].p-win[0].p;
+    const r382=+(win[5].p-0.382*span).toFixed(2),r618=+(win[5].p-0.618*span).toFixed(2);
+    const done=(liveP-win[5].p)*dir;
+    sig=up?'بيع':'شراء';wave=up?-1:1;desc='الدافعة ①→⑤ اكتملت — تصحيح متوقّع';
+    target={price:r382,label:'هدف التصحيح الأول (0.382 من الدافعة كاملة)',basis:'retr382'};
+    target2={price:r618,label:'هدف التصحيح الأعمق (0.618) — وغالباً منطقة الموجة ④ عند '+win[4].p.toFixed(2),basis:'retr618'};
+    stop={price:+(win[5].p+dir*Math.abs(span)*0.03).toFixed(2),label:'إبطال: تجاوز قمة الموجة ⑤'};
+    projection={from:{time:cs[n-1].time,price:liveP},to:{time:fut,price:r382}};
+    fresh=done<=0;
+    why=`عدّ صالح ومكتمل: الموجات ①→⑤ كلها مؤكدة كمحاور — الدورة الدافعة انتهت عند ${win[5].p.toFixed(2)}، والمتوقّع تصحيح A-B-C. القواعد الثلاث محقّقة (② لا تبتلع ①، ③ ليست الأقصر، ④ لا تدخل أرض ①).`;
+  }
+
+  const conf=Math.max(10,Math.min(95,Math.round(92-v.pen*2.2-(len<5?8:0))));
+  return{sig,wave,desc,why:why+` · ثقة العدّ ${conf}٪`,points,target,target2,stop,projection,bullBias:up,fresh,conf,
+    count:{len,r2:+v.r2.toFixed(3),r4:v.r4!=null?+v.r4.toFixed(3):null}};
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1657,60 +1847,83 @@ function detectElliott(cs){
    Arrival) line. This is a completely different pattern from
    Elliott/Harmonic and was not previously in the platform at all.
    ══════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════
+   🐺 WOLFE — تصحيحات
+
+   ما كان مكسوراً:
+   ① شرط التقارب كان مثبّتاً على «قاع أعلى + قمة أدنى» فقط، فيرفض الشكل
+      الكلاسيكي للنموذج الصعودي (وتد هابط: النقطة 3 أدنى من 1). الاختبار
+      الصحيح هو تقارب الخطين ميلاً، لا علاقة أعلى/أدنى محفوظة.
+   ② سطر الهدف: `Math.min(p5.i+extra, lastIdx+extra)` — الطرف الأول أصغر
+      دائماً لأن p5.i≤lastIdx، فالـ min كود ميت، والهدف يُحسب عند شمعة
+      **ماضية** إذا كانت النقطة 5 قديمة.
+   ③ يفحص آخر خمسة محاور فقط، بلا وقف خسارة، وبلا فحص ما إذا كان السعر
+      قد بلغ خط EPA أصلاً (فتُعرض صفقة منتهية كأنها حيّة).
+   ══════════════════════════════════════════════════════════════════════ */
 function detectWolfe(cs){
-  const zz=calcZigZag(cs,3);
+  if(!cs||cs.length<40)return null;
+  const zz=calcZigZag(cs,3,0.6);
   if(zz.length<5)return null;
-  const pts5=zz.slice(-5);
-  for(let i=1;i<5;i++){if(pts5[i].type===pts5[i-1].type)return null;} /* must strictly alternate H/L */
-  const[p1,p2,p3,p4,p5]=pts5;
+  const n=cs.length,lastIdx=n-1,liveP=cs[lastIdx].close,step=_barStep(cs);
 
-  let bullish;
-  if(p1.type==='L'&&p2.type==='H'&&p3.type==='L'&&p4.type==='H'&&p5.type==='L')bullish=true;
-  else if(p1.type==='H'&&p2.type==='L'&&p3.type==='H'&&p4.type==='L'&&p5.type==='H')bullish=false;
-  else return null;
+  for(let s=zz.length-5;s>=Math.max(0,zz.length-9);s--){
+    const[p1,p2,p3,p4,p5]=zz.slice(s,s+5);
+    let bullish;
+    if(p1.type==='L'&&p3.type==='L'&&p5.type==='L'&&p2.type==='H'&&p4.type==='H')bullish=true;
+    else if(p1.type==='H'&&p3.type==='H'&&p5.type==='H'&&p2.type==='L'&&p4.type==='L')bullish=false;
+    else continue;
 
-  /* Converging channel rules: point 3 must be a "higher low"/"lower high"
-     than point 1, and point 4 must be a "lower high"/"higher low" than
-     point 2 — this is what makes it a genuine narrowing wedge shape
-     instead of just any random 5 alternating swings. */
-  if(bullish){ if(!(p3.p>p1.p)||!(p4.p<p2.p))return null; }
-  else{ if(!(p3.p<p1.p)||!(p4.p>p2.p))return null; }
+    const sl13=(p3.p-p1.p)/(p3.i-p1.i);
+    const sl24=(p4.p-p2.p)/(p4.i-p2.i);
+    const line13=(i)=>p1.p+sl13*(i-p1.i);
+    const line24=(i)=>p2.p+sl24*(i-p2.i);
 
-  /* The core Wolfe trigger: point 5 must PIERCE beyond the 1-3 trendline
-     extended to point 5's time. Without this, it's just a wedge, not a
-     Wolfe Wave — this is the rule naive "5-point" detectors often skip,
-     which is exactly the kind of thing that draws a wrong pattern. */
-  const slope13=(p3.p-p1.p)/(p3.i-p1.i);
-  const line13AtP5=p1.p+slope13*(p5.i-p1.i);
-  if(bullish){ if(!(p5.p<line13AtP5))return null; }
-  else{ if(!(p5.p>line13AtP5))return null; }
+    /* تقارب حقيقي: المسافة الرأسية بين الخطين تضيق مع الزمن */
+    const gapA=Math.abs(line24(p1.i)-line13(p1.i));
+    const gapB=Math.abs(line24(p5.i)-line13(p5.i));
+    if(!(gapB<gapA*0.92))continue;
+    if(line24(p5.i)===line13(p5.i))continue;
 
-  /* Target = the 1-4 line ("EPA"), projected forward past point 5 by
-     roughly the same number of bars as the 4→5 leg took. */
-  const slope14=(p4.p-p1.p)/(p4.i-p1.i);
-  const extraBars=Math.max(1,p5.i-p4.i);
-  const lastIdx=cs.length-1;
-  const targetIdx=Math.min(p5.i+extraBars,lastIdx+extraBars);
-  const targetPrice=p1.p+slope14*(targetIdx-p1.i);
-  const line13AtLast=p1.p+slope13*(lastIdx-p1.i);
+    /* الزناد: النقطة 5 تخترق خط 1-3 الممتد */
+    const pierce=(p5.p-line13(p5.i))*(bullish?-1:1);
+    if(!(pierce>0))continue;
+    if(pierce<Math.abs(gapA)*0.03)continue;      /* اختراق رمزي لا يُحتسب */
 
-  const points=[
-    {i:p1.i,time:cs[p1.i].time,price:p1.p,label:'1'},
-    {i:p2.i,time:cs[p2.i].time,price:p2.p,label:'2'},
-    {i:p3.i,time:cs[p3.i].time,price:p3.p,label:'3'},
-    {i:p4.i,time:cs[p4.i].time,price:p4.p,label:'4'},
-    {i:p5.i,time:cs[p5.i].time,price:p5.p,label:'5'},
-  ];
-  const auxLines=[
-    {from:{time:cs[p1.i].time,price:p1.p},to:{time:cs[lastIdx].time,price:line13AtLast},color:'#a78bfa',style:1},
-    {from:{time:cs[p2.i].time,price:p2.p},to:{time:cs[p4.i].time,price:p4.p},color:'#fb923c',style:1},
-  ];
+    /* النقطة 4 لا تتجاوز النقطة 2 (تبقى داخل قناة 1-2) */
+    if(bullish){if(p4.p>p2.p)continue;}else{if(p4.p<p2.p)continue;}
 
-  return{
-    valid:true,bullish,sig:bullish?'شراء':'بيع',points,auxLines,
-    target:{price:+targetPrice.toFixed(2),label:'هدف خط 1-4 الممتد (EPA)'},
-    why:`نموذج موجة الذئب ${bullish?'الصعودي':'الهبوطي'} — النقطة 5 اخترقت خط 1-3 ${bullish?'من الأسفل':'من الأعلى'} وهذا مثّل إشارة الدخول — الهدف عند امتداد خط 1-4 (EPA)`
-  };
+    /* تناظر زمني تقريبي بين الساقين 1-2 و 3-4 */
+    const t12=p2.i-p1.i,t34=p4.i-p3.i;
+    const sym=Math.min(t12,t34)/Math.max(t12,t34);
+    if(sym<0.3)continue;
+
+    /* الهدف: خط 1-4 مُسقَطاً **للأمام من آخر شمعة**، لا عند محور ماضٍ */
+    const sl14=(p4.p-p1.p)/(p4.i-p1.i);
+    const extraBars=Math.max(2,Math.round((p5.i-p4.i)*1.2));
+    const tIdx=lastIdx+extraBars;
+    const epa=p1.p+sl14*(tIdx-p1.i);
+    /* هل بلغ السعر خط EPA أصلاً؟ عندها الصفقة انتهت لا بدأت */
+    const epaNow=p1.p+sl14*(lastIdx-p1.i);
+    const reached=bullish?liveP>=epaNow:liveP<=epaNow;
+
+    const buf=Math.abs(gapA)*0.10;
+    const stop=+(bullish?p5.p-buf:p5.p+buf).toFixed(2);
+
+    const points=[p1,p2,p3,p4,p5].map((pv,k)=>({i:pv.i,time:cs[pv.i].time,price:pv.p,label:String(k+1)}));
+    const auxLines=[
+      {from:{time:cs[p1.i].time,price:p1.p},to:{time:cs[lastIdx].time+step*extraBars,price:line13(tIdx)},color:'#a78bfa',style:1,name:'خط 1-3'},
+      {from:{time:cs[p2.i].time,price:p2.p},to:{time:cs[lastIdx].time+step*extraBars,price:line24(tIdx)},color:'#fb923c',style:1,name:'خط 2-4'},
+      {from:{time:cs[p1.i].time,price:p1.p},to:{time:cs[lastIdx].time+step*extraBars,price:epa},color:'#f5c842',style:2,name:'خط 1-4 (EPA)'}
+    ];
+    return{
+      valid:true,bullish,sig:bullish?'شراء':'بيع',points,auxLines,reached,
+      barsSince:lastIdx-p5.i,
+      target:{price:+epa.toFixed(2),label:'هدف خط 1-4 الممتد (EPA)'},
+      stop:{price:stop,label:'وقف خلف النقطة 5'},
+      why:`موجة الذئب ${bullish?'الصعودية':'الهبوطية'} — الخطان متقاربان (الفجوة ضاقت من ${gapA.toFixed(2)} إلى ${gapB.toFixed(2)})، والنقطة 5 اخترقت خط 1-3 بمقدار ${Math.abs(pierce).toFixed(2)} ${bullish?'هبوطاً':'صعوداً'} وهذا هو الزناد — تناظر زمني ${(sym*100).toFixed(0)}٪.${reached?' ⚠️ السعر بلغ خط EPA فعلاً: الحركة المتوقّعة تحقّقت، الإشارة للمرجع لا للدخول.':''}`
+    };
+  }
+  return null;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -3447,7 +3660,7 @@ function renderResults(){
     }else if(_filter==='fvgr'){
       midCols=`<td style="font-family:monospace">${d.fvgr.momVelocity}%</td><td>${d.fvgr.rebalance?d.fvgr.rebalance.dist.toFixed(1)+'%':'—'}</td><td>${tag(d.fvgr.color,d.fvgr.sig)}</td>`;
     }else if(_filter==='elliott'){
-      midCols=`<td style="font-weight:600;color:var(--gd)">${d.ew.wave>0?'موجة '+d.ew.wave:d.ew.wave<0?'موجة C':'—'}</td><td style="font-size:calc(var(--base-font)*0.75)">${d.ew.desc||'—'}</td><td>${tag(d.ew.sig==='شراء'?'s4':d.ew.sig==='بيع'?'s1':'na',d.ew.sig)}</td>`;
+      midCols=`<td style="font-weight:600;color:var(--gd)">${d.ew.wave===0?'—':(d.ew.wave>0?'موجة ⇧':'موجة ⇩')+' '+Math.abs(d.ew.wave)}</td><td style="font-size:calc(var(--base-font)*0.75)">${d.ew.desc||'—'}</td><td>${tag(d.ew.sig==='شراء'?'s4':d.ew.sig==='بيع'?'s1':'na',d.ew.sig)}</td>`;
     }else if(_filter==='harmonic'){
       midCols=`<td style="font-weight:600;color:var(--pu)">${d.harm?'🦋 '+d.harm.name:'—'}</td><td>${d.harm?d.harm.completion+'%':'—'}</td><td>${d.harm?tag(d.harm.sig==='شراء'?'s4':'s1',d.harm.sig):tag('na','—')}</td>`;
     }else if(_filter==='hunter'){
@@ -3726,149 +3939,275 @@ document.addEventListener('webkitfullscreenchange',()=>{
 /* ══ PATTERN OVERLAY (Harmonic / Elliott) — draws the actual detected
    structure on the main chart so the user can see its shape, whether or
    not the pattern is fully complete. ══ */
+/* ══════════════════════════════════════════════════════════════════════
+   🎯 أهداف الفراكتال — نسخة محليّة مستقلّة عن /engine/core.js
+
+   السبب: `ddFrac` تعتمد كلياً على `KSAEngine.fractalTargets`، وإن لم
+   يُحمَّل الملف تعود null **بصمت**، فيختفي «الهدف الفراكتالي» من الخطة
+   ويحلّ محلّه هدف 2R — وهو بالضبط الحشو الذي تشرح الواجهة أنها تتجنّبه.
+   الآن: إن غاب المحرك، يعمل هذا البديل المحلي بنفس شكل المخرجات.
+
+   قمة فراكتالية «حيّة» = قمة (k شمعات أدنى منها يميناً ويساراً) لم يُغلق
+   السعر فوقها منذ تكوّنها. هذه هي المستويات التي تنتظر عندها أوامر بيع.
+   ══════════════════════════════════════════════════════════════════════ */
+function fractalTargetsLocal(cs,opt){
+  const k=(opt&&opt.k)||2;
+  if(!cs||cs.length<k*2+10)return{ok:false,reason:'شموع غير كافية'};
+  const n=cs.length,price=+cs[n-1].close.toFixed(2);
+  const His=[],Los=[];
+  for(let i=k;i<n-k;i++){
+    let isH=true,isL=true;
+    for(let j=i-k;j<=i+k;j++){
+      if(j===i)continue;
+      if(cs[j].high>=cs[i].high)isH=false;
+      if(cs[j].low<=cs[i].low)isL=false;
+    }
+    if(isH)His.push({i,p:+cs[i].high.toFixed(2)});
+    if(isL)Los.push({i,p:+cs[i].low.toFixed(2)});
+  }
+  /* حيّة = لم تُكسر بإغلاق بعد تكوّنها */
+  const liveHi=His.filter(f=>{for(let j=f.i+k+1;j<n;j++)if(cs[j].close>f.p)return false;return f.p>price;})
+                  .sort((a,b)=>a.p-b.p);
+  const liveLo=Los.filter(f=>{for(let j=f.i+k+1;j<n;j++)if(cs[j].close<f.p)return false;return f.p<price;})
+                  .sort((a,b)=>b.p-a.p);
+  const target1=liveHi[0]?liveHi[0].p:null;
+  const target2=liveHi[1]?liveHi[1].p:null;
+  const support=liveLo[0]?liveLo[0].p:null;
+
+  /* الحركة المقيسة: ارتفاع آخر ساق دافعة مُسقَطاً من قاع القاعدة — تُعاد
+     كمستوى سعري جاهز، لا كمسافة تُجمع (هذا الخلط كان يضاعف الأهداف). */
+  let measuredMove=null;
+  if(liveLo.length&&His.length){
+    const baseLow=liveLo[0];
+    const legHigh=His.filter(h=>h.i>baseLow.i).sort((a,b)=>b.p-a.p)[0]
+                ||His[His.length-1];
+    if(legHigh&&legHigh.p>baseLow.p)measuredMove=+(baseLow.p+(legHigh.p-baseLow.p)*2).toFixed(2);
+  }
+  const supportPct=support?+((price-support)/price*100).toFixed(2):null;
+  const t1Pct=target1?+((target1-price)/price*100).toFixed(2):null;
+  return{
+    ok:true,price,target1,target2,support,supportPct,
+    target:target1,targetSource:'أقرب قمة فراكتالية غير مكسورة',
+    measuredMove,highCount:liveHi.length,lowCount:liveLo.length,
+    cleanRunway:t1Pct==null?true:t1Pct>=3,
+    levelsUp:liveHi.slice(0,4),levelsDown:liveLo.slice(0,4),
+    engine:'local'
+  };
+}
+if(typeof window!=='undefined')window.fractalTargetsLocal=fractalTargetsLocal;
+
+/* ══════════════════════════════════════════════════════════════════════
+   رسم النماذج على الشارت — إعادة كتابة
+
+   ما كان مكسوراً:
+   ① لا وقف خسارة يُرسم لإيليوت ولا لموجة الذئب رغم وجوده في التحليل.
+   ② خطوط الأهداف تُرسم بلا إزالة تكرار، فتتراكب التسميات فوق بعضها حين
+      يتساوى هدفان (يحدث كثيراً حين ينهار مجال PRZ إلى نقطة).
+   ③ `setData` تُمرَّر نقاطاً قد تحمل الطابع الزمني نفسه (المحور الأخير
+      والنقطة الحيّة)، و lightweight-charts يرمي استثناءً عندها فتختفي
+      الرسمة كلها بلا رسالة.
+   ④ لا يُرسم امتداد متوقّع من السعر الحالي إلى الهدف، وهو أول ما يبحث
+      عنه من ينظر إلى موجة أو نموذج قيد التكوّن.
+   ══════════════════════════════════════════════════════════════════════ */
 let _patMode=null,_patLineSeriesArr=[],_patTargetLines=[];
+
 function refreshPatternButtons(sym){
   ensurePatternData(sym);
-  const harm=G.harmCache?.[sym],ew=G.ewCache?.[sym],wolfe=G.wolfeCache?.[sym],chan=G.chanCache?.[sym];
-  const hb=document.getElementById('pat-harm-btn'),eb=document.getElementById('pat-ew-btn'),wb=document.getElementById('pat-wolfe-btn'),cb=document.getElementById('pat-chan-btn');
-  if(hb)hb.classList.toggle('disabled',!harm);
-  if(eb)eb.classList.toggle('disabled',!ew||!ew.points?.length);
-  if(wb)wb.classList.toggle('disabled',!wolfe);
-  if(cb)cb.classList.toggle('disabled',!chan);
+  const D={harm:G.harmCache?.[sym],ew:G.ewCache?.[sym],wolfe:G.wolfeCache?.[sym],channel:G.chanCache?.[sym],frac:G.fracCache?.[sym]};
+  const ids={harm:'pat-harm-btn',ew:'pat-ew-btn',wolfe:'pat-wolfe-btn',channel:'pat-chan-btn',frac:'pat-frac-btn'};
+  for(const m in ids){
+    const el=document.getElementById(ids[m]);if(!el)continue;
+    const d=D[m];
+    const ok=m==='ew'?!!(d&&d.points&&d.points.length):m==='frac'?!!(d&&d.ok):!!d;
+    el.classList.toggle('disabled',!ok);
+  }
 }
+
 function ensurePatternData(sym){
   const cs=G.cans[sym];if(!cs||cs.length<10)return;
-  G.harmCache=G.harmCache||{};G.ewCache=G.ewCache||{};G.wolfeCache=G.wolfeCache||{};G.chanCache=G.chanCache||{};
-  if(!G.harmCache[sym])G.harmCache[sym]=detectHarmonic(cs);
-  if(!G.ewCache[sym])G.ewCache[sym]=detectElliott(cs);
+  G.harmCache=G.harmCache||{};G.ewCache=G.ewCache||{};G.wolfeCache=G.wolfeCache||{};
+  G.chanCache=G.chanCache||{};G.fracCache=G.fracCache||{};
+  if(!(sym in G.harmCache))G.harmCache[sym]=detectHarmonic(cs);
+  if(!(sym in G.ewCache))G.ewCache[sym]=detectElliott(cs);
   if(!(sym in G.wolfeCache))G.wolfeCache[sym]=detectWolfe(cs);
   if(!(sym in G.chanCache))G.chanCache[sym]=detectTrendChannel(cs);
+  if(!(sym in G.fracCache)){
+    let f=null;
+    try{f=(window.KSAEngine&&KSAEngine.fractalTargets)?KSAEngine.fractalTargets(cs,{k:2}):null;}catch(e){f=null;}
+    if(!f||!f.ok)f=fractalTargetsLocal(cs,{k:2});
+    G.fracCache[sym]=f;
+  }
 }
+
 function clearPatternDrawing(){
   _patLineSeriesArr.forEach(s=>{try{G.lwChart.removeSeries(s);}catch(e){}});
   _patLineSeriesArr=[];
   if(_patTargetLines.length){_patTargetLines.forEach(l=>{try{G.cSeries.removePriceLine(l);}catch(e){}});_patTargetLines=[];}
-  if(G.cSeries)G.cSeries.setMarkers([]);
+  if(G.cSeries)try{G.cSeries.setMarkers([]);}catch(e){}
 }
+
 function clearPatterns(){
   _patMode=null;
-  document.getElementById('pat-harm-btn')?.classList.remove('on');
-  document.getElementById('pat-ew-btn')?.classList.remove('on');
-  document.getElementById('pat-wolfe-btn')?.classList.remove('on');
-  document.getElementById('pat-chan-btn')?.classList.remove('on');
+  ['pat-harm-btn','pat-ew-btn','pat-wolfe-btn','pat-chan-btn','pat-frac-btn']
+    .forEach(id=>document.getElementById(id)?.classList.remove('on'));
   document.getElementById('pat-info')?.classList.remove('show');
   clearPatternDrawing();
 }
+
 function _patData(mode,sym){
-  if(mode==='harm')return G.harmCache[sym];
-  if(mode==='ew')return G.ewCache[sym];
-  if(mode==='wolfe')return G.wolfeCache[sym];
-  return G.chanCache[sym];
+  if(mode==='harm')return G.harmCache?.[sym];
+  if(mode==='ew')return G.ewCache?.[sym];
+  if(mode==='wolfe')return G.wolfeCache?.[sym];
+  if(mode==='frac')return G.fracCache?.[sym];
+  return G.chanCache?.[sym];
 }
+
 function togglePattern(mode){
   const sym=G.sel;ensurePatternData(sym);
   const data=_patData(mode,sym);
-  if(!data||(mode==='ew'&&!data.points?.length)){
-    const msgs={harm:'لا يوجد نموذج هارمونيك واضح حالياً على هذا السهم/الإطار الزمني',
-      ew:'لا توجد بيانات كافية لرسم موجات إيليوت حالياً',
-      wolfe:'لا يوجد نموذج موجة الذئب متحقق حالياً (يحتاج 5 قمم/قيعان متتالية بقناة متضائلة وكسر عند النقطة 5)',
-      channel:'ما قدرت أحدد قمتين وقاعين واضحين لرسم قناة — يحتاج بيانات أكثر أو تذبذب أوضح'};
-    alert(msgs[mode]);
+  const bad=!data||(mode==='ew'&&!data.points?.length)||(mode==='frac'&&!data.ok);
+  if(bad){
+    alert({harm:'لا يوجد نموذج هارمونيك مستوفٍ للنسب على هذا السهم/الإطار الزمني.\n\nالفحص الآن يشترط تقاطع إسقاط BC مع ارتداد XA (أو XC)، وهذا يرفض معظم ما كان يُقبل سابقاً بالخطأ.',
+      ew:'لا يوجد عدّ إليوت صالح: ما وُجدت نافذة محاور تحقّق القواعد الثلاث (② لا تبتلع ①، ③ ليست الأقصر، ④ لا تدخل أرض ①) بحجم بنيوي معتبر.',
+      wolfe:'لا يوجد نموذج موجة الذئب متحقّق (يحتاج 1-3-5 على خط، 2-4 على خط، تقارباً فعلياً بين الخطين، واختراقاً عند النقطة 5).',
+      channel:'ما قدرت أحدد قمتين وقاعين واضحين لرسم قناة.',
+      frac:'تعذّر حساب مستويات الفراكتال — شموع غير كافية.'}[mode]);
     return;
   }
   if(_patMode===mode){clearPatterns();return;}
   _patMode=mode;
-  document.getElementById('pat-harm-btn')?.classList.toggle('on',mode==='harm');
-  document.getElementById('pat-ew-btn')?.classList.toggle('on',mode==='ew');
-  document.getElementById('pat-wolfe-btn')?.classList.toggle('on',mode==='wolfe');
-  document.getElementById('pat-chan-btn')?.classList.toggle('on',mode==='channel');
+  const ids={harm:'pat-harm-btn',ew:'pat-ew-btn',wolfe:'pat-wolfe-btn',channel:'pat-chan-btn',frac:'pat-frac-btn'};
+  for(const m in ids)document.getElementById(ids[m])?.classList.toggle('on',m===mode);
   drawPattern(mode);
 }
+
 function drawPattern(mode,silent){
-  const sym=G.sel;ensurePatternData(sym);
+  const sym=G.sel;
+  if(!G.lwChart||!G.cSeries)return;
+  ensurePatternData(sym);
   const data=_patData(mode,sym);
   clearPatternDrawing();
   if(!data)return;
-  const pts=data.points;
-  if(!pts||pts.length<2)return;
-  const col=mode==='harm'?(data.sig==='شراء'?'#0ecf7e':'#f04458'):mode==='wolfe'?(data.bullish?'#0ecf7e':'#f04458'):mode==='channel'?'#a78bfa':(data.bullBias?'#4a9eff':'#fb923c');
-  if(mode!=='channel'){
-    /* Channel points are two independent pairs (2 highs, 2 lows), not one
-       chronological path — connecting all 4 in array order would draw a
-       meaningless zig-zag across unrelated points, so skip the main path
-       line for channel mode; the two trend lines below ARE the pattern. */
-    const mainLine=G.lwChart.addLineSeries({color:col,lineWidth:3,lineStyle:mode==='harm'&&data.forming?2:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-    mainLine.setData(pts.map(p=>({time:p.time,value:p.price})));
-    _patLineSeriesArr.push(mainLine);
-  }
-  /* Wolfe Wave / Channel both need extra trend lines drawn separately —
-     for Wolfe that's the 1-3 and 2-4 channel lines, for the auto-channel
-     that's the resistance + support lines themselves (the whole point). */
-  if((mode==='wolfe'||mode==='channel')&&data.auxLines){
-    for(const al of data.auxLines){
-      try{
-        const s=G.lwChart.addLineSeries({color:al.color,lineWidth:mode==='channel'?2.5:2,lineStyle:al.style??1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-        s.setData([{time:al.from.time,value:al.from.price},{time:al.to.time,value:al.to.price}]);
-        _patLineSeriesArr.push(s);
-      }catch(e){}
-    }
-  }
-  /* Label position follows the actual zig-zag shape: a local peak gets its
-     label above the candle, a local trough gets it below — instead of a
-     blind alternation that can land the text on top of the wick. Channel
-     points aren't a sequential path, so position them by type instead. */
-  const mk=mode==='channel'
-    ? pts.map(p=>({time:p.time,position:p.label.includes('قمة')?'aboveBar':'belowBar',color:p.label.includes('قمة')?'#f04458':'#0ecf7e',shape:'circle',text:p.label,size:1}))
-    : pts.map((p,i)=>{
-        const prev=pts[i-1],next=pts[i+1];
-        const isPeak=(!prev||p.price>=prev.price)&&(!next||p.price>=next.price);
-        return{time:p.time,position:isPeak?'aboveBar':'belowBar',color:col,shape:'circle',text:p.label,size:2};
-      });
-  if(G.cSeries)G.cSeries.setMarkers(mk);
-  /* Draw the projected target(s) as horizontal price lines so the user
-     can see exactly where the pattern/wave expects price to go next. */
-  const aP=(price,title,color,style)=>{try{_patTargetLines.push(G.cSeries.createPriceLine({price,title,color,lineWidth:1.5,lineStyle:style||2,axisLabelVisible:true}));}catch(e){}};
+
+  const col=mode==='harm'?(data.sig==='شراء'?'#0ecf7e':'#f04458')
+    :mode==='wolfe'?(data.bullish?'#0ecf7e':'#f04458')
+    :mode==='channel'?'#a78bfa'
+    :mode==='frac'?'#22d3ee'
+    :(data.bullBias?'#4a9eff':'#fb923c');
+
+  const addSeries=(pts,o)=>{
+    /* حماية: lightweight-charts يرفض نقاطاً متساوية الطابع الزمني أو غير
+       مرتّبة، ويسقط الرسمة كلها بلا رسالة. ننظّف قبل التمرير. */
+    const clean=[];const seen=new Set();
+    pts.slice().sort((a,b)=>a.time-b.time).forEach(p=>{
+      if(p.value==null||!isFinite(p.value)||seen.has(p.time))return;
+      seen.add(p.time);clean.push(p);
+    });
+    if(clean.length<2)return null;
+    try{
+      const s=G.lwChart.addLineSeries(Object.assign({priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false},o));
+      s.setData(clean);_patLineSeriesArr.push(s);return s;
+    }catch(e){return null;}
+  };
+
+  const pts=data.points||[];
+  if(mode!=='channel'&&mode!=='frac'&&pts.length>=2)
+    addSeries(pts.map(p=>({time:p.time,value:p.price})),
+      {color:col,lineWidth:3,lineStyle:(mode==='harm'&&data.live)?2:0});
+
+  /* الامتداد المتوقّع: من السعر الحالي إلى الهدف/منطقة الوصول، متقطّعاً */
+  if(data.projection)
+    addSeries([{time:data.projection.from.time,value:data.projection.from.price},
+               {time:data.projection.to.time,value:data.projection.to.price}],
+      {color:col,lineWidth:2,lineStyle:3});
+
+  if(data.auxLines)for(const al of data.auxLines)
+    addSeries([{time:al.from.time,value:al.from.price},{time:al.to.time,value:al.to.price}],
+      {color:al.color,lineWidth:mode==='channel'?2.5:2,lineStyle:al.style??1});
+
+  /* العلامات */
+  let mk=[];
+  if(mode==='channel')
+    mk=pts.map(p=>({time:p.time,position:p.label.includes('قمة')?'aboveBar':'belowBar',
+      color:p.label.includes('قمة')?'#f04458':'#0ecf7e',shape:'circle',text:p.label,size:1}));
+  else if(mode!=='frac')
+    mk=pts.map((p,i)=>{
+      const prev=pts[i-1],next=pts[i+1];
+      const isPeak=(!prev||p.price>=prev.price)&&(!next||p.price>=next.price);
+      return{time:p.time,position:isPeak?'aboveBar':'belowBar',color:col,shape:'circle',text:p.label,size:2};
+    });
+  if(mk.length){mk.sort((a,b)=>a.time-b.time);try{G.cSeries.setMarkers(mk);}catch(e){}}
+
+  /* خطوط أفقية بلا تكرار */
+  const used=new Set();
+  const aP=(price,title,color,style)=>{
+    if(price==null||!isFinite(price))return;
+    const key=(+price).toFixed(2);if(used.has(key))return;used.add(key);
+    try{_patTargetLines.push(G.cSeries.createPriceLine({price:+price,title,color,lineWidth:1.5,lineStyle:style??2,axisLabelVisible:true}));}catch(e){}
+  };
+
   if(mode==='harm'&&data.targets){
     const t=data.targets;
-    aP(t.t1,data.live?'حافة PRZ 1':'هدف 1',col,2);
-    aP(t.t2,data.live?'حافة PRZ 2':'هدف 2',col,2);
-    aP(t.t3,'هدف 3 (A)',col,1);
+    if(data.live){
+      aP(t.przLo,'PRZ ↓','#f5c842',2);
+      aP(t.przHi,'PRZ ↑','#f5c842',2);
+    }
+    aP(t.t1,'هدف 1 (0.382 من AD)',col,2);
+    aP(t.t2,'هدف 2 (0.618 من AD)',col,2);
+    aP(t.c ,'هدف 3 (نقطة C)',col,1);
+    aP(t.t3,'هدف 4 (نقطة A)',col,1);
     aP(t.sl,'وقف الخسارة','#f04458',0);
   }else if(mode==='ew'){
     if(data.target)aP(data.target.price,data.target.label,col,2);
     if(data.target2)aP(data.target2.price,data.target2.label,col,1);
-  }else if(mode==='wolfe'&&data.target){
-    aP(data.target.price,data.target.label,col,2);
+    if(data.stop)aP(data.stop.price,data.stop.label,'#f04458',0);
+  }else if(mode==='wolfe'){
+    if(data.target)aP(data.target.price,data.target.label,col,2);
+    if(data.stop)aP(data.stop.price,data.stop.label,'#f04458',0);
   }else if(mode==='channel'){
     aP(data.resAtLast,'مقاومة القناة','#f04458',0);
     aP(data.supAtLast,'دعم القناة','#0ecf7e',0);
     aP(data.breakoutUpTarget,'هدف كسر صاعد',col,2);
     aP(data.breakoutDownTarget,'هدف كسر هابط',col,2);
+  }else if(mode==='frac'){
+    (data.levelsUp||[]).forEach((f,k)=>aP(f.p,`قمة فراكتالية ${k+1}`,'#f04458',k?1:0));
+    (data.levelsDown||[]).forEach((f,k)=>aP(f.p,`قاع فراكتالي ${k+1}`,'#0ecf7e',k?1:0));
+    aP(data.target1,'🎯 الهدف الفراكتالي الأول','#22d3ee',0);
+    if(data.target2)aP(data.target2,'الهدف الثاني','#22d3ee',2);
+    if(data.measuredMove)aP(data.measuredMove,'الحركة المقيسة','#f5c842',2);
   }
+
   const info=document.getElementById('pat-info');
   if(info){
     if(mode==='harm'){
       const t=data.targets;
-      const tgTxt=t?(data.live
-        ?`<br><b>🎯 منطقة الارتداد المتوقعة (PRZ):</b> بين ${t.t1} و ${t.t2} · هدف نهائي(A)=${t.t3} — <b>وقف الخسارة:</b> ${t.sl}`
-        :`<br><b>🎯 الأهداف:</b> هدف1=${t.t1} · هدف2=${t.t2} · هدف3(A)=${t.t3} — <b>وقف الخسارة:</b> ${t.sl}`):'';
-      const stateTxt=data.live?'<b style="color:#f5c842">⏳ لسا ما وصل الهدف — راقب منطقة الـ PRZ</b>':data.forming?'(قيد التكوّن)':'(مكتمل — تاريخي)';
-      info.innerHTML=`<b>🦋 نموذج ${data.name}</b> — ${data.sig==='شراء'?'صعودي':'هبوطي'} ${stateTxt} — اكتمال ${data.completion}%<br>${data.why}${tgTxt}`;
-    }else if(mode==='wolfe'){
-      const tgTxt=data.target?`<br><b>🎯 ${data.target.label}:</b> ${data.target.price}`:'';
-      info.innerHTML=`<b>🐺 موجة الذئب</b> — ${data.sig==='شراء'?'صعودي':'هبوطي'}<br>${data.why}${tgTxt}<br><span style="color:var(--t3)">الخط البنفسجي = خط 1-3 · الخط البرتقالي = خط 2-4</span>`;
-    }else if(mode==='channel'){
-      info.innerHTML=`<b>📐 قناة ${data.shape}</b><br>${data.why}<br><b>🎯 هدف كسر صاعد:</b> ${data.breakoutUpTarget} · <b>هدف كسر هابط:</b> ${data.breakoutDownTarget}<br><span style="color:var(--t3)">الخط الأحمر = مقاومة (تصل قمتين) · الخط الأخضر = دعم (يصل قاعين) — ممدودان تلقائياً للأمام</span>`;
+      const zone=data.live?`<br><b>🎯 منطقة الارتداد PRZ:</b> ${t.przLo} — ${t.przHi} (تقاطع إسقاط BC مع ارتداد ${data.name==='Shark'||data.name==='Cypher'?'XC':'XA'})`:'';
+      info.innerHTML=`<b>🦋 ${data.name}</b> — ${data.sig==='شراء'?'صعودي':'هبوطي'} `
+        +(data.live?`<b style="color:#f5c842">⏳ قيد التكوّن ${data.completion}٪</b>`:data.stale?'<span style="color:#7a8ba8">مكتمل قديم — مرجع تاريخي</span>':'<b style="color:#0ecf7e">مكتمل حديثاً</b>')
+        +`<br>${data.why}${zone}`
+        +`<br><b>الأهداف:</b> ${t.t1} · ${t.t2} · C=${t.c} · A=${t.t3} — <b>الوقف:</b> ${t.sl}`;
     }else if(mode==='ew'){
-      const freshTxt=data.fresh?'<span style="color:#0ecf7e"><b>🟢 بداية طازجة — فرصة دخول مبكرة</b></span><br>':(data.fresh===false&&data.target?'<span style="color:#f5c842">⚠️ الموجة متقدمة، ليست بداية جديدة</span><br>':'');
-      const tgTxt=data.target?`<b>🎯 ${data.target.label}:</b> ${data.target.price}${data.target2?` · <b>${data.target2.label}:</b> ${data.target2.price}`:''}`:'<span style="color:var(--t3)">لا يوجد هدف واضح في هذه المرحلة</span>';
-      info.innerHTML=`<b>🌊 إيليوت</b> — ${data.desc||'—'} ${data.wave!==0?`(${data.sig})`:''}<br>${freshTxt}${data.why}<br>${tgTxt}`;
+      info.innerHTML=`<b>🌊 إيليوت — ${data.desc||'—'}</b> ${data.wave!==0?`(${data.sig})`:''} `
+        +(data.fresh?'<span style="color:#0ecf7e"><b>· بداية مبكرة</b></span>':'')
+        +`<br>${data.why}`
+        +(data.target?`<br><b>🎯 ${data.target.label}:</b> ${data.target.price}`:'')
+        +(data.target2?` · <b>${data.target2.label}:</b> ${data.target2.price}`:'')
+        +(data.stop?`<br><b>⛔ ${data.stop.label}:</b> ${data.stop.price}`:'');
+    }else if(mode==='wolfe'){
+      info.innerHTML=`<b>🐺 موجة الذئب</b> — ${data.sig==='شراء'?'صعودي':'هبوطي'}<br>${data.why}`
+        +`<br><b>🎯 ${data.target.label}:</b> ${data.target.price} — <b>⛔ ${data.stop.label}:</b> ${data.stop.price}`
+        +`<br><span style="color:var(--t3)">بنفسجي = خط 1-3 · برتقالي = خط 2-4 · ذهبي متقطّع = خط 1-4 (EPA)</span>`;
+    }else if(mode==='channel'){
+      info.innerHTML=`<b>📐 قناة ${data.shape}</b><br>${data.why}<br><b>🎯 هدف كسر صاعد:</b> ${data.breakoutUpTarget} · <b>هدف كسر هابط:</b> ${data.breakoutDownTarget}`;
+    }else if(mode==='frac'){
+      info.innerHTML=`<b>🎯 مستويات الفراكتال</b>${data.engine==='local'?' <span style="color:#f5c842">(حساب محلي — محرك core.js غير محمّل)</span>':''}`
+        +`<br>الهدف الأول ${data.target1??'—'} (${data.target1?'+'+((data.target1-data.price)/data.price*100).toFixed(2)+'٪':'—'}) · الهدف الثاني ${data.target2??'—'} · الدعم ${data.support??'—'}`
+        +`<br>قمم حيّة فوق السعر: ${data.highCount} — ${data.cleanRunway?'<b style="color:#0ecf7e">مساحة نظيفة</b>':'<span style="color:#f5c842">المقاومة قريبة</span>'}`;
     }
     info.classList.add('show');
   }
   if(!silent)G.lwChart.timeScale().fitContent();
 }
-
 function updateHeader(sym){
   const p=G.pr[sym]||0,ch=G.ch[sym]||0,pc=G.pc[sym]||0,s=STKS.find(x=>x.sym===sym);
   /* 🛠️ إصلاح أهم مشكلة سلامة في المنصة:
@@ -3904,7 +4243,7 @@ function setTF(range,interval,el){
   G.tf=range;G.tfi=interval;document.querySelectorAll('.tf').forEach(b=>b.classList.remove('on'));el.classList.add('on');
   document.querySelectorAll('.tf-interval').forEach(b=>b.classList.toggle('on',b.dataset.itv===interval));
   const sym=G.sel;delete G.cans[sym];G.ld.delete(sym);G.ldg.delete(sym);
-  if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];
+  if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];if(G.fracCache)delete G.fracCache[sym];
   loadStock(sym,range,interval).then(()=>{calcInd(sym);updateHeader(sym);updateChart(sym);updateTradePlan(sym);});
 }
 function setChartInterval(interval,el){
@@ -3926,7 +4265,7 @@ function setChartInterval(interval,el){
   });
   G.tf=range;G.tfi=interval;
   const sym=G.sel;delete G.cans[sym];G.ld.delete(sym);G.ldg.delete(sym);
-  if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];
+  if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];if(G.fracCache)delete G.fracCache[sym];
   loadStock(sym,range,interval).then(()=>{calcInd(sym);updateHeader(sym);updateChart(sym);updateTradePlan(sym);});
 }
 
@@ -6939,11 +7278,15 @@ function ddTiming(sym) {
 /** أهداف الفراكتال — هدف من البنية لا من مضاعف. */
 function ddFrac(sym) {
   const cs = G.cans[sym];
-  if (!cs || cs.length < 30 || !window.KSAEngine || !KSAEngine.fractalTargets) return null;
+  if (!cs || cs.length < 30) return null;
   const key = sym + '|' + cs.length;
   if (_ddFracCache[key]) return _ddFracCache[key];
   let r = null;
   try { r = KSAEngine.fractalTargets(cs, { k: 2 }); } catch (e) { }
+  /* 🛠️ إصلاح: كانت تعود null بصمت إذا غاب المحرك، فيسقط «الهدف الفراكتالي»
+     من الخطة ويحلّ محله هدف 2R — نفس الحشو الذي تشرح الواجهة تجنّبه. */
+  if ((!r || !r.ok) && typeof fractalTargetsLocal === 'function') r = fractalTargetsLocal(cs, { k: 2 });
+  if (r && r.ok && r.target == null && r.target1 != null) { r.target = r.target1; r.targetSource = r.targetSource || 'أقرب قمة فراكتالية غير مكسورة'; }
   _ddFracCache[key] = r;
   return r;
 }
