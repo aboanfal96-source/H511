@@ -15,7 +15,15 @@
    التشغيل:  node tests/engine.test.js
    ══════════════════════════════════════════════════════════════════════════ */
 'use strict';
-const E = require('../engine/core.js');
+
+/* يعمل الملف من جذر المستودع (engine.test.js) ومن مجلد tests/ على السواء —
+   وُضع في الموضعين في نسخ مختلفة، ومسار require صلب كان يُسقطه في أحدهما. */
+const E = (() => {
+  for (const rel of ['./engine/core.js', '../engine/core.js']) {
+    try { return require(require('path').resolve(__dirname, rel)); } catch (e) { /* جرّب التالي */ }
+  }
+  throw new Error('تعذّر العثور على engine/core.js — ضع الملف تحت engine/core.js بجوار هذا الاختبار أو في المجلد الأب');
+})();
 
 let passed = 0, failed = 0;
 const fails = [];
