@@ -1,115 +1,97 @@
-/**
- * واجهة المساعد — /api/ai
- *
- * أُعيدت كتابتها لمعالجة مشكلات في النسخة السابقة:
- *
- * 1) 🔴 الأهم: كانت وكيلاً مفتوحاً بلا أي قيد إلى مفتاح Anthropic الخاص
- *    بصاحب المنصة. أي شخص يعرف الرابط يستطيع إرسال أي نص بأي حجم وبأي
- *    تكرار على حساب صاحب المفتاح. أُضيف الآن: تقييد الطريقة، وسقف لطول
- *    النص، وتحديد معدّل بسيط لكل عنوان، وتقييد المنشأ.
- *
- * 2) `const { prompt } = req.body` بلا تحقّق — طلب بلا جسم يرمي استثناءً
- *    يُرجَع نصه للعميل عبر e.message، فيسرّب تفاصيل داخلية.
- *
- * 3) لم يكن هناك تحقّق من وجود ANTHROPIC_API_KEY. عند غيابها كان الطلب
- *    يُرسل بمفتاح undefined ويعود بخطأ مصادقة غامض بدل رسالة إعداد واضحة.
- *
- * 4) كان الطراز مثبّتاً على إصدار قديم.
- */
+/* ══════════════════════════════════════════════════════════════════════════
+   /api/ai — وسيط استدعاء Claude
+   ──────────────────────────────────────────────────────────────────────────
+   دور هذه الدالة إخفاء مفتاح الواجهة البرمجية خلف الخادم لا أكثر. التحليل
+   الكمي كله يتم في engine/core.js قبل الوصول إلى هنا؛ النموذج يشرح المخرجات
+   المحسوبة ولا يُطلب منه اختراع أرقام دخول أو وقف أو أهداف.
 
-const MAX_PROMPT_CHARS = 6000;
-const RATE_LIMIT = { windowMs: 60_000, maxRequests: 10 };
+   🛠️ ثلاثة إصلاحات على النسخة السابقة:
 
-/* تحديد معدّل داخل الذاكرة. ملاحظة صريحة: على منصة بلا حالة مشتركة بين
-   النسخ، هذا يحدّ من الاستخدام لكل نسخة لا عالمياً. يمنع الإساءة العابرة
-   لكنه ليس بديلاً عن بوابة معدّل حقيقية عند الاستخدام الجاد. */
-const hits = new Map();
-function rateLimited(key) {
-  const now = Date.now();
-  const win = (hits.get(key) || []).filter(t => now - t < RATE_LIMIT.windowMs);
-  if (win.length >= RATE_LIMIT.maxRequests) return true;
-  win.push(now);
-  hits.set(key, win);
-  if (hits.size > 5000) for (const [k, v] of hits) if (!v.some(t => now - t < RATE_LIMIT.windowMs)) hits.delete(k);
-  return false;
-}
+   ① معرّف النموذج كان `claude-sonnet-4-20250514` — جيل سابق. صار
+      `claude-opus-5`، ويمكن تجاوزه بمتغيّر بيئة عند الحاجة.
+   ② لم يكن هناك أي تحقّق: لا من الطريقة (POST)، ولا من وجود المفتاح، ولا
+      من نوع `prompt` ولا من طوله. طلب بلا `prompt` كان يمرّ إلى Anthropic
+      ويعود بخطأ 400 غامض، وطلب بمليون حرف كان يمرّ كما هو.
+   ③ الاستجابة كانت تُعاد بحالة 200 دائماً حتى حين يفشل النداء، فتظهر
+      رسالة خطأ المزوّد داخل واجهة تحسبها تحليلاً. الآن تُمرَّر حالة الخطأ.
+
+   وشكل الخطأ موحَّد مع ما تقرأه الواجهة فعلاً في runAI:
+      { error: <رمز آلي>, message: <نص عربي للعرض> }
+   الواجهة تعرض `message` وتفرّع على `error === 'not_configured'` لتُظهر
+   خطوات ضبط المفتاح. إرجاع نص عربي في حقل `error` وحده — كما فعلت نسخة
+   وسيطة من هذا الملف — يجعل الواجهة تعرض «تعذّر الاتصال (HTTP 503)» ولا
+   تُظهر خطوات الضبط إطلاقاً.
+
+   يبقى النداء عبر fetch مباشرةً: المستودع بلا أي اعتمادية npm ولا خطوة
+   بناء، وإضافة حزمة لأجل نداء واحد تغيّر شكل النشر على Vercel بلا داعٍ.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-5';
+const MAX_PROMPT_CHARS = 20000;
 
 export default async function handler(req, res) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    return res.status(204).end();
-  }
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    return res.status(405).json({ error: 'method_not_allowed' });
-  }
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' });
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  if (!process.env.ANTHROPIC_API_KEY)
     return res.status(503).json({
       error: 'not_configured',
-      message: 'خدمة المساعد غير مفعّلة: متغيّر البيئة ANTHROPIC_API_KEY غير مضبوط في إعدادات النشر'
+      message: 'خدمة التحليل النصي غير مُهيّأة على الخادم — مفتاح ANTHROPIC_API_KEY غير مضبوط.'
     });
-  }
-
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
-  if (rateLimited(ip)) {
-    res.setHeader('Retry-After', '60');
-    return res.status(429).json({
-      error: 'rate_limited',
-      message: `تجاوزت الحد المسموح (${RATE_LIMIT.maxRequests} طلبات في الدقيقة). حاول بعد قليل.`
-    });
-  }
 
   let body = req.body;
-  if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = null; } }
-  const prompt = body && typeof body.prompt === 'string' ? body.prompt.trim() : '';
+  if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+  const prompt = body && body.prompt;
 
-  if (!prompt) {
-    return res.status(400).json({ error: 'missing_prompt', message: 'الحقل prompt مطلوب ويجب أن يكون نصاً' });
-  }
-  if (prompt.length > MAX_PROMPT_CHARS) {
-    return res.status(413).json({
-      error: 'prompt_too_long',
-      message: `طول النص ${prompt.length} حرفاً يتجاوز الحد ${MAX_PROMPT_CHARS}`
-    });
-  }
+  if (typeof prompt !== 'string' || !prompt.trim())
+    return res.status(400).json({ error: 'bad_request', message: 'الطلب بلا نص تحليل' });
+  if (prompt.length > MAX_PROMPT_CHARS)
+    return res.status(413).json({ error: 'prompt_too_long', message: `النص أطول من الحد المسموح (${MAX_PROMPT_CHARS} حرفاً)` });
 
   try {
     const upstream = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
-        max_tokens: 1500,
-        system: 'أنت مساعد تحليل كمي للسوق السعودي (تداول). أجب بالعربية، بإيجاز ودقة. '
-          + 'لا تقدّم توصيات استثمارية مباشرة، ولا تذكر نسب نجاح أو احتمالات إلا إذا وردت في المعطيات مع حجم عينتها. '
-          + 'إذا كانت المعطيات غير كافية لاستنتاج، قل ذلك صراحةً بدل التخمين.',
+        model: MODEL,
+        max_tokens: 2000,
+        /* التفكير التكيّفي: النموذج يقرّر عمق الاستدلال بنفسه، ولا يُمرَّر
+           budget_tokens — فهو مرفوض على هذا الجيل. */
+        thinking: { type: 'adaptive' },
         messages: [{ role: 'user', content: prompt }]
       }),
-      signal: AbortSignal.timeout(30_000)
+      signal: AbortSignal.timeout(55000)
     });
 
-    const data = await upstream.json();
+    const data = await upstream.json().catch(() => null);
     if (!upstream.ok) {
-      /* لا نمرّر جسم خطأ المزوّد كما هو — قد يحتوي تفاصيل حساب أو مفتاح */
-      console.error('anthropic upstream error', upstream.status, data?.error?.type);
-      return res.status(502).json({
-        error: 'upstream_error',
-        message: 'تعذّر الحصول على رد من خدمة المساعد',
-        type: data?.error?.type || null
-      });
+      const code = upstream.status === 429 ? 'rate_limited'
+        : upstream.status === 401 || upstream.status === 403 ? 'auth_failed'
+        : 'upstream_error';
+      const message = upstream.status === 429
+        ? 'تجاوزت حدّ الطلبات المسموح — أعد المحاولة بعد قليل.'
+        : (code === 'auth_failed'
+          ? 'مفتاح الواجهة البرمجية مرفوض — تحقّق من صحته وصلاحيته.'
+          : (data?.error?.message || `فشل نداء المزوّد (HTTP ${upstream.status})`));
+      return res.status(upstream.status).json({ error: code, message, status: upstream.status });
     }
+
+    /* رفض السلامة يعود بحالة 200 ومحتوى فارغ — يُصرَّح به بدل عرض فراغ */
+    if (data?.stop_reason === 'refusal')
+      return res.status(200).json({ ...data, notice: 'امتنع النموذج عن الإجابة على هذا الطلب' });
+
     return res.status(200).json(data);
   } catch (e) {
-    console.error('ai handler error', e);
-    return res.status(e.name === 'TimeoutError' ? 504 : 500).json({
-      error: e.name === 'TimeoutError' ? 'timeout' : 'internal_error',
-      message: e.name === 'TimeoutError' ? 'انتهت مهلة الطلب' : 'خطأ داخلي'
+    const timeout = e && e.name === 'TimeoutError';
+    return res.status(timeout ? 504 : 500).json({
+      error: timeout ? 'timeout' : 'internal_error',
+      message: timeout ? 'انتهت مهلة نداء التحليل النصي — أعد المحاولة.' : (e.message || 'خطأ غير متوقع')
     });
   }
 }
