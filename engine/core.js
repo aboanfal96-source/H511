@@ -39,6 +39,24 @@
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
   /* ════════════════════════════════════════════════════════════════════
+     0.5) مولّد عشوائي حتمي
+     ──────────────────────────────────────────────────────────────────
+     كل ما في هذا المحرك يجب أن يعطي النتيجة نفسها لنفس المدخل. اختبار
+     التبديل يحتاج عشوائية، لكنّ `Math.random` تجعل التقرير يغيّر حكمه بين
+     ضغطتي زر — وهذا ما كان يحدث فعلاً في الاختبار التاريخي السابق.
+     البديل: مولّد خطّي متطابق بذرة صريحة. ومُصدَّر لأن الاختبارات تحتاج
+     بيانات قابلة لإعادة التوليد بالضبط.
+     ════════════════════════════════════════════════════════════════════ */
+  function seededRandom(seed) {
+    let s = (seed >>> 0) || 1;
+    return function () {
+      /* Lehmer/Park-Miller: دورة طويلة وتوزيع منتظم يكفي لتوليد بيانات اختبار */
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
      1) Stats — الإحصاء
      ──────────────────────────────────────────────────────────────────
      كل اختبار دلالة في المنصة يمرّ من هنا. لا تُستعمل أي «درجة ثقة»
@@ -182,8 +200,18 @@
       return Stats._lnGamma(n + 1) - Stats._lnGamma(k + 1) - Stats._lnGamma(n - k + 1);
     },
 
-    /** فاصل Wilson لنسبة — أمتن من فاصل Wald عند العينات الصغيرة أو
-     *  النسب القريبة من 0/1، حيث يعطي Wald حدوداً خارج [0,1]. */
+    /**
+     * فاصل Wilson كاملاً: {p, lo, hi}.
+     * 7 من 10 نقطتها 70٪ لكنّ الفاصل يمتدّ من ~39٪ إلى ~90٪. عرض «70٪»
+     * وحدها — كما كانت المنصة تفعل — يخفي هذا تماماً، ويجعل عيّنة من عشر
+     * صفقات تبدو كقياس.
+     */
+    wilson(successes, n, z) {
+      const ci = Stats.wilsonCI(successes, n, z);
+      return { p: n ? successes / n : 0, lo: ci[0], hi: ci[1], n, successes };
+    },
+
+    /** الشكل المختصر [lo, hi] — يستعمله الاختبار التاريخي وتقاريره. */
     wilsonCI(successes, n, z) {
       z = z || 1.959963985;
       if (!n) return [0, 0];
@@ -300,7 +328,10 @@
     },
 
     /** أقل عدد جلسات ممكن نظرياً للانتقال من سعر إلى آخر تحت حدّ التذبذب.
-     *  يمنع عرض هدف يتطلب قفزة مستحيلة في الأفق المذكور. */
+     *  يمنع عرض هدف يتطلب قفزة مستحيلة في الأفق المذكور.
+     *  (`minSessionsToReach` هو الاسم نفسه — يقرأ أوضح عند نقطة الاستدعاء.) */
+    minSessionsToReach(from, to, pct) { return SaudiMarket.minSessionsBetween(from, to, pct); },
+
     minSessionsBetween(from, to, pct) {
       const p = (pct == null ? SaudiMarket.DAILY_LIMIT_PCT : pct) / 100;
       if (!isNum(from) || !isNum(to) || from <= 0 || to <= 0) return null;
@@ -689,8 +720,11 @@
         pv += tp * v; vv += v;
         out[i] = vv > 0 ? pv / vv : c.close;
       }
-      /* قبل نقطة التثبيت لا يوجد VWAP مثبّت — تُملأ بالإغلاق لا بالصفر */
-      for (let i = 0; i < a; i++) out[i] = cs[i].close;
+      /* 🛠️ قبل نقطة التثبيت لا يوجد VWAP مثبّت — تبقى null.
+         ملؤها بأسعار الإغلاق (كما فعلت نسخة وسيطة من هذا الملف) يعطي
+         للمستدعي رقماً تحت اسم «VWAP» لجلسات لم يبدأ فيها التثبيت أصلاً،
+         وهو بالضبط نوع الخطأ الذي بُني هذا المحرك لإزالته: قيمة معقولة
+         المظهر مكان قيمة غير موجودة. */
       return out;
     },
 
@@ -799,6 +833,27 @@
       I.push(_powerAt(x, f)); freqs.push(f); ks.push(k);
     }
     return { I, freqs, ks, m: I.length, N, kMin, kMax };
+  }
+
+  /**
+   * الدورية كقائمة {freq, period, power} — أداة عامة للفحص والاختبار.
+   * الشبكة ترددات فورييه المنتظمة k/N، فالتباعد بين أي ذرّتين متتاليتين
+   * يساوي 1/N بالضبط. (الشبكة غير المنتظمة — مسح أطوال صحيحة 5..60 —
+   * كانت تجعل 55 و56 تقريباً نفس التردد بينما 5 و6 متباعدتان جداً، فتصبح
+   * أي «حصة طاقة» مشوّهة بنيوياً.)
+   * @param {number[]} series سلسلة تُطرح منها المتوسط قبل التحويل
+   * @param {{minPeriod?:number,maxPeriod?:number}} [opt] لقصر النطاق
+   */
+  function periodogram(series, opt) {
+    opt = opt || {};
+    const a = Stats.clean(series);
+    if (a.length < 4) return [];
+    const m = Stats.mean(a);
+    const x = a.map(v => v - m);
+    const minP = opt.minPeriod == null ? 2 : opt.minPeriod;
+    const maxP = opt.maxPeriod == null ? x.length : opt.maxPeriod;
+    const pg = _periodogram(x, minP, maxP);
+    return pg.I.map((v, i) => ({ freq: pg.freqs[i], period: 1 / pg.freqs[i], power: v, k: pg.ks[i] }));
   }
 
   /**
@@ -1250,8 +1305,8 @@
 
     const ge = new Uint32Array(cands.length);
     const sums = new Float64Array(cands.length);
-    let seed = 20240917;
-    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    /* ذرة ثابتة: نتيجة اختبار التبديل يجب ألا تتغيّر بين تشغيلين */
+    const rnd = seededRandom(opt.seed == null ? 20240917 : opt.seed);
 
     for (let it = 0; it < perms; it++) {
       const g2 = gaps.slice();
@@ -1588,15 +1643,34 @@
       else if (ft.ok && ft.support) { target = ft.support; targetSource = 'أقرب قاع فراكتالي غير مكسور'; }
     }
 
+    const lim0 = SaudiMarket.dailyLimits(entry);
+
+    /* 🛠️ لا هدف ⇒ لا خطة. النسخة الوسيطة كانت تُرجع { ok:true, target1:null }
+       وتترك للمستدعي أن يكتشف أن «الخطة» بلا هدف — فيقرأ رقماً غائباً حيث
+       يتوقّع سعراً. الخطة عقدها: دخول ووقف وهدف في الاتجاه الصحيح. إن غاب
+       أحدها فالصادق هو ok:false مع تعليل، لا خطة ناقصة تبدو كاملة.
+       وتبقى الحقول المحسوبة (الدخول، الوقف، ATR، الحدود) متاحة لمن يريد
+       عرض السياق مع سبب الامتناع. */
+    if (target == null) {
+      const why = dirUp
+        ? 'لا يوجد أي مستوى بنيوي فوق السعر ضمن التاريخ المحمّل — السهم في اكتشاف سعري. لا يمكن اشتقاق هدف من البنية، ووضع هدف بمضاعف ثابت هنا اختراع لا تحليل. وسّع النطاق الزمني، أو تعامل معه بوقف متحرّك بلا هدف ثابت.'
+        : 'لا يوجد أي مستوى بنيوي تحت السعر ضمن التاريخ المحمّل — لا يمكن اشتقاق هدف من البنية.';
+      return {
+        ok: false, reason: why,
+        viable: false, viabilityNote: why,
+        dirUp, entry, stop, stopSource,
+        riskPerShare: r2(risk), riskPct: r2(risk / entry * 100),
+        target1: null, rr1: null, targetSource: null,
+        atr: a, atrStopMult: atrMult, minRR,
+        dailyLimitUp: lim0.up, dailyLimitDown: lim0.down, dailyLimitPct: lim0.limitPct,
+        minSessionsToTarget: null,
+        supports: lv.supports.slice(0, 3), resistances: lv.resistances.slice(0, 3)
+      };
+    }
+
     let viable = true, viabilityNote = '';
     let rr1 = null;
-    if (target == null) {
-      viable = false;
-      viabilityNote = dirUp
-        ? 'لا يوجد أي مستوى بنيوي فوق السعر ضمن التاريخ المحمّل — السهم في اكتشاف سعري. لا يمكن اشتقاق هدف من البنية، ووضع هدف بمضاعف ثابت هنا اختراع لا تحليل. وسّع النطاق الزمني أو تعامل معه بوقف متحرّك بلا هدف ثابت.'
-        : 'لا يوجد أي مستوى بنيوي تحت السعر ضمن التاريخ المحمّل — لا يمكن اشتقاق هدف من البنية.';
-      target = null;
-    } else {
+    {
       const reward = Math.abs(target - entry);
       rr1 = r2(reward / risk);
       if (rr1 < minRR) {
@@ -1605,8 +1679,8 @@
       }
     }
 
-    const lim = SaudiMarket.dailyLimits(entry);
-    const minSessions = target != null ? SaudiMarket.minSessionsBetween(entry, target) : null;
+    const lim = lim0;
+    const minSessions = SaudiMarket.minSessionsToReach(entry, target);
 
     return {
       ok: true,
@@ -1637,22 +1711,63 @@
      ════════════════════════════════════════════════════════════════════ */
   const BT_MIN_SIGNALS = 20;
 
-  function _simulateTrade(cs, entryIdx, dirUp, stopDist, rewardRisk, maxHold) {
+  /**
+   * إعدادات الاختبار التاريخي المعلنة. تُصدَّر لأن تقريراً لا يكشف إعداداته
+   * لا يمكن تكرار نتيجته ولا مراجعتها.
+   *
+   * `atrStopMult` هو الرقم الذي غيّر النتيجة أكثر من أي شيء آخر: مسافة
+   * 0.5×ATR في النسخة السابقة تقع داخل ضجيج الجلسة العادي، فكان متوسط عمر
+   * الصفقة 1.8 شمعة — أي أن الاختبار كان يقيس الضجيج لا الفكرة.
+   */
+  const BT_DEFAULTS = {
+    atrStopMult: 1.5,
+    rewardRisk: 2,
+    maxHoldBars: 20,
+    alpha: 0.05,
+    warmup: 100,
+    refitEvery: 5,
+    triggerBars: 2,
+    atrPeriod: 14,
+    minSignals: BT_MIN_SIGNALS
+  };
+
+  /**
+   * محاكاة صفقة واحدة من فهرس دخول، بمسافة وقف مشتقّة من ATR عند تلك اللحظة
+   * (لا من ATR اليوم — ذلك تسرّب زمني صريح).
+   *
+   * متحفّظة عمداً: إن لامست شمعة واحدة الوقف والهدف معاً تُحتسب **وقفاً**،
+   * لأن ترتيبهما داخل الجلسة غير معلوم من بيانات يومية. الافتراض المعاكس
+   * يجمّل كل نتيجة اختبار بلا أي مقابل في التداول الفعلي.
+   *
+   * @returns {{outcome:'stop'|'target'|'time', bars, r, pnlPct, entry, stop, target}|null}
+   *          null حين لا يمكن حساب ATR عند فهرس الدخول.
+   */
+  function simulateTrade(cs, entryIdx, dirUp, opt) {
+    opt = opt || {};
+    const cfg = Object.assign({}, BT_DEFAULTS, opt);
+    if (!cs || entryIdx == null || entryIdx < 1 || entryIdx >= cs.length - 1) return null;
+    let stopDist = opt.stopDist;
+    if (!isNum(stopDist) || stopDist <= 0) {
+      const a = (opt.atrSeries || atrSeries(cs, cfg.atrPeriod))[entryIdx];
+      if (!isNum(a) || a <= 0) return null;
+      stopDist = cfg.atrStopMult * a;
+    }
     const entry = cs[entryIdx].close;
     const stop = dirUp ? entry - stopDist : entry + stopDist;
-    const target = dirUp ? entry + rewardRisk * stopDist : entry - rewardRisk * stopDist;
-    const end = Math.min(cs.length - 1, entryIdx + maxHold);
+    const target = dirUp ? entry + cfg.rewardRisk * stopDist : entry - cfg.rewardRisk * stopDist;
+    const end = Math.min(cs.length - 1, entryIdx + cfg.maxHoldBars);
+    const base = { entry: r2(entry), stop: r2(stop), target: r2(target), stopDist };
     for (let i = entryIdx + 1; i <= end; i++) {
       const c = cs[i];
       const hitStop = dirUp ? c.low <= stop : c.high >= stop;
       const hitTgt = dirUp ? c.high >= target : c.low <= target;
-      /* متحفّظ: التلامس المزدوج يُحتسب وقفاً */
-      if (hitStop) return { r: -1, pnlPct: (dirUp ? stop - entry : entry - stop) / entry * 100, bars: i - entryIdx, exit: 'stop' };
-      if (hitTgt) return { r: rewardRisk, pnlPct: (dirUp ? target - entry : entry - target) / entry * 100, bars: i - entryIdx, exit: 'target' };
+      /* الترتيب مقصود: الوقف يُفحص أولاً فيربح التلامس المزدوج */
+      if (hitStop) return Object.assign({ r: -1, pnlPct: (dirUp ? stop - entry : entry - stop) / entry * 100, bars: i - entryIdx, outcome: 'stop', exit: 'stop' }, base);
+      if (hitTgt) return Object.assign({ r: cfg.rewardRisk, pnlPct: (dirUp ? target - entry : entry - target) / entry * 100, bars: i - entryIdx, outcome: 'target', exit: 'target' }, base);
     }
     const out = cs[end].close;
     const pnl = dirUp ? out - entry : entry - out;
-    return { r: pnl / stopDist, pnlPct: pnl / entry * 100, bars: end - entryIdx, exit: 'time' };
+    return Object.assign({ r: pnl / stopDist, pnlPct: pnl / entry * 100, bars: end - entryIdx, outcome: 'time', exit: 'time' }, base);
   }
 
   function _summarize(trades) {
@@ -1681,17 +1796,9 @@
 
   function backtestSpectral(cs, opt) {
     opt = opt || {};
-    const cfg = {
-      atrStopMult: opt.atrStopMult == null ? 1.5 : opt.atrStopMult,
-      rewardRisk: opt.rewardRisk == null ? 2 : opt.rewardRisk,
-      maxHoldBars: opt.maxHoldBars == null ? 20 : opt.maxHoldBars,
-      alpha: opt.alpha == null ? 0.05 : opt.alpha,
-      warmup: opt.warmup == null ? 100 : opt.warmup,
-      refitEvery: opt.refitEvery == null ? 5 : opt.refitEvery,
-      triggerBars: opt.triggerBars == null ? 2 : opt.triggerBars
-    };
+    const cfg = Object.assign({}, BT_DEFAULTS, opt);
     if (!cs || cs.length < cfg.warmup + cfg.maxHoldBars + 20)
-      return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — الاختبار يتطلب ${cfg.warmup + cfg.maxHoldBars + 20}+ (إحماء ${cfg.warmup} جلسة ثم فترة اختبار)`, config: cfg };
+      return { ok: false, underpowered: true, config: cfg, reason: `عيّنة ${cs ? cs.length : 0} جلسة غير كافية — الاختبار يتطلب ${cfg.warmup + cfg.maxHoldBars + 20}+ (إحماء ${cfg.warmup} جلسة ثم فترة اختبار)` };
 
     const closes = cs.map(c => c.close);
     const atrA = atrSeries(cs, 14);
@@ -1703,11 +1810,11 @@
     for (let t = cfg.warmup; t <= lastEntry; t++) {
       const a = atrA[t];
       if (!isNum(a) || a <= 0) continue;
-      const stopDist = cfg.atrStopMult * a;
+      const sim = Object.assign({}, cfg, { stopDist: cfg.atrStopMult * a });
 
       /* خط الأساس: كل شمعة مؤهّلة في الاتجاهين — توزيع كامل بلا عشوائية */
-      baseTrades.push(_simulateTrade(cs, t, true, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
-      baseTrades.push(_simulateTrade(cs, t, false, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
+      baseTrades.push(simulateTrade(cs, t, true, sim));
+      baseTrades.push(simulateTrade(cs, t, false, sim));
 
       /* الطيف يُعاد بناؤه من البيانات المتاحة حتى t فقط */
       if (specAt < 0 || t - specAt >= cfg.refitEvery) {
@@ -1726,19 +1833,29 @@
       const nv = turns.find(x => x.type === 'valley');
       const np = turns.find(x => x.type === 'peak');
       if (nv && nv.barsAhead <= cfg.triggerBars && nv.usable)
-        sigTrades.push(_simulateTrade(cs, t, true, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
+        sigTrades.push(simulateTrade(cs, t, true, sim));
       else if (np && np.barsAhead <= cfg.triggerBars && np.usable)
-        sigTrades.push(_simulateTrade(cs, t, false, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
+        sigTrades.push(simulateTrade(cs, t, false, sim));
     }
 
     const S = _summarize(sigTrades), B = _summarize(baseTrades);
     const base = { config: cfg, signalCount: sigTrades.length, baselineCount: baseTrades.length, signal: S, baseline: B };
 
-    if (!S || !B) return Object.assign({ ok: false, reason: 'لم تصدر أي إشارة طيفية على هذا السهم — لا شيء يُقارن' }, base);
-    if (S.count < BT_MIN_SIGNALS)
+    /* صفر إشارة هو الحالة القصوى لعيّنة غير كافية، لا نتيجة سلبية:
+       «لم تُختبر» و«اختُبرت وفشلت» حكمان مختلفان تماماً. */
+    if (!S || !B) return Object.assign({
+      ok: false, underpowered: true, minSignals: cfg.minSignals,
+      reason: 'لم تصدر أي إشارة طيفية على هذا السهم — العيّنة غير كافية للمقارنة، ولا شيء يُقارَن. هذه ليست نتيجة سلبية عن الإشارة، بل غياب اختبار أصلاً.'
+    }, base);
+    /* 🛠️ العتبة قابلة للضبط ومعلنة، والحالة تُسمّى صراحةً `underpowered`:
+       «لم يصدر حكم» و«صدر حكم سلبي» نتيجتان مختلفتان تماماً، وخلطهما هو
+       ما جعل النسخة السابقة تبدو كأنها اختبرت وفشلت بينما لم تختبر أصلاً. */
+    if (S.count < cfg.minSignals)
       return Object.assign({
         ok: false,
-        reason: `${S.count} إشارة فقط — الحد الأدنى ${BT_MIN_SIGNALS} قبل إصدار أي حكم إحصائي. النسخة السابقة كانت تصدر حكماً «✅ تتفوّق» من 5 صفقات، وفارق 5 نقاط بهذه العيّنة ضجيج بحت.`
+        underpowered: true,
+        minSignals: cfg.minSignals,
+        reason: `${S.count} إشارة فقط — العيّنة غير كافية، والحد الأدنى ${cfg.minSignals} قبل إصدار أي حكم إحصائي. النسخة السابقة كانت تصدر حكماً «✅ تتفوّق» من 5 صفقات، وفارق 5 نقاط بهذه العيّنة ضجيج بحت.`
       }, base);
 
     const pValue = Stats.twoProportionP(S.wins, S.count, B.wins, B.count);
@@ -1762,7 +1879,7 @@
      18) الواجهة المصدَّرة
      ════════════════════════════════════════════════════════════════════ */
   return {
-    VERSION, SESSIONS_PER_YEAR,
+    VERSION, version: VERSION, SESSIONS_PER_YEAR,
     Stats, SaudiMarket, Cumulative,
 
     /* بيانات */
@@ -1783,6 +1900,10 @@
     timeConfluence, timeWindows,
 
     /* تنفيذ واختبار */
-    executionPlan, backtestSpectral, BT_MIN_SIGNALS
+    executionPlan, backtestSpectral, simulateTrade,
+    BT_DEFAULTS, BT_MIN_SIGNALS,
+
+    /* أدوات مكشوفة للفحص وإعادة إنتاج النتائج */
+    seededRandom, periodogram
   };
 });
