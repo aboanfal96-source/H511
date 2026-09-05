@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23080b16'/%3E%3Cpath d='M5 22l6-7 5 4 5-8 6 5' stroke='%23a78bfa' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>TADAWUL FILTERS PRO | فلاتر متقدمة</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.0/lightweight-charts.standalone.production.js"></script>
 <script>if(typeof LightweightCharts==='undefined'){document.write('<scr'+'ipt src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"><\/scr'+'ipt>')}</script>
@@ -1180,9 +1181,14 @@ async function loadStock(sym,range,interval){
       const d=await rsp.json();
       const res=d?.chart?.result?.[0];
       if(res){const p=parseY(res,sym);if(p){applyY(sym,p);ok=true;}else reason='الاستجابة لا تحتوي شموعاً صالحة كافية';}
-      else reason=d?.error||'الاستجابة بلا نتائج';
+      else reason=d?.message||'الاستجابة بلا نتائج';
     } else {
-      reason=`الخادم أعاد ${rsp.status}`;
+      /* 🛠️ إصلاح: كان سبب الفشل يُعرض كرقم حالة عارٍ («الخادم أعاد 400»).
+         /api/stock يُرجع الآن {error:<رمز>, message:<نص عربي>}، فيظهر السبب
+         الفعلي — رمز غير صالح، أو نطاق غير مدعوم، أو سقوط المصدر — بدل رقم
+         لا يقول للمستخدم ماذا يفعل. */
+      const d=await rsp.json().catch(()=>null);
+      reason=(d&&d.message)?d.message:`الخادم أعاد ${rsp.status}`;
     }
   }catch(e){reason=e.name==='TimeoutError'?'انتهت مهلة الطلب':(e.message||'تعذّر الاتصال');}
   if(!ok)G.failed.set(sym,reason);
@@ -2208,7 +2214,29 @@ function detectDominantCycle(cs){
  * candle-index distance IS trading-day distance — no extra calendar logic
  * is needed, which keeps this O(n) and allocation-light.
  */
+/* ══════════════════════════════════════════════════════════════════════
+   🛠️ إصلاح: كانت المنصة تحمل كاشفَي ارتكاز مختلفين يعطيان إجابتين
+   مختلفتين على السؤال نفسه: «ما آخر ارتكاز مؤكد؟».
+
+   • هذه الدالة كانت تأخذ ما قبل آخر نقطة ZigZag بعمق 3.
+   • بينما التقرير الزمني وغرفة القرار يستدعيان KSAEngine.lastConfirmedPivot
+     بقاعدة تأكيد صريحة (3 جلسات مغلقة على كل جانب).
+
+   القياس الذي كشفه: على سهم واحد أعطى المحرك «قمة عند 48.33» بينما أعطت
+   هذه الدالة قاعاً — فيظهر في عمود «متى» انعطافُ قاعٍ متوقع بينما التقرير
+   الزمني لنفس السهم يقول ميلاً هبوطياً من قمة. ولأن كل النوافذ الزمنية
+   تُعدّ من الارتكاز، اختلاف الأصل يزيح كل التواريخ المعروضة.
+
+   الأصل الزمني يجب أن يكون واحداً في المنصة كلها. تفوّض الدالة الآن إلى
+   المحرك، ويبقى ZigZag بديلاً فقط إن تعذّر تحميل المحرك. */
 function findLastConfirmedPivot(cs){
+  if(!cs||!cs.length)return null;
+  if(window.KSAEngine&&KSAEngine.lastConfirmedPivot){
+    const p=KSAEngine.lastConfirmedPivot(cs,3);
+    /* شكل ZigZag المتوقع من المستدعين: {i,p,type} */
+    if(p)return{i:p.i,p:p.price,type:p.type,confirmedAt:p.confirmedAt};
+    return null;
+  }
   const zz=calcZigZag(cs,3);
   if(zz.length<2)return null;
   /* The very last zz point tracks the still-forming swing (today's extreme);
@@ -2866,18 +2894,48 @@ function calcTradePlan(sym){
   }
   const risk=+(entry-stop).toFixed(2);
 
-  /* ── targets: nearest resistances first, fill remaining with R-multiples ── */
-  const targets=sr.resistances.filter(r=>r.price>entry*1.001).map(r=>({price:r.price,source:r.sources.join(' + '),structural:true}));
-  const rMultiples=[2,3,4];
-  while(targets.length<3){
-    const mult=rMultiples[targets.length]||(targets.length+2);
-    targets.push({price:+(entry+risk*mult).toFixed(2),source:`امتداد ${mult}R`,structural:false});
-  }
-  const targetsFinal=targets.slice(0,3).map(t=>({...t,rr:risk>0?+((t.price-entry)/risk).toFixed(1):null}));
+  /* ══ الأهداف ══════════════════════════════════════════════════════════
+     🛠️ إصلاح: النسخة السابقة كانت تأخذ *كل* مقاومة فوق entry×1.001 هدفاً،
+     بالترتيب من الأقرب. وقائمة المقاومات في calcSupportResistance تضمّ
+     المتوسطات المتحركة وحافة بولنجر وVWAP — لا القمم السعرية وحدها. فإذا
+     صادف MA20 على بعد 0.4٪ فوق السعر بينما الوقف على بعد 5.5٪، يصير
+     «الهدف الأول» +0.4٪ مقابل مخاطرة 5.5٪، أي عائد/مخاطرة 1:0.07.
+
+     القياس على سهم حقيقي: دخول 46.41 · وقف 43.85 · «الأهداف» 46.58 و
+     46.92 و47.61 ⇒ النسب 0.07 و0.20 و0.47. صفقة لا يقبلها أحد لو رأى
+     نسبتها، وكانت تُعرض في الجدول باعتبارها خطة.
+
+     القاعدة الآن: المستوى لا يصير هدفاً إلا إذا استحقّ المخاطرة (MIN_RR).
+     المستويات الأقرب لا تُحذف — تبقى في `resistances` لأنها مناطق تفاعل
+     حقيقية تُدار عندها الصفقة، لكنها لا تُسمّى هدفاً. وإن لم يوجد أي
+     مستوى بنيوي يستحق، تُعلَن الخطة غير مجدية صراحةً بدل ملء الفراغ
+     بمضاعفات R — لأن «هدف = دخول + 2×مخاطرة» يعيد كتابة النسبة التي
+     يُفترض أن يقيسها. */
+  const MIN_RR=1.5;
+  const structural=sr.resistances
+    .filter(r=>r.price>entry+risk*MIN_RR)
+    .map(r=>({price:r.price,source:r.sources.join(' + '),structural:true}))
+    .sort((a,b)=>a.price-b.price);
+
+  /* مستويات قريبة تُدار عندها الصفقة ولا تُسمّى هدفاً */
+  const nearLevels=sr.resistances
+    .filter(r=>r.price>entry*1.001&&r.price<=entry+risk*MIN_RR)
+    .map(r=>({price:r.price,source:r.sources.join(' + ')}));
+
+  const viable=structural.length>0&&risk>0;
+  const targetsFinal=structural.slice(0,3).map(t=>({...t,rr:+((t.price-entry)/risk).toFixed(2)}));
+  const viabilityNote=viable?'':(
+    risk<=0?'مسافة المخاطرة صفرية — لا يمكن حساب خطة.'
+    :nearLevels.length
+      ?`أقرب مستوى بنيوي (${nearLevels[0].price}) يبعد ${(+(nearLevels[0].price-entry).toFixed(2))} ر.س بينما المخاطرة ${risk} ر.س ⇒ العائد/المخاطرة دون 1:${MIN_RR}. لم يُضخَّم الهدف للوصول إلى النسبة: تضخيمه يجعل الرقم جميلاً والصفقة كما هي.`
+      :'لا يوجد مستوى بنيوي فوق السعر ضمن التاريخ المحمّل — السهم في اكتشاف سعري. لا يُشتق هدف من البنية، ووضع مضاعف ثابت هنا اختراع لا تحليل.'
+  );
 
   return{sym,entry,stop,risk,stopSource,planType,planWhy,
-    supports:sr.supports,resistances:sr.resistances,targets:targetsFinal,
-    rrFirst:targetsFinal[0]?.rr};
+    supports:sr.supports,resistances:sr.resistances,
+    targets:targetsFinal,nearLevels,minRR:MIN_RR,
+    viable,viabilityNote,
+    rrFirst:targetsFinal[0]?.rr??null};
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -2892,6 +2950,12 @@ function calcTradePlan(sym){
    MA20/support, wait for RSI cooldown, or wait for a confirmed breakout
    close instead of buying right under a resistance wall).
    ══════════════════════════════════════════════════════════════ */
+/** الهدف الأول إن وُجد. يعود null حين لا يوجد مستوى بنيوي يستحق المخاطرة —
+ *  وهي حالة حقيقية بعد تشديد بوابة العائد/المخاطرة في calcTradePlan، فيجب
+ *  ألا يقرأها أحد كـ targets[0].price ويسقط باستثناء. */
+function tpT1(tp){ return (tp&&tp.targets&&tp.targets[0])?tp.targets[0].price:null; }
+if(typeof window!=='undefined')window.tpT1=tpT1;
+
 function calcEntryVerdict(sym,tp){
   if(!tp)return null;
   const cs=G.cans[sym],ind=G.ind[sym];
@@ -3280,7 +3344,7 @@ function getHeaders(){
     instvol:`${base}<th onclick="sortResults('iv_r')">مضاعف الحجم</th><th>موضع الإغلاق</th><th>الحالة</th>${end}`,
     revcandle:`${base}<th>النمط</th><th>الموقع</th><th>الحالة</th>${end}`,
     whale:`${base}<th onclick="sortResults('sb_s')">🐋 درجة القاع</th><th>الموقع بالمدى</th><th>الحالة</th>${end}`,
-    decision:`${base}<th>القرار</th><th title="0-100: انضغاط + جفاف حجم + لفّ تحت المقاومة + بنية + تجميع صامت + توقيت">🚀 الجاهزية</th><th>الدخول</th><th>الوقف</th><th title="أقرب قمة فراكتالية غير مكسورة — مستوى حقيقي لا مضاعف مخترع">🎯 هدف ١</th><th title="ثاني مقاومة مرصودة فوق الهدف الأول — أو امتداد معلن إن لم توجد">🎯 هدف ٢</th><th>R:R</th><th>الكمية</th><th title="الانعطاف القادم من الدورة الطيفية ± عدم اليقين">⏱ النافذة</th><th title="الموقع داخل الدورة: 0٪=قمة · 50٪=قاع · ↗ مرحلة صاعدة">🔬 الطيف</th><th title="أ = مؤكد إحصائياً · ب = داعم · ج = مضاد">الأدلة</th><th>تفاصيل</th>`,
+    decision:`${base}<th>القرار</th><th title="0-100: انضغاط + جفاف حجم + لفّ تحت المقاومة + بنية + تجميع صامت + توقيت">🚀 الجاهزية</th><th>الدخول</th><th>الوقف</th><th title="أقرب قمة فراكتالية غير مكسورة — مستوى حقيقي لا مضاعف مخترع">🎯 هدف الفراكتال</th><th>R:R</th><th>الكمية</th><th title="الانعطاف القادم من الدورة الطيفية ± عدم اليقين">⏱ النافذة</th><th title="الموقع داخل الدورة: 0٪=قمة · 50٪=قاع · ↗ مرحلة صاعدة">🔬 الطيف</th><th title="أ = مؤكد إحصائياً · ب = داعم · ج = مضاد">الأدلة</th><th>تفاصيل</th>`,
     spectral:`${base}<th onclick="sortResults('spectral_edge')">تفوق نسبة الربح</th><th>عدد الإشارات</th><th>الحكم</th><th>تفاصيل</th>`,
   };
   return cols[_filter]||cols.all;
@@ -3734,7 +3798,21 @@ function renderResults(){
 
 /* ══ CHART ENGINE ══ */
 function initChart(){
-  const ct=document.getElementById('lw-chart');if(!ct||typeof LightweightCharts==='undefined')return;
+  const ct=document.getElementById('lw-chart');if(!ct)return;
+  /* 🛠️ إصلاح فشل صامت: مكتبة الرسم تأتي من شبكة توصيل خارجية. إن حجبها
+     جدار ناري أو سقطت، كانت الدالة تعود بلا شيء فتبقى مساحة الشارت سوداء
+     فارغة بلا سبب معروض — والمستخدم يظنّ أن السهم بلا بيانات، بينما كل
+     التحليل الرقمي يعمل. الآن يُقال ما حدث، ويُقال أيضاً إن بقية المنصة
+     تعمل، لأن ذلك صحيح: الشارت عرضٌ لا مصدرُ حساب. */
+  if(typeof LightweightCharts==='undefined'){
+    ct.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px">'
+      +'<div style="max-width:420px"><div style="color:var(--gd);font-weight:700;margin-bottom:6px">⚠ تعذّر تحميل مكتبة الرسم</div>'
+      +'<div style="color:var(--t2);font-size:11.5px;line-height:1.8">الشارت يأتي من شبكة توصيل خارجية، ولم تصل. '
+      +'الأسباب المعتادة: انقطاع الشبكة، أو حجب من جدار ناري، أو سقوط الشبكة نفسها.<br><br>'
+      +'<b>بقية المنصة تعمل:</b> الفلاتر والتحليل الزمني والتقارير وغرفة القرار كلها تُحسب محلياً في المتصفح ولا تعتمد على هذه المكتبة. '
+      +'أعد تحميل الصفحة عند عودة الاتصال ليظهر الشارت.</div></div></div>';
+    return;
+  }
   G.lwChart=LightweightCharts.createChart(ct,{
     width:ct.clientWidth,height:ct.clientHeight,
     layout:{background:{type:'solid',color:'#04060e'},textColor:'#7a8ba8',fontFamily:"'IBM Plex Mono',monospace"},
@@ -4335,7 +4413,16 @@ function updateTradePlan(sym){
       <div class="tp-box-title" style="padding:6px 0 2px">🔴 المقاومات (الأقرب أولاً)</div>
       ${tp.resistances.length?tp.resistances.map(r=>levelRow(r,'res')).join(''):'<div class="tp-note">لا توجد مقاومة هيكلية واضحة قريبة</div>'}
       <div class="tp-box-title" style="padding:6px 0 2px">🎯 الأهداف</div>
-      ${tp.targets.map((t,i)=>targetRow(t,i)).join('')}
+      ${tp.targets.length
+        ? tp.targets.map((t,i)=>targetRow(t,i)).join('')
+        : `<div class="tp-note" style="border-color:rgba(240,68,88,.35);background:rgba(240,68,88,.06);color:#f7b3bc">
+             ⛔ <b>لا هدف يستحق هذه المخاطرة</b> — ${tp.viabilityNote}
+           </div>`}
+      ${tp.nearLevels&&tp.nearLevels.length?`
+      <div class="tp-box-title" style="padding:6px 0 2px">📍 مستويات تفاعل قبل الهدف (تُدار عندها الصفقة، وليست أهدافاً)</div>
+      ${tp.nearLevels.map(l=>`<div class="tp-level-row" style="background:rgba(122,139,168,.06)">
+        <span class="lv-price" style="color:var(--t2)">${l.price}</span>
+        <span class="lv-src">${l.source} · أقرب من ${tp.minRR}× المخاطرة</span></div>`).join('')}`:''}
     </div>
     <div class="tp-note">⚠ هذه المستويات تحليل فني آلي وليست توصية استثمارية — تحقق دائماً من إدارة المخاطر الخاصة بك.</div>
   `;
@@ -6686,7 +6773,8 @@ function ddDecide(d, regime) {
             : 'لا شرط تشغيل واضح — يبقى تحت المراقبة';
 
   /* أفق زمني تقديري: كم جلسة يحتاج السهم نظرياً لبلوغ الهدف بمداه الطبيعي */
-  const sessionsToT1 = atr > 0 ? Math.ceil((tp.targets[0].price - execPrice) / atr) : null;
+  const _t1 = tpT1(tp);
+  const sessionsToT1 = (atr > 0 && _t1 != null) ? Math.ceil((_t1 - execPrice) / atr) : null;
 
   return {
     sym, name: d.name, price: d.price, pct: d.pct, sec: d.sec,
@@ -6845,7 +6933,7 @@ function ddBrief() {
         الدخول: <b style="color:#FFD700">${r.execPrice} ر.س</b> ·
         الكمية: <b>${ddFmt(r.qty)} سهم</b> (تكلفة ${ddFmt(Math.round(r.qty * r.execPrice))} ر.س)<br>
         الوقف: <b style="color:#f04458">${r.tp.stop}</b> ·
-        الهدف: <b style="color:#0ecf7e">${r.finalTarget ?? r.tp.targets[0].price}</b> <span style="font-size:10.5px;color:#9aa4b8">(${r.rrSrc || 'هيكلي'})</span> ·
+        الهدف: <b style="color:#0ecf7e">${r.finalTarget ?? tpT1(r.tp) ?? '—'}</b> <span style="font-size:10.5px;color:#9aa4b8">(${r.rrSrc || 'هيكلي'})</span> ·
         العائد/المخاطرة: <b>1:${r.rr}</b> ·
         المخاطرة الفعلية: <b>${ddFmt(Math.round(r.qty * r.size.riskPerShare))} ر.س (${(r.qty * r.size.riskPerShare / DD.cfg.capital * 100).toFixed(2)}٪)</b><br>
         <span style="color:#9aa4b8">${r.trigger}</span>
@@ -6990,7 +7078,7 @@ function ddReport(sym) {
     <div style="${SEC_}border-color:rgba(167,139,250,.3)">
       <div style="${HEAD}">🔴 قواعد الخروج المسبقة (اعرفها قبل الدخول)</div>
       <div style="margin-bottom:5px">① كسر ${r.tp.stop} ر.س ⟵ خروج كامل، بلا مراجعة.</div>
-      <div style="margin-bottom:5px">② بلوغ ${r.tp.targets[0].price} ر.س ⟵ بيع نصف الكمية ونقل الوقف إلى ${r.execPrice} (تعادل).</div>
+      <div style="margin-bottom:5px">② بلوغ ${r.finalTarget ?? tpT1(r.tp) ?? '—'} ر.س ⟵ بيع نصف الكمية ونقل الوقف إلى ${r.execPrice} (تعادل).</div>
       <div style="margin-bottom:5px">③ بعد تجاوز 1R ⟵ وقف متحرك = أعلى قمة − ${DD.cfg.trailATR}×ATR (حالياً ${(r.atr * DD.cfg.trailATR).toFixed(2)} ر.س تحت القمة).</div>
       <div style="margin-bottom:5px">④ انتفاء دليلين من أدلة الدخول ⟵ خروج كامل حتى لو لم يُكسر الوقف.</div>
       <div style="margin-bottom:5px">⑤ مرور ${DD.cfg.maxHoldBars} جلسة والربح دون 0.5R ⟵ خروج زمني.</div>
@@ -7021,11 +7109,11 @@ function ddAddFromDecision(sym) {
   if (!entry || entry <= 0) return;
   DD.book.push({
     id: Date.now(), sym, name: r.name, sec: r.sec, qty, entry: +entry.toFixed(2),
-    stop: r.tp.stop, t1: r.finalTarget ?? r.tp.targets[0].price, t2: r.finalTarget2 ?? r.tp.targets[1]?.price ?? null,
+    stop: r.tp.stop, t1: r.finalTarget ?? tpT1(r.tp), t2: r.tp.targets?.[1]?.price ?? null,
     ts: Date.now(), t1Taken: false, why: r.label
   });
   DD.save(); ddUpdateBar();
-  alert(`✅ سُجّل المركز: ${qty} سهم من ${sym} عند ${entry} ر.س\nالوقف ${r.tp.stop} · الهدف الأول ${r.tp.targets[0].price}`);
+  alert(`✅ سُجّل المركز: ${qty} سهم من ${sym} عند ${entry} ر.س\nالوقف ${r.tp.stop} · الهدف الأول ${r.finalTarget ?? tpT1(r.tp) ?? '—'}`);
   if (document.getElementById('tar-overlay')?.style.display === 'block') ddBook();
 }
 window.ddAddFromDecision = ddAddFromDecision;
@@ -7196,7 +7284,7 @@ function ddRenderTable() {
       <td><span style="color:${r.color};font-weight:700;white-space:nowrap">${r.label}</span></td>
       <td style="font-family:monospace;color:#FFD700;font-weight:700">${r.execPrice}</td>
       <td style="font-family:monospace;color:var(--dn)">${r.tp.stop}</td>
-      <td style="font-family:monospace;color:var(--up)">${r.tp.targets[0].price}</td>
+      <td style="font-family:monospace;color:var(--up)">${r.finalTarget ?? tpT1(r.tp) ?? '—'}</td>
       <td style="font-family:monospace;font-weight:700">1:${r.rr}</td>
       <td style="font-family:monospace">${ddFmt(r.qty)}</td>
       <td style="font-family:monospace;color:var(--t2)">${ddFmt(Math.round(r.qty * r.size.riskPerShare))}</td>
@@ -7530,8 +7618,8 @@ function ddDecide2(d, regime, mode) {
         : action === 'buy_half' ? 'نصف الكمية الآن، والباقي بعد إغلاق فوق الهدف الأول'
           : action === 'wait' ? (verdict?.bestEntryWhy || '—') : 'تحت المراقبة');
 
-  const finalTarget = fracTarget ?? tp.targets[0].price;
-  const sessionsToT = atr > 0 ? Math.ceil((finalTarget - execPrice) / atr) : null;
+  const finalTarget = fracTarget ?? tpT1(tp);
+  const sessionsToT = (atr > 0 && finalTarget != null) ? Math.ceil((finalTarget - execPrice) / atr) : null;
 
   /* الترتيب: في وضع الانطلاق تحكم الجاهزية، وفي وضع التنفيذ تحكم الأدلة */
   const rank = mode === 'launch'
@@ -7602,14 +7690,14 @@ window.ddSetMode = ddSetMode;
 function ddRenderTable2() {
   const body = document.getElementById('rtbody');
   if (!DD.ran) {
-    body.innerHTML = `<tr><td colspan="16" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
+    body.innerHTML = `<tr><td colspan="15" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
       ① شغّل «🔬 مسح شامل» · ② اضغط «🧭 احسب القرارات» أعلاه.<br>
       <span style="font-size:11px">وضع «🚀 جاهزة للانطلاق» يرشّح الأسهم الملفوفة قبل الحركة · وضع «✅ جاهزة للتنفيذ» يعرض ما اجتاز كل بوابات التنفيذ.</span>
     </td></tr>`;
     _visibleSyms = []; return;
   }
   if (!DD.results.length) {
-    body.innerHTML = `<tr><td colspan="16" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
+    body.innerHTML = `<tr><td colspan="15" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
       لا سهم اجتاز العتبات في هذا الوضع.<br>
       <span style="color:#9aa4b8;font-size:11px">جرّب الوضع الآخر، أو خفّض «عتبة الجاهزية» من ⚙️ الإعدادات. في ${DD.regime?.label || 'ظروف السوق الحالية'} تكون القائمة الفارغة نتيجة صحيحة.</span>
     </td></tr>`;
@@ -7657,7 +7745,7 @@ function ddRenderTable2() {
       <td style="font-family:monospace;color:#FFD700;font-weight:700">${r.execPrice}</td>
       <td style="font-family:monospace;color:var(--dn)">${r.tp.stop}</td>
       <td style="font-family:monospace;color:var(--up);font-weight:700" title="${r.fracSrc || 'هدف هيكلي'}">
-        ${r.fracTarget ?? r.tp.targets[0].price}${r.fracUp != null ? `<span style="color:var(--t3);font-weight:400"> +${r.fracUp}%</span>` : ''}</td>
+        ${r.fracTarget ?? tpT1(r.tp) ?? '—'}${r.fracUp != null ? `<span style="color:var(--t3);font-weight:400"> +${r.fracUp}%</span>` : ''}</td>
       <td style="font-family:monospace;font-weight:700">1:${r.rr}</td>
       <td style="font-family:monospace">${ddFmt(r.qty)}</td>
       <td style="font-size:calc(var(--base-font)*0.78)">${timeCell}</td>
@@ -7786,11 +7874,8 @@ function ddReport2(sym) {
       <div style="font-size:20px;font-weight:800;color:${r.color};margin-bottom:8px">${r.label}</div>
       <div style="font-size:13px;line-height:2">
         السعر: <b>${r.price}</b> · التنفيذ: <b style="color:#FFD700">${r.execPrice}</b> · الكمية: <b>${ddFmt(r.qty)}</b> سهم<br>
-        الوقف: <b style="color:#f04458">${r.tp.stop}</b> · الهدف ①: <b style="color:#0ecf7e">${r.finalTarget}</b>
-        <span style="font-size:11.5px;color:#9aa4b8">(${r.rrSrc}${r.fracUp != null ? ` · +${r.fracUp}٪` : ''})</span> · العائد/المخاطرة <b>1:${r.rr}</b><br>
-        ${r.finalTarget2 != null ? `الهدف ②: <b style="color:#22d3ee">${r.finalTarget2}</b>
-        <span style="font-size:11.5px;color:#9aa4b8">(${r.fracSrc2} · +${r.fracUp2}٪)</span> · العائد/المخاطرة <b>1:${r.rr2}</b> · الأفق <b>${r.sessionsToT2 ?? '—'}</b> جلسة<br>`
-        : `<span style="font-size:11.5px;color:#f5c842">لا هدف ثانٍ: لا مقاومة مرصودة فوق الهدف الأول ضمن 45٪، والامتداد المشتقّ تجاوز السقف.</span><br>`}
+        الوقف: <b style="color:#f04458">${r.tp.stop}</b> · الهدف: <b style="color:#0ecf7e">${r.finalTarget}</b>
+        <span style="font-size:11.5px;color:#9aa4b8">(${r.rrSrc})</span> · العائد/المخاطرة: <b>1:${r.rr}</b><br>
         إجمالي المخاطرة: <b>${ddFmt(Math.round(r.qty * r.size.riskPerShare))}</b> ر.س
         (${(r.qty * r.size.riskPerShare / DD.cfg.capital * 100).toFixed(2)}٪ من رأس المال) ·
         الأفق التقديري: <b>${r.sessionsToT ?? '—'}</b> جلسة
@@ -7825,8 +7910,7 @@ function ddReport2(sym) {
     <div style="${SEC_}border-color:rgba(167,139,250,.3)">
       <div style="${HEAD}">🔴 قواعد الخروج المسبقة</div>
       <div style="${ROW}">① كسر ${r.tp.stop} ⟵ خروج كامل، بلا مراجعة.</div>
-      <div style="${ROW}">② بلوغ الهدف ① ${r.finalTarget} ⟵ بيع النصف ونقل الوقف إلى ${r.execPrice} (تعادل).</div>
-      ${r.finalTarget2 != null ? `<div style="${ROW}">②ب بلوغ الهدف ② ${r.finalTarget2} ⟵ خروج الباقي، أو نقل الوقف تحت الهدف ① إن أردت المتابعة.</div>` : ''}
+      <div style="${ROW}">② بلوغ ${r.finalTarget} ⟵ بيع النصف ونقل الوقف إلى ${r.execPrice}.</div>
       <div style="${ROW}">③ بعد 1R ⟵ وقف متحرك = أعلى قمة − ${DD.cfg.trailATR}×ATR (${(r.atr * DD.cfg.trailATR).toFixed(2)} ر.س).</div>
       <div style="${ROW}">④ انتفاء دليلين ⟵ خروج كامل حتى بلا كسر الوقف.</div>
       <div style="${ROW}">⑤ ${DD.cfg.maxHoldBars} جلسة والربح دون 0.5R ⟵ خروج زمني.</div>
@@ -7898,7 +7982,7 @@ window.smartTimingAnalysis = smartTimingAnalysis;
 .tpc-act{margin:8px 11px;padding:9px 11px;border-radius:7px;background:rgba(255,215,0,.06);
   border:1px solid rgba(255,215,0,.2);font-size:13px;font-weight:700;line-height:1.75;color:var(--t1)}
 .tpc-act b{color:#FFD700;font-family:'IBM Plex Mono',monospace}
-.tpc-g{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--bd);margin:0 11px;
+.tpc-g{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--bd);margin:0 11px;
   border:1px solid var(--bd);border-radius:7px;overflow:hidden}
 .tpc-g>div{background:var(--c3);padding:7px 4px;text-align:center}
 .tpc-g i{display:block;font-style:normal;font-size:9px;color:var(--t3);margin-bottom:2px}
@@ -7916,7 +8000,7 @@ window.smartTimingAnalysis = smartTimingAnalysis;
 .tpx{border:1px solid rgba(240,68,88,.4);border-right:4px solid #f04458;border-radius:10px;
   background:rgba(240,68,88,.07);padding:10px 12px;margin-bottom:9px;font-size:12.5px;line-height:1.85}
 .tpx b{color:#f04458}
-@media (max-width:520px){.tpc-g{grid-template-columns:repeat(3,1fr)}.tpc-g b{font-size:15px}}
+@media (max-width:520px){.tpc-g{grid-template-columns:repeat(2,1fr)}.tpc-g b{font-size:15px}}
 #tp-simple-btn{padding:4px 11px;border-radius:5px;cursor:pointer;font-size:10px;font-family:inherit;font-weight:700;
   border:1px solid rgba(34,211,238,.35);background:rgba(34,211,238,.1);color:#22d3ee;flex-shrink:0}
 #tp-simple-btn.on{background:rgba(34,211,238,.25);border-color:#22d3ee}
@@ -8014,43 +8098,16 @@ function tpCoherent(r){
       if(fr&&fr.ok){
         if(fr.target1&&fr.target1>entry*1.015)c.push({p:fx(fr.target1),s:'أقرب قمة فراكتالية غير مكسورة'});
         if(fr.target &&fr.target >entry*1.015)c.push({p:fx(fr.target ),s:fr.targetSource||'هدف فراكتالي'});
-        /* 🛠️ القمة الفراكتالية التالية كانت مرشّحاً في فرع الاختراق فقط،
-           وغائبة تماماً عن فرع الارتداد — وهي أوضح مرشّح لهدف ثانٍ فيه.
-           والمقاومات الهيكلية كذلك: مستوى المقاومة لا يتغيّر بتغيّر طريقة
-           دخولنا، فلا معنى لقصره على فرع واحد. */
-        if(fr.target2&&fr.target2>entry*1.015)c.push({p:fx(fr.target2),s:'القمة الفراكتالية التالية'});
       }
       (r.tp.targets||[]).forEach(function(t){ if(t.price>entry*1.015)c.push({p:t.price,s:t.source}); });
-      (r.tp.resistances||[]).forEach(function(x){ if(x.price>entry*1.015)c.push({p:x.price,s:'مقاومة هيكلية'}); });
     }
 
-    /* الحركة المقيسة مرشّح مشروع للهدف الثاني في صفقة الارتداد أيضاً، لا في
-       الاختراق وحده — كانت مفقودة هنا. */
-    if(!isBreakout&&fr&&fr.ok&&fr.measuredMove>entry*1.015&&fr.measuredMove<entry*1.45)
-      c.push({p:fx(fr.measuredMove),s:'الحركة المقيسة'});
-
+    /* 🛠️ سقف 30٪ على بُعد الهدف: قمة فراكتالية من قبل سنة تبعد 100٪ ليست
+       هدف مضاربة. صار المسح يحمّل سنة كاملة، فدخلت قمم بعيدة كمرشّحات. */
+    c=c.filter(function(x){ return x.p<=entry*1.30; });
     c.sort(function(a,b){return a.p-b.p;});
-
-    /* 🛠️ سقف 30٪ على بُعد الهدف الأول: قمة فراكتالية من قبل سنة تبعد 100٪
-       ليست هدف مضاربة. صار المسح يحمّل سنة كاملة، فدخلت قمم بعيدة. */
-    var c1=c.filter(function(x){ return x.p<=entry*1.30; });
-    if(c1.length){ target=c1[0].p; targetSrc=c1[0].s; }
+    if(c.length){ target=c[0].p; targetSrc=c[0].s; }
     else{ target=fx(entry+2*(entry-stop)); targetSrc='امتداد 2R — لا مقاومة فوق نقطة الدخول'; }
-
-    /* ── الهدف الثاني ──────────────────────────────────────────────────
-       أول مقاومة مرصودة تعلو الهدف الأول بـ2٪ على الأقل — الفاصل يمنع
-       هدفين ملتصقين يبدوان رقمين وهما مستوى واحد. سقفه 45٪ لا 30٪ لأنه
-       هدف امتداد لا هدف أول. إن لم توجد مقاومة ثانية أصلاً يُشتقّ امتداداً
-       معلناً — ويُكتب أنه امتداد لا مستوى مكتشف، فلا يُقرأ كأنه بنية. */
-    var target2=null,target2Src=null;
-    var c2=c.filter(function(x){ return x.p>=target*1.02 && x.p<=entry*1.45; });
-    if(c2.length){ target2=c2[0].p; target2Src=c2[0].s; }
-    else{
-      var ext=fx(target+(target-entry));
-      if(ext>target*1.02&&ext<=entry*1.45){
-        target2=ext; target2Src='امتداد ضعف مسافة الهدف الأول — لا مقاومة هيكلية فوقه';
-      }
-    }
 
     var risk=fx(entry-stop);
     if(!(risk>0)) return false;
@@ -8071,10 +8128,6 @@ function tpCoherent(r){
     r.tp.stop=stop; r.tp.stopSource=stopSrc;
     r.fracTarget=target; r.finalTarget=target; r.fracSrc=targetSrc; r.rrSrc=targetSrc;
     r.fracUp=fx((target-entry)/entry*100);
-    r.finalTarget2=target2; r.fracSrc2=target2Src;
-    r.fracUp2 = target2!=null ? fx((target2-entry)/entry*100) : null;
-    r.rr2      = target2!=null ? fx((target2-entry)/risk)     : null;
-    r.sessionsToT2 = (atr>0&&target2!=null) ? Math.ceil((target2-entry)/atr) : null;
     r.rr=rr; r.stopATR=fx(risk/atr);
     r.size=size; r.size.riskPerShare=risk; r.qty=qty; r.atr=atr; r.isBreakout=isBreakout;
     r.sessionsToT= atr>0 ? Math.ceil((target-entry)/atr) : null;
@@ -8126,7 +8179,7 @@ function buildWatch(d){
              {pass:false,label:'بوابة الترشيح الكاملة',why:miss.join(' · ')}],
       ev:ev,tp:tp,verdict:(typeof calcEntryVerdict==='function')?calcEntryVerdict(sym,tp):null,
       liq:liq,launch:launch,timing:tm,frac:fr,
-      execPrice:trig,finalTarget:tp.targets[0].price,fracTarget:null,rr:tp.rrFirst,
+      execPrice:trig,finalTarget:tpT1(tp),fracTarget:null,rr:tp.rrFirst,
       qty:0,size:{riskPerShare:0,caps:[],binding:{n:0,why:'—'},heatPctUsed:0},
       atr:0,stopATR:0,rrSrc:'هدف هيكلي',masterScore:d.masterScore,missWhy:miss,
       rank:-1000+(launch?launch.score:0)*8+d.masterScore/10-ev.C.length*20
@@ -8206,10 +8259,6 @@ function cardHTML(r,i){
   var risk=r.qty*(r.execPrice-r.tp.stop), gain=r.qty*(r.finalTarget-r.execPrice);
   var lp=((r.execPrice-r.tp.stop)/r.execPrice*100).toFixed(1);
   var gp=((r.finalTarget-r.execPrice)/r.execPrice*100).toFixed(1);
-  /* الربح المعروض على أساس خروج نصفي: نصف الكمية عند الهدف ① والنصف عند ②
-     — هذا هو ما تصفه قواعد الخروج فعلاً، لا خروج كامل عند الهدف الأول. */
-  var has2=r.finalTarget2!=null;
-  var gain2=has2?Math.round(r.qty/2*(r.finalTarget-r.execPrice)+r.qty/2*(r.finalTarget2-r.execPrice)):null;
   return '<div class="tpc" style="--c:'+r.color+'">'+
     '<div class="tpc-h"><span class="tpc-rank">'+(i+1)+'.</span>'+
       '<span class="tpc-sym">'+r.sym+'</span><span class="tpc-nm">'+r.name+'</span>'+
@@ -8218,18 +8267,15 @@ function cardHTML(r,i){
     '<div class="tpc-g">'+
       '<div><i>ادخل عند</i><b style="color:#FFD700">'+r.execPrice+'</b></div>'+
       '<div><i>اخرج خسارة</i><b style="color:#f04458">'+r.tp.stop+'</b></div>'+
-      '<div><i>هدف ① (نصف)</i><b style="color:#0ecf7e">'+r.finalTarget+'</b></div>'+
-      '<div><i>هدف ② (الباقي)</i><b style="color:#22d3ee">'+(has2?r.finalTarget2:'—')+'</b></div>'+
+      '<div><i>اخرج ربح</i><b style="color:#0ecf7e">'+r.finalTarget+'</b></div>'+
       '<div><i>الكمية</i><b>'+money(r.qty)+'</b></div></div>'+
     '<div class="tpc-money">لو ضُرب الوقف: <b style="color:#f04458">−'+money(risk)+' ر.س</b> ('+lp+'٪) · '+
-      'لو بلغ الهدف ①: <b style="color:#0ecf7e">+'+money(gain)+' ر.س</b> ('+gp+'٪) · <b>1:'+r.rr+'</b>'+
-      (has2?(' · لو بلغ ② بخروج نصفي: <b style="color:#22d3ee">+'+money(gain2)+' ر.س</b> · <b>1:'+r.rr2+'</b>'):'')+
-      '<br><span style="color:var(--t3)">مصدر ①: '+(r.fracSrc||'—')+(has2?(' · مصدر ②: '+r.fracSrc2):'')+' · مصدر الوقف: '+(r.tp.stopSource||'—')+'</span></div>'+
+      'لو بلغ الهدف: <b style="color:#0ecf7e">+'+money(gain)+' ر.س</b> ('+gp+'٪) · العائد/المخاطرة <b>1:'+r.rr+'</b>'+
+      '<br><span style="color:var(--t3)">مصدر الهدف: '+(r.fracSrc||'—')+' · مصدر الوقف: '+(r.tp.stopSource||'—')+'</span></div>'+
     '<div class="tpc-when">'+whenLine(r)+(r.launch?(' · جاهزية '+r.launch.score+'/100'):'')+'</div>'+
     '<div class="tpc-exit">'+
       '🔴 <b>اخرج فوراً</b> إذا أغلق تحت <b>'+r.tp.stop+'</b> — بلا مراجعة.<br>'+
       '🟡 بِع <b>نصف</b> الكمية عند <b>'+r.finalTarget+'</b> وانقل الوقف إلى <b>'+r.execPrice+'</b> (تعادل).<br>'+
-      (has2?('🟢 بِع <b>الباقي</b> عند <b>'+r.finalTarget2+'</b> — أو انقل الوقف تحت '+r.finalTarget+' وتابع.<br>'):'')+
       '⏱ إن مرّت <b>'+DD.cfg.maxHoldBars+'</b> جلسة والسهم واقف — اخرج وحرّر السيولة.</div>'+
     '<div class="tpc-foot">'+
       '<button class="tpc-btn buy" onclick="event.stopPropagation();ddAddFromDecision(\''+r.sym+'\')">✅ سجّل المركز</button>'+
@@ -8278,7 +8324,7 @@ function renderTable(){
   hideCards();
   var body=document.getElementById('rtbody');
   if(!DD.ran){
-    body.innerHTML='<tr><td colspan="16" style="padding:26px;text-align:center;color:var(--t3);line-height:2">'+
+    body.innerHTML='<tr><td colspan="15" style="padding:26px;text-align:center;color:var(--t3);line-height:2">'+
       '① شغّل <b>🔬 مسح شامل</b> · ② اضغط <b>🧭 احسب القرارات</b>.</td></tr>';
     _visibleSyms=[]; return;
   }
@@ -8316,8 +8362,6 @@ function renderTable(){
       '<td style="font-family:monospace;color:var(--dn)">'+r.tp.stop+'</td>'+
       '<td style="font-family:monospace;color:var(--up);font-weight:700" title="'+(r.fracSrc||'')+'">'+r.finalTarget+
         (r.fracUp!=null?'<span style="color:var(--t3);font-weight:400"> +'+r.fracUp+'%</span>':'')+'</td>'+
-      '<td style="font-family:monospace;color:#22d3ee;font-weight:700" title="'+(r.fracSrc2||'لا هدف ثانٍ')+'">'+
-        (r.finalTarget2!=null ? r.finalTarget2+'<span style="color:var(--t3);font-weight:400"> +'+r.fracUp2+'%</span>' : '<span style="color:var(--t3)">—</span>')+'</td>'+
       '<td style="font-family:monospace;font-weight:700">1:'+r.rr+'</td>'+
       '<td style="font-family:monospace">'+money(r.qty)+'</td>'+
       '<td style="font-size:calc(var(--base-font)*0.78)">'+timeCell+'</td>'+
@@ -8441,23 +8485,18 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     if(G.demo.has(sym))return{err:'هذا السهم على بيانات تجريبية عشوائية — لا تُبنى له بطاقة'};
 
     const price=G.pr[sym]||cs[cs.length-1].close, pct=G.pc[sym]||0;
-    let entry,stop,target,target2,rr,rr2,up2,src2,label,labelColor,src,betterEntry=null;
+    let entry,stop,target,target2,rr,label,labelColor,src,betterEntry=null;
 
     const dd=(typeof DD!=='undefined'&&DD.results)?DD.results.find(r=>r.sym===sym):null;
     if(dd){
-      /* أرقام غرفة القرار مرّت على tpCoherent فهي مشتقّة كلها من دخول واحد.
-         الهدفان يُقرآن من finalTarget/finalTarget2 لا من tp.targets الخام. */
-      entry=dd.execPrice;stop=dd.tp.stop;
-      target=dd.finalTarget??dd.tp.targets[0]?.price;
-      target2=dd.finalTarget2??null;
-      rr=dd.rr;rr2=dd.rr2??null;up2=dd.fracUp2??null;src2=dd.fracSrc2||null;
-      label=dd.label;labelColor=dd.color;src=dd.fracSrc||'غرفة القرار';
+      entry=dd.execPrice;stop=dd.tp.stop;target=dd.tp.targets[0]?.price;
+      target2=dd.tp.targets[1]?.price;rr=dd.rr;label=dd.label;labelColor=dd.color;
+      src='غرفة القرار';
     }else{
       const tp=calcTradePlan(sym);
       if(!tp)return{err:'تعذّر بناء خطة دخول/وقف/هدف لهذا السهم'};
       entry=tp.entry;stop=tp.stop;target=tp.targets[0]?.price;target2=tp.targets[1]?.price;
-      rr=tp.rrFirst;rr2=tp.targets[1]?.rr??null;src2=tp.targets[1]?.source||null;
-      up2=target2?+((target2-entry)/entry*100).toFixed(1):null;src='خطة الشارت';
+      rr=tp.rrFirst;src='خطة الشارت';
       const v=calcEntryVerdict(sym,tp);
       label=v?.verdict||(tp.planType==='breakout'?'اختراق':'ارتداد');
       labelColor=v?.vColor||C.gd;
@@ -8466,10 +8505,6 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     if(!(stop<entry))return{err:'الوقف ليس تحت الدخول — رقم مكسور، لا تُنشر بطاقة عليه'};
     const risk=+(entry-stop).toFixed(2);
     const upPct=target?+((target-entry)/entry*100).toFixed(1):null;
-    /* هدف ثانٍ ملاصق للأول ليس رقمين بل مستوى واحد مكتوب مرّتين */
-    if(target2!=null&&!(target2>target*1.015)){target2=null;rr2=null;up2=null;src2=null;}
-    if(target2!=null&&up2==null)up2=+((target2-entry)/entry*100).toFixed(1);
-    if(target2!=null&&rr2==null&&risk>0)rr2=+((target2-entry)/risk).toFixed(1);
 
     /* ── التوقيت: نافذة، لا تاريخ قاطع ── */
     let tRow=null;try{tRow=_timeEntry(sym);}catch(e){}
@@ -8508,7 +8543,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     if(ew&&ew.wave!==0)tags.push(`🌊 ${ew.desc}`);
     if(fr&&fr.ok&&fr.target1)tags.push(`🎯 قمة فراكتالية ${f2(fr.target1)}`);
 
-    return{sym,name:stkName(sym),price,pct,entry,stop,target,target2,rr,rr2,up2,src2,risk,upPct,
+    return{sym,name:stkName(sym),price,pct,entry,stop,target,target2,rr,risk,upPct,
       label,labelColor:labelColor||C.gd,src,timing,act,tags,cs,betterEntry,
       demo:false};
   }
@@ -8530,7 +8565,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     const bars=Math.min(70,d.cs.length),cs=d.cs.slice(-bars);
     const axW=104,plotW=w-axW,plotX=x;
     let lo=Math.min(...cs.map(c=>c.low)),hi=Math.max(...cs.map(c=>c.high));
-    [d.entry,d.stop,d.target,d.target2].forEach(v=>{if(v!=null&&isFinite(v)){lo=Math.min(lo,v);hi=Math.max(hi,v);}});
+    [d.entry,d.stop,d.target].forEach(v=>{if(v!=null&&isFinite(v)){lo=Math.min(lo,v);hi=Math.max(hi,v);}});
     const pad=(hi-lo)*0.08||1;lo-=pad;hi+=pad;
     const Y=p=>y+h-((p-lo)/(hi-lo))*h;
     const cw=plotW/bars, bw=Math.max(3,cw*0.62);
@@ -8556,8 +8591,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
       ctx.fillRect(cx-bw/2,Math.min(oy,cy2),bw,Math.max(2,Math.abs(cy2-oy)));
     });
     /* خطوط الخطة */
-    const lines=[[d.target2,C.cy,'هدف ② '+f2(d.target2)],[d.target,C.up,'هدف ① '+f2(d.target)],
-      [d.entry,C.gd,'دخول '+f2(d.entry)],[d.stop,C.dn,'وقف '+f2(d.stop)]];
+    const lines=[[d.target,C.up,'هدف '+f2(d.target)],[d.entry,C.gd,'دخول '+f2(d.entry)],[d.stop,C.dn,'وقف '+f2(d.stop)]];
     lines.forEach(([v,col,lab])=>{
       if(v==null||!isFinite(v))return;
       const gy=Y(v);dash(ctx,x,gy,x+plotW,col,2.2);
@@ -8614,28 +8648,24 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     const gh=148,gw=W-PAD*2;
     rr_(ctx,PAD,y,gw,gh,16);ctx.fillStyle=C.card;ctx.fill();
     ctx.strokeStyle=C.line;ctx.lineWidth=1;ctx.stroke();
-    /* الترتيب من اليمين لليسار كما تُقرأ: دخول ← وقف ← هدف① ← هدف② ← ع/م */
     const cells=[
-      ['سعر الدخول',f2(d.entry),C.gd,d.src],
+      ['الهدف',f2(d.target),C.up,d.upPct!=null?`+${d.upPct}٪`:''],
       ['وقف الخسارة',f2(d.stop),C.dn,`مخاطرة ${f2(d.risk)}`],
-      ['الهدف ① (نصف)',f2(d.target),C.up,d.upPct!=null?`+${d.upPct}٪ · 1:${d.rr||'—'}`:''],
-      ['الهدف ② (الباقي)',d.target2!=null?f2(d.target2):'—',C.cy,
-        d.target2!=null?`+${d.up2}٪ · 1:${d.rr2||'—'}`:'لا مقاومة ثانية'],
-      ['عائد/مخاطرة',d.rr?`1:${d.rr}`:'—',C.bl,d.rr2?`ثم 1:${d.rr2}`:'']
+      ['سعر الدخول',f2(d.entry),C.gd,d.src],
+      ['عائد/مخاطرة',d.rr?`1:${d.rr}`:'—',C.bl,'']
     ];
-    const cwid=gw/cells.length;
+    const cwid=gw/4;
     cells.forEach((c,i)=>{
       const cx=W-PAD-i*cwid-cwid/2;
-      txt(ctx,c[0],cx,y+40,{size:19,color:C.t3,align:'center'});
-      txt(ctx,c[1],cx,y+90,{size:36,color:c[2],weight:700,font:MN,align:'center',dir:'ltr'});
-      if(c[3])txt(ctx,c[3],cx,y+124,{size:17,color:C.t3,align:'center'});
-      if(i<cells.length-1){ctx.strokeStyle=C.line;ctx.beginPath();
+      txt(ctx,c[0],cx,y+42,{size:22,color:C.t3,align:'center'});
+      txt(ctx,c[1],cx,y+92,{size:42,color:c[2],weight:700,font:MN,align:'center',dir:'ltr'});
+      if(c[3])txt(ctx,c[3],cx,y+126,{size:19,color:C.t3,align:'center'});
+      if(i<3){ctx.strokeStyle=C.line;ctx.beginPath();
         ctx.moveTo(W-PAD-(i+1)*cwid,y+22);ctx.lineTo(W-PAD-(i+1)*cwid,y+gh-22);ctx.stroke();}
     });
-    if(d.src2)txt(ctx,`مصدر الهدف ②: ${d.src2}`,W-PAD,y+gh+22,{size:18,color:C.t3});
 
     /* ── التوقيت ── */
-    y+=gh+(d.src2?38:26);
+    y+=gh+26;
     const th=d.timing?128:96;
     rr_(ctx,PAD,y,gw,th,16);ctx.fillStyle='rgba(34,211,238,.05)';ctx.fill();
     ctx.strokeStyle='rgba(34,211,238,.22)';ctx.stroke();
@@ -8699,9 +8729,8 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
       :`${t.kind} متوقّع خلال ~${t.bars} ${jal(t.bars)}`):'لا توقيت مقاس على هذا السهم';
     const tweet=
 `#${d.sym} ${d.name}
-دخول ${f2(d.entry)} · وقف ${f2(d.stop)}
-هدف① ${f2(d.target)}${d.upPct!=null?` (+${d.upPct}٪)`:''} · 1:${d.rr||'—'}${d.target2!=null?`
-هدف② ${f2(d.target2)} (+${d.up2}٪) · 1:${d.rr2||'—'}`:''}
+دخول ${f2(d.entry)} · وقف ${f2(d.stop)} · هدف ${f2(d.target)}${d.upPct!=null?` (+${d.upPct}٪)`:''}
+عائد/مخاطرة ${d.rr?'1:'+d.rr:'—'}
 ⏱ ${when}
 🚀 نافذة النشاط ${d.act}
 تحليل فني — ليس توصية
@@ -8715,9 +8744,8 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
 🎯 *الخطة*
 دخول: \`${f2(d.entry)}\`
 وقف: \`${f2(d.stop)}\` (مخاطرة ${f2(d.risk)} للسهم)
-هدف ① (بيع النصف): \`${f2(d.target)}\`${d.upPct!=null?` (+${d.upPct}٪)`:''} — عائد/مخاطرة 1:${d.rr||'—'}
-${d.target2!=null?`هدف ② (الباقي): \`${f2(d.target2)}\` (+${d.up2}٪) — عائد/مخاطرة 1:${d.rr2||'—'}
-مصدر الهدف ②: ${d.src2||'—'}`:'لا هدف ثانٍ: لا مقاومة مرصودة فوق الهدف الأول ضمن المدى.'}
+هدف أول: \`${f2(d.target)}\`${d.upPct!=null?` (+${d.upPct}٪)`:''}${d.target2?`\nهدف ثانٍ: \`${f2(d.target2)}\``:''}
+عائد/مخاطرة: ${d.rr?'1:'+d.rr:'—'}
 مصدر الأرقام: ${d.src}${d.betterEntry?`\n↩️ دخول أفضل عند \`${f2(d.betterEntry.p)}\` — ${d.betterEntry.why}`:''}
 
 ⏱ *التوقيت*
