@@ -1,617 +1,718 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   KSA-H1 — محرك التحليل الكمي (Core Analytics Engine)
+   KSAEngine — محرك التحليل الكمي لمنصة TADAWUL FILTERS PRO
    ──────────────────────────────────────────────────────────────────────────
-   وحدة مستقلة، قابلة للاختبار في Node وفي المتصفح على حد سواء.
-   كل دالة هنا لا تعتمد على DOM ولا على حالة عامة (G) — مدخلات ← مخرجات فقط.
+   هذا الملف هو الطبقة الحسابية الوحيدة في المنصة. الواجهة (index.html) لا
+   تحسب إحصاءً ولا دورةً ولا هدفاً بنفسها — تفوّض كل ذلك إلى هنا، ثم تعرض
+   ما رجع كما هو. الفائدة: أي رقم يظهر للمستخدم له مصدر واحد قابل للاختبار.
 
-   مبادئ التصميم (وهي أساس تصحيح الأخطاء الجذرية):
-   1) لا رقم "ثقة" مصطنع. أي احتمال يُعرض يجب أن يأتي من عينة محسوبة،
-      ومعه حجم العينة وفاصل ثقة (Wilson) — أو لا يُعرض إطلاقاً.
-   2) لا تسرّب زمني (look-ahead). كل نقطة ارتكاز لها فهرس "تأكيد" لا يجوز
-      استخدامها قبله، وكل اختبار تاريخي يعيد الحساب من البيانات المتاحة
-      حتى تلك اللحظة فقط.
-   3) لا عشوائية غير مُبذّرة. كل مولّد أرقام عشوائية هنا ببذرة ثابتة، فتكون
-      كل النتائج قابلة لإعادة الإنتاج بالضبط.
-   4) الوحدات صريحة. أيام تداول ≠ أيام تقويمية، والعائد ≠ السعر.
+   المبادئ الحاكمة (ومخالفتها عيب لا خيار):
+   ① لا رقم ثقة مخترع. كل حكم يحمل قيمة احتمال أو حجم عينة أو كليهما.
+   ② لا تسرّب زمني. أي دالة تُستعمل في اختبار تاريخي لا ترى إلا ما كان
+      متاحاً في لحظتها؛ نقاط الارتكاز لا تُعتبر مؤكدة إلا بعد k جلسة تأكيد.
+   ③ الوحدات مصرَّح بها. الجلسات (bars) والأيام التقويمية (days) لا تُخلطان،
+      والتحويل بينهما يمرّ على تقويم تداول سعودي فعلي (أحد→خميس).
+   ④ عند غياب الدليل تُقال الحقيقة: { ok:false, reason } — لا قيمة افتراضية
+      تُمرَّر بصمت إلى واجهة تعرضها كأنها نتيجة قياس.
+
+   لا اعتماديات خارجية. يعمل في المتصفح (window.KSAEngine) وفي Node
+   (module.exports) للاختبارات.
    ══════════════════════════════════════════════════════════════════════════ */
 (function (root, factory) {
   const api = factory();
-  if (typeof module === 'object' && module.exports) module.exports = api;
-  else root.KSAEngine = api;
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.KSAEngine = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  const VERSION = '2.0.0';
+
+  /* عدد جلسات التداول في السنة السعودية تقريباً (أحد→خميس ناقص العطل) */
+  const SESSIONS_PER_YEAR = 246;
+
   /* ════════════════════════════════════════════════════════════════════
-     0) أدوات عامة — عشوائية ببذرة، وحماية من القيم غير المنتهية
+     0) أدوات عددية أساسية
      ════════════════════════════════════════════════════════════════════ */
-
-  /** مولّد عشوائي حتمي (mulberry32). نفس البذرة ⇒ نفس السلسلة دائماً.
-   *  السبب: تقارير الاختبار التاريخي كانت تتغيّر بين تشغيل وآخر لأنها
-   *  استخدمت Math.random — فيخرج "حكم" مختلف لنفس السهم بنفس البيانات. */
-  function seededRandom(seed) {
-    let a = seed >>> 0;
-    return function () {
-      a = (a + 0x6D2B79F5) >>> 0;
-      let t = a;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
-  /** بذرة مستقرة مشتقة من نص (رمز السهم) — حتى يكون لكل سهم سلسلة ثابتة. */
-  function seedFromString(s) {
-    let h = 2166136261 >>> 0;
-    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-    return h >>> 0;
-  }
-
-  const isNum = (v) => typeof v === 'number' && isFinite(v);
-  /** يرجع القيمة إن كانت رقماً منتهياً، وإلا القيمة البديلة. يمنع تسرّب
-   *  NaN/Infinity إلى الواجهة (كان يظهر "NaN ر.س" في عدة مسارات). */
-  const num = (v, fallback = null) => (isNum(v) ? v : fallback);
+  const isNum = v => typeof v === 'number' && isFinite(v);
+  const r2 = v => (isNum(v) ? +v.toFixed(2) : null);
+  const r3 = v => (isNum(v) ? +v.toFixed(3) : null);
+  const r4 = v => (isNum(v) ? +v.toFixed(4) : null);
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  const round = (v, d = 2) => (isNum(v) ? +v.toFixed(d) : null);
 
   /* ════════════════════════════════════════════════════════════════════
-     1) إحصاء — الأساس الذي تُبنى عليه كل "الاحتمالات" المعروضة
+     1) Stats — الإحصاء
+     ──────────────────────────────────────────────────────────────────
+     كل اختبار دلالة في المنصة يمرّ من هنا. لا تُستعمل أي «درجة ثقة»
+     مشتقّة من عدّ الأدلة: العدّ مقياس توافق، والاحتمال شيء آخر.
      ════════════════════════════════════════════════════════════════════ */
-
   const Stats = {
-    mean(a) { return a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0; },
+    clean(a) { return (a || []).filter(isNum); },
 
-    /** تباين العينة (قسمة على n-1) — التقدير غير المتحيّز.
-     *  النسخة السابقة في المنصة كانت تقسم على n وتُهمل طرح المتوسط. */
+    mean(a) {
+      const x = Stats.clean(a);
+      if (!x.length) return 0;
+      let s = 0; for (const v of x) s += v;
+      return s / x.length;
+    },
+
+    /** التباين بمقام (n−1) — تقدير غير متحيّز، وهو الصحيح لعيّنة لا لمجتمع. */
     variance(a) {
-      const n = a.length;
-      if (n < 2) return 0;
-      const m = Stats.mean(a);
-      return a.reduce((s, v) => s + (v - m) * (v - m), 0) / (n - 1);
+      const x = Stats.clean(a);
+      if (x.length < 2) return 0;
+      const m = Stats.mean(x);
+      let s = 0; for (const v of x) s += (v - m) * (v - m);
+      return s / (x.length - 1);
     },
-    std(a) { return Math.sqrt(Stats.variance(a)); },
 
+    sd(a) { return Math.sqrt(Stats.variance(a)); },
+
+    median(a) {
+      const x = Stats.clean(a).slice().sort((p, q) => p - q);
+      if (!x.length) return 0;
+      const h = x.length >> 1;
+      return x.length % 2 ? x[h] : (x[h - 1] + x[h]) / 2;
+    },
+
+    /** المئين بالاستيفاء الخطي (تعريف R type-7). */
     quantile(a, q) {
-      if (!a.length) return null;
-      const s = [...a].sort((x, y) => x - y);
-      const pos = (s.length - 1) * q;
+      const x = Stats.clean(a).slice().sort((p, r) => p - r);
+      if (!x.length) return 0;
+      if (x.length === 1) return x[0];
+      const pos = clamp(q, 0, 1) * (x.length - 1);
       const lo = Math.floor(pos), hi = Math.ceil(pos);
-      return lo === hi ? s[lo] : s[lo] + (s[hi] - s[lo]) * (pos - lo);
+      return lo === hi ? x[lo] : x[lo] + (x[hi] - x[lo]) * (pos - lo);
     },
 
-    /** انحدار خطي بسيط بأقل المربعات. يرجع الميل والمقطع و R². */
-    linreg(y, x) {
-      const n = y.length;
-      if (n < 2) return { slope: 0, intercept: y[0] ?? 0, r2: 0 };
-      const xs = x || y.map((_, i) => i);
-      const mx = Stats.mean(xs), my = Stats.mean(y);
-      let sxy = 0, sxx = 0, syy = 0;
+    /** المئين الذي تقع فيه v داخل a (0..1). */
+    percentRank(a, v) {
+      const x = Stats.clean(a);
+      if (!x.length) return 0.5;
+      let below = 0; for (const t of x) if (t < v) below++;
+      return below / x.length;
+    },
+
+    /** انحدار خطي على الفهرس: y = slope·i + intercept، مع R². */
+    linreg(y) {
+      const a = Stats.clean(y), n = a.length;
+      if (n < 2) return { slope: 0, intercept: n ? a[0] : 0, r2: 0, n };
+      let sx = 0, sy = 0, sxy = 0, sxx = 0;
+      for (let i = 0; i < n; i++) { sx += i; sy += a[i]; sxy += i * a[i]; sxx += i * i; }
+      const d = n * sxx - sx * sx;
+      const slope = d === 0 ? 0 : (n * sxy - sx * sy) / d;
+      const intercept = (sy - slope * sx) / n;
+      let ssRes = 0, ssTot = 0; const my = sy / n;
       for (let i = 0; i < n; i++) {
-        const dx = xs[i] - mx, dy = y[i] - my;
-        sxy += dx * dy; sxx += dx * dx; syy += dy * dy;
+        const f = slope * i + intercept;
+        ssRes += (a[i] - f) * (a[i] - f);
+        ssTot += (a[i] - my) * (a[i] - my);
       }
-      const slope = sxx ? sxy / sxx : 0;
-      return { slope, intercept: my - slope * mx, r2: sxx && syy ? (sxy * sxy) / (sxx * syy) : 0 };
+      return { slope, intercept, r2: ssTot === 0 ? 0 : clamp(1 - ssRes / ssTot, 0, 1), n };
     },
 
-    /** فاصل ثقة Wilson لنسبة نجاح — الطريقة الصحيحة لعينة صغيرة.
-     *  هذا ما يجعل عرض "نسبة نجاح 70%" أمينًا: 7 من 10 نجاحات تعطي
-     *  فاصلاً [39%, 90%] — أي أن الرقم وحده بلا معنى بدون هذا الفاصل. */
-    wilson(successes, n, z = 1.959964) {
-      if (!n) return { p: null, lo: null, hi: null, n: 0 };
-      const p = successes / n;
-      const z2 = z * z;
-      const denom = 1 + z2 / n;
-      const centre = (p + z2 / (2 * n)) / denom;
-      const half = (z / denom) * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n);
-      return { p, lo: Math.max(0, centre - half), hi: Math.min(1, centre + half), n };
+    /** دالة التوزيع التراكمي المعياري — تقريب Abramowitz & Stegun 7.1.26. */
+    normalCdf(z) {
+      if (!isNum(z)) return 0.5;
+      const s = z < 0 ? -1 : 1, x = Math.abs(z) / Math.SQRT2;
+      const t = 1 / (1 + 0.3275911 * x);
+      const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+      return 0.5 * (1 + s * y);
     },
 
-    /** دالة التوزيع التراكمي للتوزيع الطبيعي القياسي (تقريب Abramowitz-Stegun). */
-    normalCdf(x) {
-      const t = 1 / (1 + 0.2316419 * Math.abs(x));
-      const d = 0.3989422804014327 * Math.exp(-x * x / 2);
-      let p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-      return x > 0 ? 1 - p : p;
+    /** اختبار z ثنائي الطرف. */
+    twoSidedZ(z) { return clamp(2 * (1 - Stats.normalCdf(Math.abs(z))), 0, 1); },
+
+    /** توزيع t بدرجتي حرية df — عبر تقريب متسلسل لدالة بيتا الناقصة. */
+    tCdf(t, df) {
+      if (!isNum(t) || !isNum(df) || df <= 0) return 0.5;
+      const x = df / (df + t * t);
+      const ib = Stats._incBeta(x, df / 2, 0.5);
+      const p = 0.5 * ib;
+      return t > 0 ? 1 - p : p;
     },
 
-    /** اختبار z لفرق نسبتين (طرفان). يرجع p-value.
-     *  يُستخدم للحكم: هل نسبة نجاح الإشارة تختلف فعلاً عن خط الأساس،
-     *  أم أن الفرق يقع ضمن التذبذب العشوائي المتوقع لحجم العينة هذا؟ */
-    twoProportionP(s1, n1, s2, n2) {
-      if (!n1 || !n2) return 1;
-      const p1 = s1 / n1, p2 = s2 / n2;
-      const pPool = (s1 + s2) / (n1 + n2);
-      const se = Math.sqrt(pPool * (1 - pPool) * (1 / n1 + 1 / n2));
-      if (!se) return 1;
-      const z = (p1 - p2) / se;
-      return 2 * (1 - Stats.normalCdf(Math.abs(z)));
-    },
+    twoSidedT(t, df) { return clamp(2 * (1 - Stats.tCdf(Math.abs(t), df)), 0, 1); },
 
-    /** تصحيح Benjamini-Hochberg لمعدل الاكتشاف الخاطئ (FDR).
-     *  ضروري عند مسح ~250 سهماً: عند مستوى 5٪ ستظهر ~12 نتيجة "دالة"
-     *  بمحض الصدفة وحدها. بدون هذا التصحيح تكون قائمة "الأسهم المؤهلة"
-     *  في المسح الشامل ضجيجاً بالكامل. */
-    benjaminiHochberg(pValues, alpha = 0.10) {
-      const m = pValues.length;
-      if (!m) return [];
-      const idx = pValues.map((p, i) => ({ p, i })).sort((a, b) => a.p - b.p);
-      let kMax = -1;
-      for (let k = 0; k < m; k++) if (idx[k].p <= ((k + 1) / m) * alpha) kMax = k;
-      const pass = new Array(m).fill(false);
-      for (let k = 0; k <= kMax; k++) pass[idx[k].i] = true;
-      return pass;
-    },
-
-    /** لوغاريتم دالة غاما (Lanczos) — لازم لمعامل ذي الحدين في اختبار Fisher. */
-    lnGamma(x) {
+    _lnGamma(z) {
       const g = [76.18009172947146, -86.50532032941677, 24.01409824083091,
         -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
-      let xx = x, y = x, tmp = x + 5.5;
-      tmp -= (xx + 0.5) * Math.log(tmp);
+      let x = z, y = z, tmp = x + 5.5;
+      tmp -= (x + 0.5) * Math.log(tmp);
       let ser = 1.000000000190015;
       for (let j = 0; j < 6; j++) ser += g[j] / ++y;
-      return -tmp + Math.log(2.5066282746310005 * ser / xx);
+      return -tmp + Math.log(2.5066282746310005 * ser / x);
     },
+
+    /** الكسر المستمر لدالة بيتا الناقصة (خوارزمية Lentz المعدَّلة). */
+    _betacf(a, b, x) {
+      const FPMIN = 1e-300, EPS = 3e-14, MAXIT = 300;
+      const qab = a + b, qap = a + 1, qam = a - 1;
+      let c = 1, d = 1 - qab * x / qap;
+      if (Math.abs(d) < FPMIN) d = FPMIN;
+      d = 1 / d;
+      let h = d;
+      for (let m = 1; m <= MAXIT; m++) {
+        const m2 = 2 * m;
+        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+        c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+        d = 1 / d; h *= d * c;
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+        c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+        d = 1 / d;
+        const del = d * c; h *= del;
+        if (Math.abs(del - 1) < EPS) break;
+      }
+      return h;
+    },
+
+    /** دالة بيتا الناقصة المنظَّمة I_x(a,b) — أساس توزيعي t و F. */
+    _incBeta(x, a, b) {
+      if (!(x > 0)) return 0;
+      if (x >= 1) return 1;
+      const lbt = Stats._lnGamma(a + b) - Stats._lnGamma(a) - Stats._lnGamma(b)
+        + a * Math.log(x) + b * Math.log(1 - x);
+      const bt = Math.exp(lbt);
+      if (x < (a + 1) / (a + b + 2)) return clamp(bt * Stats._betacf(a, b, x) / a, 0, 1);
+      return clamp(1 - bt * Stats._betacf(b, a, 1 - x) / b, 0, 1);
+    },
+
+    /** لوغاريتم معامل التوافيق — يمنع الفيض عند m كبيرة في اختبار فيشر. */
     lnChoose(n, k) {
       if (k < 0 || k > n) return -Infinity;
-      return Stats.lnGamma(n + 1) - Stats.lnGamma(k + 1) - Stats.lnGamma(n - k + 1);
+      return Stats._lnGamma(n + 1) - Stats._lnGamma(k + 1) - Stats._lnGamma(n - k + 1);
+    },
+
+    /** فاصل Wilson لنسبة — أمتن من فاصل Wald عند العينات الصغيرة أو
+     *  النسب القريبة من 0/1، حيث يعطي Wald حدوداً خارج [0,1]. */
+    wilsonCI(successes, n, z) {
+      z = z || 1.959963985;
+      if (!n) return [0, 0];
+      const p = successes / n, z2 = z * z;
+      const den = 1 + z2 / n;
+      const centre = (p + z2 / (2 * n)) / den;
+      const half = (z * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n))) / den;
+      return [clamp(centre - half, 0, 1), clamp(centre + half, 0, 1)];
+    },
+
+    /** اختبار نسبتين مستقلتين (تقريب طبيعي بنسبة مجمّعة). */
+    twoProportionP(x1, n1, x2, n2) {
+      if (!n1 || !n2) return 1;
+      const p1 = x1 / n1, p2 = x2 / n2, p = (x1 + x2) / (n1 + n2);
+      const se = Math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2));
+      if (!se) return 1;
+      return Stats.twoSidedZ((p1 - p2) / se);
+    },
+
+    /** اختبار ذيل أيمن ذو حدّين: P(X ≥ k) عند n محاولة واحتمال p. */
+    binomTailP(k, n, p) {
+      if (!n) return 1;
+      if (k <= 0) return 1;
+      let sum = 0;
+      for (let i = k; i <= n; i++) {
+        sum += Math.exp(Stats.lnChoose(n, i) + i * Math.log(p || 1e-12) + (n - i) * Math.log(1 - p || 1e-12));
+      }
+      return clamp(sum, 0, 1);
+    },
+
+    /** تصحيح Benjamini–Hochberg للاختبارات المتعددة عند معدّل اكتشاف زائف q.
+     *  يُرجع مصفوفة منطقية بترتيب المدخلات نفسه. */
+    benjaminiHochberg(pvals, q) {
+      q = q == null ? 0.10 : q;
+      const n = (pvals || []).length;
+      const out = new Array(n).fill(false);
+      if (!n) return out;
+      const idx = pvals.map((p, i) => ({ p: isNum(p) ? p : 1, i }))
+        .sort((a, b) => a.p - b.p);
+      let kMax = -1;
+      for (let r = 0; r < n; r++) if (idx[r].p <= ((r + 1) / n) * q) kMax = r;
+      for (let r = 0; r <= kMax; r++) out[idx[r].i] = true;
+      return out;
+    },
+
+    /** صياغة قيمة الاحتمال للعرض — لا تُكتب 0 أبداً. */
+    pText(p) {
+      if (!isNum(p)) return '—';
+      if (p < 0.0001) return '< 0.0001';
+      if (p < 0.001) return p.toFixed(5);
+      if (p < 0.01) return p.toFixed(4);
+      return p.toFixed(3);
     }
   };
 
   /* ════════════════════════════════════════════════════════════════════
-     2) تقويم السوق السعودي (تداول)
+     2) SaudiMarket — تقويم السوق وحدوده
      ──────────────────────────────────────────────────────────────────
-     تداول يعمل الأحد→الخميس. الجمعة والسبت عطلة أسبوعية.
-     كل حساب "أيام متبقية" في المنصة كان يخلط أيام التداول بالأيام
-     التقويمية، فينتج تاريخ متوقع يقع في عطلة أو يزيح بأسبوع كامل.
+     السوق السعودي يعمل الأحد→الخميس. الجمعة والسبت عطلة. خلط اليوم
+     التقويمي بالجلسة كان يُنتج «نوافذ حرجة» في أيام لا يفتح فيها السوق.
      ════════════════════════════════════════════════════════════════════ */
-
   const SaudiMarket = {
-    TZ_OFFSET_HOURS: 3,               /* توقيت السعودية UTC+3 (بلا توقيت صيفي) */
-    SESSION: { open: '10:00', close: '15:00' },
-    DAILY_LIMIT_MAIN: 0.10,           /* حد التذبذب اليومي للسوق الرئيسية ±10٪ */
-    DAILY_LIMIT_NOMU: 0.30,           /* السوق الموازية (نمو) ±30٪ */
+    /* getDay(): 0=أحد … 4=خميس، 5=جمعة، 6=سبت */
+    WEEKEND: [5, 6],
+    DAILY_LIMIT_PCT: 10,
 
-    /** يوم الأسبوع بتوقيت الرياض (0=الأحد … 6=السبت). */
-    riyadhDayOfWeek(date) {
-      const ms = date.getTime() + SaudiMarket.TZ_OFFSET_HOURS * 3600e3;
-      return new Date(ms).getUTCDay();
-    },
-    /** الجمعة (5) والسبت (6) عطلة أسبوعية في السوق السعودي. */
-    isWeekend(date) {
-      const d = SaudiMarket.riyadhDayOfWeek(date);
-      return d === 5 || d === 6;
-    },
-    isTradingDay(date) { return !SaudiMarket.isWeekend(date); },
+    isTradingDay(d) { return SaudiMarket.WEEKEND.indexOf(d.getDay()) === -1; },
 
-    /** يضيف عدداً من *أيام التداول* إلى تاريخ، متجاوزاً العطل الأسبوعية.
-     *  هذا هو التحويل الصحيح من "بعد 13 شمعة" إلى تاريخ تقويمي فعلي. */
+    /** يضيف n جلسة تداول (لا أيام تقويمية) إلى تاريخ. n سالبة تعود للخلف. */
     addTradingDays(date, n) {
       const d = new Date(date.getTime());
-      let left = Math.max(0, Math.round(n));
-      while (left > 0) {
-        d.setUTCDate(d.getUTCDate() + 1);
+      let left = Math.round(n || 0);
+      if (left === 0) {
+        while (!SaudiMarket.isTradingDay(d)) d.setDate(d.getDate() + 1);
+        return d;
+      }
+      const step = left > 0 ? 1 : -1;
+      left = Math.abs(left);
+      let guard = 0;
+      while (left > 0 && guard++ < 20000) {
+        d.setDate(d.getDate() + step);
         if (SaudiMarket.isTradingDay(d)) left--;
       }
       return d;
     },
 
-    /** يعدّ أيام التداول بين تاريخين (حصري للبداية، شامل للنهاية). */
-    tradingDaysBetween(from, to) {
-      if (to <= from) return 0;
-      let n = 0;
-      const d = new Date(from.getTime());
-      while (d < to) {
-        d.setUTCDate(d.getUTCDate() + 1);
+    /** يزيح تاريخاً تقويمياً إلى أول جلسة تداول عنده أو بعده. */
+    nextTradingDay(date) {
+      const d = new Date(date.getTime());
+      let guard = 0;
+      while (!SaudiMarket.isTradingDay(d) && guard++ < 30) d.setDate(d.getDate() + 1);
+      return d;
+    },
+
+    /** عدد جلسات التداول بين تاريخين (تقدير تقويمي، بلا عطل رسمية). */
+    tradingDaysBetween(a, b) {
+      let d = new Date(a.getTime()), n = 0, guard = 0;
+      const end = new Date(b.getTime());
+      while (d < end && guard++ < 20000) {
+        d.setDate(d.getDate() + 1);
         if (SaudiMarket.isTradingDay(d)) n++;
       }
       return n;
     },
 
-    /** حدّ التذبذب اليومي: أعلى/أدنى سعر مسموح غداً بناءً على إغلاق اليوم.
-     *  أي هدف سعري خارج هذا النطاق لا يمكن بلوغه في جلسة واحدة — والمنصة
-     *  كانت تعرض أهدافاً تتجاوزه دون أي تنويه. */
-    dailyLimits(prevClose, market = 'main') {
-      const lim = market === 'nomu' ? SaudiMarket.DAILY_LIMIT_NOMU : SaudiMarket.DAILY_LIMIT_MAIN;
-      return { up: round(prevClose * (1 + lim)), down: round(prevClose * (1 - lim)), limitPct: lim * 100 };
+    /** حدّ التذبذب اليومي في السوق الرئيسية ±10٪. */
+    dailyLimits(price, pct) {
+      const p = pct == null ? SaudiMarket.DAILY_LIMIT_PCT : pct;
+      return {
+        limitPct: p,
+        up: r2(price * (1 + p / 100)),
+        down: r2(price * (1 - p / 100))
+      };
     },
 
-    /** أقل عدد جلسات لازمة نظرياً لبلوغ سعر هدف مع احترام حدّ التذبذب. */
-    minSessionsToReach(fromPrice, toPrice, market = 'main') {
-      if (!isNum(fromPrice) || !isNum(toPrice) || fromPrice <= 0 || toPrice <= 0) return null;
-      const lim = market === 'nomu' ? SaudiMarket.DAILY_LIMIT_NOMU : SaudiMarket.DAILY_LIMIT_MAIN;
-      const ratio = toPrice / fromPrice;
-      if (ratio === 1) return 0;
-      const step = ratio > 1 ? Math.log(1 + lim) : Math.log(1 - lim);
-      return Math.ceil(Math.log(ratio) / step);
-    },
-
-    /** هل السوق مفتوح الآن (تقريبي: بلا العطل الرسمية المتغيّرة سنوياً). */
-    isOpenNow(now = new Date()) {
-      if (!SaudiMarket.isTradingDay(now)) return false;
-      const ms = now.getTime() + SaudiMarket.TZ_OFFSET_HOURS * 3600e3;
-      const d = new Date(ms);
-      const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
-      return mins >= 10 * 60 && mins < 15 * 60;
+    /** أقل عدد جلسات ممكن نظرياً للانتقال من سعر إلى آخر تحت حدّ التذبذب.
+     *  يمنع عرض هدف يتطلب قفزة مستحيلة في الأفق المذكور. */
+    minSessionsBetween(from, to, pct) {
+      const p = (pct == null ? SaudiMarket.DAILY_LIMIT_PCT : pct) / 100;
+      if (!isNum(from) || !isNum(to) || from <= 0 || to <= 0) return null;
+      if (from === to) return 0;
+      const ratio = to / from;
+      const step = ratio > 1 ? Math.log(1 + p) : Math.log(1 - p);
+      const n = Math.log(ratio) / step;
+      return n > 0 ? Math.max(1, Math.ceil(n)) : null;
     }
   };
 
   /* ════════════════════════════════════════════════════════════════════
-     3) نقاط الارتكاز المؤكدة — بلا تسرّب زمني
+     3) الشموع — تنظيف وتدقيق
      ──────────────────────────────────────────────────────────────────
-     المشكلة الجذرية في النسخة السابقة: كشف القمم/القيعان استعمل
-     lows[i+1] و lows[i+2]، أي بيانات لاحقة للشمعة i. عند الفحص التاريخي
-     كان هذا يعني أن النموذج "يعرف المستقبل" — فتخرج نتائج اختبار
-     متفائلة بلا أي مقابل في التداول الحقيقي.
-
-     الحل: لكل ارتكاز نسجّل `confirmedAt = i + k`. لا يجوز لأي حساب يجري
-     عند الشمعة t أن يستخدم ارتكازاً confirmedAt > t. الدوال هنا تفرض ذلك.
+     مصدر البيانات يقرّب الأسعار لخانتين، فينتج أحياناً high أقل من
+     max(open,close) بمقدار هللة واحدة في جلسة حقيقية تماماً. النسخة
+     السابقة كانت تحذف هذه الشموع بصمت، وإذا نزل العدد تحت الحد يُرفض
+     النطاق كله ويبقى السهم على بيانات عشوائية. هنا تُصلَح الانعكاسات
+     الطفيفة بدل حذفها، ويُصرَّح بما أُصلح في auditCandles.
      ════════════════════════════════════════════════════════════════════ */
 
-  /**
-   * يكشف نقاط الارتكاز بعرض k شمعة على كل جانب.
-   * @param {Array} candles  شموع {time,open,high,low,close,volume}
-   * @param {number} k       عدد الشموع المطلوبة على كل جانب (افتراضي 3)
-   * @param {number} asOf    آخر فهرس مرئي (محاكاة "الآن" في الاختبار التاريخي)
-   * @returns {Array} [{i, price, type:'H'|'L', confirmedAt}]  مرتّبة زمنياً
-   */
-  function detectPivots(candles, k = 3, asOf = null) {
-    const n = candles.length;
-    const limit = asOf == null ? n - 1 : Math.min(asOf, n - 1);
-    const out = [];
-    for (let i = k; i + k <= limit; i++) {
-      let isHigh = true, isLow = true;
-      for (let j = 1; j <= k; j++) {
-        if (candles[i].high <= candles[i - j].high || candles[i].high <= candles[i + j].high) isHigh = false;
-        if (candles[i].low >= candles[i - j].low || candles[i].low >= candles[i + j].low) isLow = false;
-        if (!isHigh && !isLow) break;
-      }
-      /* confirmedAt = i+k: الشمعة التي عندها اكتملت أدلة الارتكاز فعلياً */
-      if (isHigh) out.push({ i, price: candles[i].high, type: 'H', confirmedAt: i + k });
-      if (isLow) out.push({ i, price: candles[i].low, type: 'L', confirmedAt: i + k });
+  /* حد التسامح مع انعكاس OHLC: نصف هللة نسبةً إلى السعر. */
+  const OHLC_TOL = 0.0015;
+
+  function sanitizeCandles(raw) {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Map();
+    for (const c of raw) {
+      if (!c) continue;
+      const o = +c.open, h = +c.high, l = +c.low, cl = +c.close;
+      const t = +c.time;
+      if (!isNum(o) || !isNum(h) || !isNum(l) || !isNum(cl) || !isNum(t)) continue;
+      if (o <= 0 || h <= 0 || l <= 0 || cl <= 0) continue;
+      const v = isNum(+c.volume) && +c.volume >= 0 ? +c.volume : 0;
+
+      const hiWant = Math.max(o, cl, h), loWant = Math.min(o, cl, l);
+      /* انعكاس فاحش (أكثر من نصف بالمئة) ليس تقريباً — تُسقط الشمعة */
+      const span = Math.max(1e-9, hiWant);
+      if ((hiWant - h) / span > OHLC_TOL || (l - loWant) / span > OHLC_TOL) continue;
+
+      /* آخر قيمة لنفس الطابع الزمني تفوز (تحديثات داخل الجلسة) */
+      seen.set(t, { time: t, open: o, high: hiWant, low: loWant, close: cl, volume: v });
     }
-    return out;
+    return Array.from(seen.values()).sort((a, b) => a.time - b.time);
   }
 
-  /** آخر ارتكاز *مؤكّد* عند الشمعة asOf — لا شيء من المستقبل. */
-  function lastConfirmedPivot(candles, k = 3, asOf = null) {
-    const limit = asOf == null ? candles.length - 1 : asOf;
-    const pivots = detectPivots(candles, k, limit);
-    for (let idx = pivots.length - 1; idx >= 0; idx--) {
-      if (pivots[idx].confirmedAt <= limit) return pivots[idx];
-    }
-    return null;
-  }
+  /** تدقيق جودة البيانات — يُعرض للمستخدم قبل أي تقرير مبني عليها. */
+  function auditCandles(cs) {
+    const issues = [];
+    if (!Array.isArray(cs) || !cs.length) return { ok: false, issues: ['لا توجد شموع'], count: 0 };
+    const n = cs.length;
 
-  /** الدورة الذاتية للسهم = متوسط المسافة بين ارتكازات متعاقبة من نفس النوع،
-   *  مع مقياس اتساق = 1 - (معامل الاختلاف). اتساق منخفض ⇒ لا دورة حقيقية. */
-  function dominantPivotCycle(candles, k = 3, asOf = null) {
-    const pivots = detectPivots(candles, k, asOf);
-    if (pivots.length < 4) return null;
+    let zeroVol = 0, flat = 0, dupTime = 0, badOrder = 0;
     const gaps = [];
-    for (const type of ['H', 'L']) {
-      const sub = pivots.filter(p => p.type === type);
-      for (let i = 1; i < sub.length; i++) gaps.push(sub[i].i - sub[i - 1].i);
+    for (let i = 0; i < n; i++) {
+      const c = cs[i];
+      if (!c.volume) zeroVol++;
+      if (c.high === c.low) flat++;
+      if (i > 0) {
+        if (cs[i].time === cs[i - 1].time) dupTime++;
+        if (cs[i].time < cs[i - 1].time) badOrder++;
+        const days = Math.round((cs[i].time - cs[i - 1].time) / 86400);
+        if (days > 5) gaps.push({ at: i, days });
+      }
     }
-    if (gaps.length < 3) return null;
-    const m = Stats.mean(gaps), sd = Stats.std(gaps);
-    const cv = m ? sd / m : 1;
-    return {
-      cycle: Math.round(m),
-      consistencyPct: round(clamp((1 - cv) * 100, 0, 100), 0),
-      sampleSize: gaps.length,
-      /* اتساق أقل من 50٪ يعني تباعداً غير منتظم — ضجيج، لا دورة */
-      reliable: (1 - cv) >= 0.5 && gaps.length >= 5
-    };
+
+    /* قفزة سعرية تتجاوز حدّ التذبذب اليومي مرتين = غالباً تجزئة سهم أو
+       توزيع رأسمالي لم يُعدَّل، وهو ما يفسد كل حساب دورة أو عائد. */
+    let splitSuspect = 0;
+    for (let i = 1; i < n; i++) {
+      const ch = Math.abs(cs[i].close / cs[i - 1].close - 1);
+      if (ch > 0.25) splitSuspect++;
+    }
+
+    if (dupTime) issues.push(`${dupTime} شمعة مكرّرة الطابع الزمني`);
+    if (badOrder) issues.push(`${badOrder} شمعة خارج الترتيب الزمني`);
+    if (gaps.length) issues.push(`${gaps.length} فجوة زمنية تتجاوز 5 أيام (أطولها ${Math.max.apply(null, gaps.map(g => g.days))} يوماً) — تؤثر على الدورات التقويمية`);
+    if (zeroVol > n * 0.1) issues.push(`${zeroVol} جلسة بحجم صفر (${(zeroVol / n * 100).toFixed(0)}٪) — سيولة ضعيفة أو تعليق تداول`);
+    if (flat > n * 0.1) issues.push(`${flat} جلسة بلا مدى سعري (high = low)`);
+    if (splitSuspect) issues.push(`${splitSuspect} قفزة تتجاوز 25٪ — يُحتمل تجزئة سهم غير معدَّلة`);
+    if (n < 80) issues.push(`العينة ${n} جلسة فقط — أقصر مما تتطلبه الدورات الطويلة`);
+
+    return { ok: issues.length === 0, issues, count: n, gaps, zeroVolume: zeroVol };
   }
 
   /* ════════════════════════════════════════════════════════════════════
-     4) التحليل الطيفي — النسخة الصحيحة
-     ──────────────────────────────────────────────────────────────────
-     ثلاثة أخطاء جذرية في النسخة السابقة، كلها مُصلَحة هنا:
-
-     (أ) اختبار الدلالة كان z-score على طاقات الطيف نفسه. القياس التجريبي
-         أظهر أنه يصنّف 91.5٪ من مسارات المشي العشوائي المحض على أنها
-         "دالة إحصائياً" — أي أنه بلا قيمة تمييزية. البديل: اختبار Fisher's g
-         بقيمة احتمال مضبوطة (exact p-value) تحت فرضية الضجيج الأبيض.
-
-     (ب) المسح كان على "أطوال دورات صحيحة" 5..60، وهي شبكة غير منتظمة في
-         التردد: الدورتان 55 و56 تكادان تكونان نفس التردد، بينما 5 و6
-         متباعدتان جداً. هذا يضخّم الدورات الطويلة ويشوّه أي "حصة طاقة".
-         البديل: ترددات فورييه المنتظمة k/N.
-
-     (ج) الإسقاط الأمامي كان يعامل موجة *العوائد* كأنها موجة *السعر* —
-         خطأ طور مقداره 90°: قمة السعر تقع حيث يعبر العائد الصفر هبوطاً،
-         لا حيث يبلغ العائد قمته. البديل: نثبت الدلالة على العوائد (حيث
-         فرضية الضجيج الأبيض معقولة)، ثم نلائم الجيبية على *لوغاريتم
-         السعر منزوع الاتجاه* عند نفس التردد ونُسقط تلك الموجة.
+     4) المدى والتذبذب
      ════════════════════════════════════════════════════════════════════ */
 
-  /** الدورية (periodogram) على ترددات فورييه المنتظمة k/N. */
-  function periodogram(series) {
-    const N = series.length;
-    const m = Math.floor((N - 1) / 2);
-    const mean = Stats.mean(series);
-    const x = series.map(v => v - mean);
-    const out = [];
-    for (let k = 1; k <= m; k++) {
-      const w = (2 * Math.PI * k) / N;
-      let re = 0, im = 0;
-      for (let t = 0; t < N; t++) { re += x[t] * Math.cos(w * t); im += x[t] * Math.sin(w * t); }
-      out.push({ k, freq: k / N, period: N / k, power: (re * re + im * im) / N });
+  /** ATR بطريقة Wilder (تنعيم أسّي بمعامل 1/p) لا بمتوسط بسيط. */
+  function atr(cs, p) {
+    p = p || 14;
+    if (!cs || cs.length < p + 1) return null;
+    const tr = [];
+    for (let i = 1; i < cs.length; i++) {
+      tr.push(Math.max(
+        cs[i].high - cs[i].low,
+        Math.abs(cs[i].high - cs[i - 1].close),
+        Math.abs(cs[i].low - cs[i - 1].close)
+      ));
     }
+    let a = 0;
+    for (let i = 0; i < p; i++) a += tr[i];
+    a /= p;
+    for (let i = p; i < tr.length; i++) a = (a * (p - 1) + tr[i]) / p;
+    return r3(a);
+  }
+
+  /** سلسلة ATR كاملة — يحتاجها الاختبار التاريخي بلا تسرّب زمني. */
+  function atrSeries(cs, p) {
+    p = p || 14;
+    const out = new Array(cs.length).fill(null);
+    if (!cs || cs.length < p + 1) return out;
+    const tr = [0];
+    for (let i = 1; i < cs.length; i++) {
+      tr.push(Math.max(
+        cs[i].high - cs[i].low,
+        Math.abs(cs[i].high - cs[i - 1].close),
+        Math.abs(cs[i].low - cs[i - 1].close)
+      ));
+    }
+    let a = 0;
+    for (let i = 1; i <= p; i++) a += tr[i];
+    a /= p; out[p] = a;
+    for (let i = p + 1; i < cs.length; i++) { a = (a * (p - 1) + tr[i]) / p; out[i] = a; }
     return out;
   }
 
   /**
-   * اختبار Fisher's g للدورية.
-   * تحت فرضية العدم (ضجيج أبيض غاوسي) تكون إحداثيات الدورية مستقلة
-   * وموزّعة أسّياً، فتكون g = max(I) / Σ(I) لها توزيع معلوم بالضبط:
-   *   P(g > x) = Σ_{j=1..⌊1/x⌋} (-1)^(j-1) · C(m,j) · (1 - j·x)^(m-1)
-   * هذه قيمة احتمال حقيقية — لا "درجة ثقة" مخترعة.
+   * التذبذب من العوائد اللوغاريتمية:
+   *   • يُطرح المتوسط (النسخة السابقة لم تطرحه)،
+   *   • المقام n−1 لا n،
+   *   • ويُسنَّن سنوياً بجذر عدد جلسات السنة السعودية.
    */
-  function fisherGTest(powers) {
-    const m = powers.length;
-    if (m < 4) return { g: null, p: 1, m };
-    const total = powers.reduce((s, v) => s + v, 0);
-    if (!total) return { g: 0, p: 1, m };
-    const g = Math.max(...powers) / total;
-    const jMax = Math.min(Math.floor(1 / g), m);
-    let p = 0;
-    for (let j = 1; j <= jMax; j++) {
-      const lnTerm = Stats.lnChoose(m, j) + (m - 1) * Math.log(1 - j * g);
-      if (!isFinite(lnTerm)) continue;
-      p += (j % 2 === 1 ? 1 : -1) * Math.exp(lnTerm);
-      /* الحدود تتناقص بسرعة؛ نتوقف عند بلوغ دقة تفوق ما نعرضه */
-      if (Math.abs(Math.exp(lnTerm)) < 1e-12) break;
+  function volatility(prices) {
+    const p = Stats.clean(prices);
+    if (p.length < 21) return { ok: false, reason: `عيّنة ${p.length} سعر — مطلوب 21 على الأقل`, dailyPct: null, annualPct: null };
+    const r = [];
+    for (let i = 1; i < p.length; i++) {
+      if (p[i] > 0 && p[i - 1] > 0) r.push(Math.log(p[i] / p[i - 1]));
     }
-    return { g: round(g, 5), p: clamp(p, 0, 1), m };
-  }
-
-  /** ملاءمة جيبية بأقل المربعات عند تردد محدّد: y ≈ A·cos(ωt) + B·sin(ωt).
-   *  يرجع السعة والطور بصيغة R·cos(ωt + φ). */
-  function fitSinusoid(y, freq) {
-    const n = y.length, w = 2 * Math.PI * freq;
-    let cc = 0, ss = 0, cs = 0, yc = 0, ys = 0;
-    for (let t = 0; t < n; t++) {
-      const c = Math.cos(w * t), s = Math.sin(w * t);
-      cc += c * c; ss += s * s; cs += c * s; yc += y[t] * c; ys += y[t] * s;
-    }
-    const det = cc * ss - cs * cs;
-    if (!det) return { amplitude: 0, phase: 0, A: 0, B: 0 };
-    const A = (yc * ss - ys * cs) / det;
-    const B = (ys * cc - yc * cs) / det;
-    return { A, B, amplitude: Math.hypot(A, B), phase: Math.atan2(-B, A) };
-  }
-
-  /**
-   * التحليل الطيفي الكامل.
-   * @param {number[]} closes أسعار الإغلاق
-   * @param {object} opts { alpha: مستوى الدلالة (افتراضي 0.05) }
-   */
-  function spectral(closes, opts = {}) {
-    const alpha = opts.alpha ?? 0.05;
-    const n = closes.length;
-    if (n < 40) return { ok: false, reason: `يتطلب 40 شمعة على الأقل (متوفر ${n})` };
-
-    /* (1) الدلالة تُختبر على العوائد اللوغاريتمية: تحت فرضية "لا دورة"
-       تكون العوائد اليومية قريبة جداً من ضجيج أبيض، وهي بالضبط الفرضية
-       التي بُني عليها اختبار Fisher. اختباره على السعر مباشرة كان سيرفض
-       فرضية العدم دائماً لمجرد أن السعر متسلسل زمنياً (I(1)). */
-    const rets = [];
-    for (let i = 1; i < n; i++) {
-      if (closes[i] <= 0 || closes[i - 1] <= 0) return { ok: false, reason: 'أسعار غير صالحة (صفر أو سالبة)' };
-      rets.push(Math.log(closes[i] / closes[i - 1]));
-    }
-    const pg = periodogram(rets);
-    /* نحصر النطاق العملي: دورات من 4 شمعات حتى ثلث طول العينة. دورة أطول
-       من ذلك لا تتكرّر بما يكفي في العينة لتُقاس أصلاً. */
-    const band = pg.filter(p => p.period >= 4 && p.period <= rets.length / 3);
-    if (band.length < 4) return { ok: false, reason: 'نطاق ترددي ضيّق جداً لهذا الطول' };
-
-    const test = fisherGTest(band.map(p => p.power));
-    const peak = band.reduce((a, b) => (b.power > a.power ? b : a));
-    const totalBand = band.reduce((s, p) => s + p.power, 0) || 1;
-    const significant = test.p <= alpha;
-
-    /* (2) الطور والسعة تُستخرجان من *لوغاريتم السعر منزوع الاتجاه الخطي*
-       عند نفس التردد، لأن ما نريد إسقاطه للأمام هو قمم/قيعان السعر،
-       لا قمم العائد. هذا يصحّح خطأ طور مقداره 90° في النسخة السابقة. */
-    const logP = closes.map(v => Math.log(v));
-    const trend = Stats.linreg(logP);
-    const detrended = logP.map((v, i) => v - (trend.intercept + trend.slope * i));
-    const fit = fitSinusoid(detrended, peak.freq);
-
-    /* موقع الطور الحالي داخل الدورة: 0° = قمة، 180° = قاع */
-    const wNow = 2 * Math.PI * peak.freq * (n - 1) + fit.phase;
-    const phaseNow = ((wNow % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-    const cyclePosPct = round((phaseNow / (2 * Math.PI)) * 100, 1);
-
+    if (r.length < 20) return { ok: false, reason: 'عوائد غير كافية', dailyPct: null, annualPct: null };
+    const sd = Stats.sd(r);
     return {
       ok: true,
-      period: round(peak.period, 1),
-      freq: peak.freq,
-      /* حصة الطاقة داخل النطاق المفحوص — تُعرض كوصف، لا كدليل دلالة */
-      bandSharePct: round((peak.power / totalBand) * 100, 1),
-      amplitudePct: round((Math.exp(fit.amplitude) - 1) * 100, 2), /* سعة الدورة كنسبة سعرية */
-      phase: round(fit.phase, 4),
-      cyclePosPct,                       /* 0٪=قمة الدورة، 50٪=قاع الدورة */
-      gStatistic: test.g,
-      pValue: test.p,
-      pValueText: test.p < 0.001 ? '<0.001' : test.p.toFixed(3),
-      alpha,
-      significant,
-      /* تفسير صريح بدل رقم ثقة: إما رفضنا فرضية العدم أو لم نرفضها */
-      verdict: significant
-        ? `دورة دالة إحصائياً (p=${test.p < 0.001 ? '<0.001' : test.p.toFixed(3)} ≤ ${alpha})`
-        : `لا دليل على دورة — الطيف لا يختلف عن ضجيج عشوائي (p=${test.p.toFixed(3)} > ${alpha})`,
-      trendSlopePerBar: round(trend.slope, 6),
-      trendR2: round(trend.r2, 3),
-      top: band.slice().sort((a, b) => b.power - a.power).slice(0, 5)
-        .map(p => ({ period: round(p.period, 1), sharePct: round((p.power / totalBand) * 100, 1) }))
+      sigma: sd,
+      dailyPct: r4(sd * 100),
+      annualPct: r2(sd * Math.sqrt(SESSIONS_PER_YEAR) * 100),
+      /* المدى اليومي المتوقع بثقة 95٪ — ±1.96σ، لا σ وحدها */
+      expectedDailyRangePct: r2(1.959963985 * sd * 100),
+      sampleSize: r.length
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     5) نقاط الارتكاز — بمنع تسرّب زمني صريح
+     ──────────────────────────────────────────────────────────────────
+     ارتكاز عند i لا يُعتبر معروفاً إلا بعد إغلاق k جلسة بعده. الحقل
+     confirmedAt هو أول فهرس كان فيه هذا الارتكاز قابلاً للاستعمال؛
+     الاختبار التاريخي لا يستعمل ارتكازاً قبل confirmedAt إطلاقاً.
+     ════════════════════════════════════════════════════════════════════ */
+  function detectPivots(cs, k) {
+    k = k || 3;
+    const out = [];
+    if (!cs || cs.length < 2 * k + 1) return out;
+    for (let i = k; i < cs.length - k; i++) {
+      let isH = true, isL = true;
+      for (let j = i - k; j <= i + k; j++) {
+        if (j === i) continue;
+        if (cs[j].high >= cs[i].high) isH = false;
+        if (cs[j].low <= cs[i].low) isL = false;
+        if (!isH && !isL) break;
+      }
+      if (isH) out.push({ i, price: r2(cs[i].high), p: r2(cs[i].high), type: 'H', time: cs[i].time, confirmedAt: i + k });
+      if (isL) out.push({ i, price: r2(cs[i].low), p: r2(cs[i].low), type: 'L', time: cs[i].time, confirmedAt: i + k });
+    }
+    return out.sort((a, b) => a.i - b.i);
+  }
+
+  /** آخر ارتكاز مؤكَّد حتى الفهرس endIdx (افتراضياً آخر شمعة). */
+  function lastConfirmedPivot(cs, k, endIdx) {
+    k = k || 3;
+    const end = endIdx == null ? cs.length - 1 : endIdx;
+    const piv = detectPivots(cs.slice(0, end + 1), k).filter(p => p.confirmedAt <= end);
+    return piv.length ? piv[piv.length - 1] : null;
+  }
+
+  /**
+   * الدورة الذاتية للسهم = وسيط المسافة بين ارتكازات متجانسة النوع.
+   * `reliable` ليست رأياً: هي شرط على معامل الاختلاف (تشتّت/وسيط) وعلى
+   * حجم العيّنة. تباعد متفاوت ليس دورة — هو ضجيج.
+   */
+  function dominantPivotCycle(cs, k) {
+    const piv = detectPivots(cs, k || 3);
+    if (piv.length < 4) return null;
+    const gaps = [];
+    for (const type of ['H', 'L']) {
+      const s = piv.filter(p => p.type === type);
+      for (let i = 1; i < s.length; i++) gaps.push(s[i].i - s[i - 1].i);
+    }
+    const g = gaps.filter(x => x >= 3);
+    if (g.length < 3) return null;
+    const med = Stats.median(g), sd = Stats.sd(g);
+    const cv = med > 0 ? sd / med : 9;
+    return {
+      cycle: Math.round(med),
+      sampleSize: g.length,
+      sdBars: r2(sd),
+      cv: r2(cv),
+      /* معامل اختلاف ≤ 0.35 على 5 مسافات فأكثر — عتبة معلنة لا مخفية */
+      consistencyPct: r2(clamp(100 * (1 - cv), 0, 100)),
+      reliable: g.length >= 5 && cv <= 0.35
     };
   }
 
   /**
-   * إسقاط نقاط انعطاف السعر المتوقعة من الدورة الطيفية.
-   * يعمل *فقط* على دورة اجتازت اختبار الدلالة — الإسقاط من دورة غير دالة
-   * هو رسم لموجة على ضجيج، وكان هذا مصدر "النوافذ الزمنية" الوهمية.
+   * المستويات البنيوية: ارتكازات مؤكدة في الجهة الصحيحة من السعر فقط.
+   * كان الخلل السابق أن «الدعم» يُؤخذ من أعلى قاع تاريخي أياً كان موقعه من
+   * السعر، فينتج وقف فوق الدخول وهدف تحته — خطة مقلوبة تماماً.
    */
-  function projectCycleTurns(spec, lastIndex, horizonBars = 60) {
-    if (!spec || !spec.ok || !spec.significant) return [];
-    const w = 2 * Math.PI * spec.freq;
-    const turns = [];
-    const val = (t) => Math.cos(w * t + spec.phase);
-    let prev = val(lastIndex), prevSlope = prev - val(lastIndex - 1);
-    for (let t = lastIndex + 1; t <= lastIndex + horizonBars; t++) {
-      const v = val(t), slope = v - prev;
-      if (prevSlope > 0 && slope <= 0) turns.push({ type: 'peak', barsAhead: t - 1 - lastIndex });
-      else if (prevSlope < 0 && slope >= 0) turns.push({ type: 'valley', barsAhead: t - 1 - lastIndex });
-      prev = v; prevSlope = slope;
+  function structuralLevels(cs, price, opt) {
+    opt = opt || {};
+    const k = opt.k || 3;
+    const tolPct = opt.tolPct == null ? 0.4 : opt.tolPct;   /* دمج المستويات المتقاربة */
+    const piv = detectPivots(cs, k);
+    const above = [], below = [];
+    for (const p of piv) {
+      if (p.type === 'H' && p.price > price) above.push(p.price);
+      if (p.type === 'L' && p.price < price) below.push(p.price);
     }
-    return turns.filter(t => t.barsAhead > 0);
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     5) التنبؤ — ARIMA(1,1,0) بفترة تنبؤ صحيحة
-     ──────────────────────────────────────────────────────────────────
-     النسخة السابقة حسبت نطاق عدم اليقين كـ σ·√h. هذا صحيح فقط لمشي
-     عشوائي محض (φ=0). للنموذج AR(1) على الفروق، التباين التراكمي بعد h
-     خطوة هو:
-        Var(h) = σ² · Σ_{k=1..h} [ (1 - φ^(h-k+1)) / (1 - φ) ]²
-     الفرق جوهري: عند φ=0.68 (سهم ذو زخم) تكون σ·√h أقل من الصحيح
-     بأكثر من الضعف — أي أن النطاق المعروض كان يوحي بيقين غير موجود.
-     ════════════════════════════════════════════════════════════════════ */
-
-  function forecastARIMA(closes, horizon = 5, opts = {}) {
-    const z = opts.z ?? 1.959964;                    /* 95٪ */
-    const n = closes.length;
-    if (n < 30) return { ok: false, reason: `يتطلب 30 شمعة على الأقل (متوفر ${n})` };
-
-    const d = [];
-    for (let i = 1; i < n; i++) d.push(closes[i] - closes[i - 1]);
-
-    /* تقدير φ بأقل المربعات على d[t] = φ·d[t-1] + ε */
-    const x = d.slice(0, -1), y = d.slice(1), m = x.length;
-    const mx = Stats.mean(x), my = Stats.mean(y);
-    let sxy = 0, sxx = 0;
-    for (let i = 0; i < m; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; }
-    let phi = sxx ? sxy / sxx : 0;
-    phi = clamp(phi, -0.95, 0.95);                   /* شرط الاستقرارية */
-
-    /* الخطأ المعياري لـ φ — يحدّد إن كان الزخم الذاتي مميّزاً عن الصفر */
-    let sse = 0;
-    for (let i = 0; i < m; i++) sse += (y[i] - phi * x[i]) ** 2;
-    const sigma2 = sse / Math.max(1, m - 1);
-    const sigma = Math.sqrt(sigma2);
-    const sePhi = sxx ? Math.sqrt(sigma2 / sxx) : Infinity;
-    const tPhi = sePhi ? phi / sePhi : 0;
-    const phiPValue = 2 * (1 - Stats.normalCdf(Math.abs(tPhi)));
-
-    /* التنبؤ النقطي */
-    let lastDiff = d[d.length - 1], price = closes[n - 1], point = price;
-    for (let h = 1; h <= horizon; h++) { lastDiff = phi * lastDiff; point += lastDiff; }
-
-    /* تباين التنبؤ التراكمي الصحيح لـ ARIMA(1,1,0) */
-    let varSum = 0;
-    for (let k = 1; k <= horizon; k++) {
-      const psi = phi === 1 ? (horizon - k + 1) : (1 - Math.pow(phi, horizon - k + 1)) / (1 - phi);
-      varSum += psi * psi;
-    }
-    const seForecast = sigma * Math.sqrt(varSum);
-    const lo = point - z * seForecast, hi = point + z * seForecast;
-
-    /* هل يختلف التنبؤ فعلاً عن "لا تغيّر"؟ إن كان السعر الحالي داخل
-       فاصل التنبؤ فالجواب لا — وهذا هو الوضع الطبيعي لمعظم الأسهم.
-       عرض رقم تنبؤ بلا هذه الجملة هو إيحاء زائف بالدقة. */
-    const meaningful = price < lo || price > hi;
-
+    /* المقاومة الحقيقية قمة لم يُغلق فوقها بعد؛ والدعم قاع لم يُغلق تحته */
+    const cluster = (arr, asc) => {
+      const s = arr.slice().sort((a, b) => asc ? a - b : b - a);
+      const out = [];
+      for (const v of s) {
+        if (!out.length || Math.abs(v - out[out.length - 1]) / price * 100 > tolPct) out.push(v);
+      }
+      return out;
+    };
     return {
-      ok: true, horizon,
-      phi: round(phi, 3), phiPValue: round(phiPValue, 4),
-      phiSignificant: phiPValue <= 0.05,
-      sigma: round(sigma, 4),
-      point: round(point), lo: round(lo), hi: round(hi),
-      bandPct: round((z * seForecast) / price * 100, 2),
-      expectedChangePct: round((point - price) / price * 100, 2),
-      meaningful,
-      note: meaningful
-        ? 'التنبؤ يقع خارج نطاق "لا تغيّر" — فرق قابل للتمييز إحصائياً'
-        : 'السعر الحالي يقع داخل فاصل التنبؤ 95٪ — أي أن النموذج لا يميّز هذا التوقع عن "بلا تغيّر". لا تبنِ قراراً على الفرق.'
+      resistances: cluster(above, true),
+      supports: cluster(below, false),
+      price: r2(price),
+      pivotCount: piv.length
     };
   }
 
   /* ════════════════════════════════════════════════════════════════════
-     6) المؤشرات التراكمية — VWAP مثبّت، OBV، وخط التجميع/التوزيع
+     6) أهداف الفراكتال — هدف من البنية لا من مضاعف
      ──────────────────────────────────────────────────────────────────
-     الخطأ الجذري: VWAP في المنصة كان يتراكم من أول شمعة في النطاق
-     المحمّل ولا يُصفَّر أبداً. VWAP بمعناه الحقيقي يُثبَّت على نقطة بداية
-     (جلسة، أو قاع/قمة مؤكدة). تراكمه عبر ٣ أشهر يجعله متوسطاً بطيئاً
-     بلا معنى تنفيذي — وكان يُعرض للمستخدم على أنه VWAP.
+     «هدف = دخول + 2×المخاطرة» حشو تعريفي: النسبة 2 لأننا كتبنا 2. الهدف
+     هنا مستوى فعلي ينتظر عنده أمر بيع: قمة فراكتالية لم يُغلق فوقها بعد.
      ════════════════════════════════════════════════════════════════════ */
-
-  const Cumulative = {
-    /**
-     * VWAP مثبّت على فهرس بداية محدّد (anchor).
-     *
-     * @param {boolean} opts.capOutliers  يحدّ وزن أي شمعة عند 3× الوسيط.
-     *   السبب: VWAP التنفيذي يجب أن يعكس الحجم كما وقع فعلاً (بلا حدّ).
-     *   أما حين يُستخدم كـ *مرساة مرجعية* لنطاق القيمة، فصفقة تبادلية
-     *   ضخمة في يوم واحد تزيح المرساة بنسبة معتبرة رغم أنها لا تقول شيئاً
-     *   عن القيمة — وهو بالضبط العيب الذي أسقط "السعر العادل" السابق.
-     *   الوسيط هنا مقياس متين (robust) لا يتأثر بالقيم الشاذة.
-     */
-    anchoredVWAP(candles, anchorIdx = 0, opts = {}) {
-      const out = new Array(candles.length).fill(null);
-      let cap = Infinity;
-      if (opts.capOutliers) {
-        const vols = candles.slice(anchorIdx).map(c => c.volume || 0).filter(v => v > 0);
-        const med = vols.length ? Stats.quantile(vols, 0.5) : 0;
-        if (med > 0) cap = med * 3;
+  function fractalTargets(cs, opt) {
+    const k = (opt && opt.k) || 2;
+    if (!cs || cs.length < k * 2 + 10) return { ok: false, reason: 'شموع غير كافية' };
+    const n = cs.length, price = r2(cs[n - 1].close);
+    const His = [], Los = [];
+    for (let i = k; i < n - k; i++) {
+      let isH = true, isL = true;
+      for (let j = i - k; j <= i + k; j++) {
+        if (j === i) continue;
+        if (cs[j].high >= cs[i].high) isH = false;
+        if (cs[j].low <= cs[i].low) isL = false;
       }
-      let pv = 0, vol = 0;
-      for (let i = anchorIdx; i < candles.length; i++) {
-        const tp = (candles[i].high + candles[i].low + candles[i].close) / 3;
-        const v = Math.min(candles[i].volume || 0, cap);
-        pv += tp * v; vol += v;
-        out[i] = vol > 0 ? pv / vol : candles[i].close;
+      if (isH) His.push({ i, p: r2(cs[i].high) });
+      if (isL) Los.push({ i, p: r2(cs[i].low) });
+    }
+    /* «حيّة» = لم تُكسر بإغلاق بعد تكوّنها */
+    const liveHi = His.filter(f => {
+      for (let j = f.i + k + 1; j < n; j++) if (cs[j].close > f.p) return false;
+      return f.p > price;
+    }).sort((a, b) => a.p - b.p);
+    const liveLo = Los.filter(f => {
+      for (let j = f.i + k + 1; j < n; j++) if (cs[j].close < f.p) return false;
+      return f.p < price;
+    }).sort((a, b) => b.p - a.p);
+
+    const target1 = liveHi[0] ? liveHi[0].p : null;
+    const target2 = liveHi[1] ? liveHi[1].p : null;
+    const support = liveLo[0] ? liveLo[0].p : null;
+
+    /* الحركة المقيسة تُعاد كمستوى سعري جاهز، لا كمسافة تُجمع — الخلط بين
+       الاثنين كان يضاعف الأهداف. */
+    let measuredMove = null;
+    if (liveLo.length && His.length) {
+      const baseLow = liveLo[0];
+      const legHigh = His.filter(h => h.i > baseLow.i).sort((a, b) => b.p - a.p)[0] || His[His.length - 1];
+      if (legHigh && legHigh.p > baseLow.p) measuredMove = r2(baseLow.p + (legHigh.p - baseLow.p) * 2);
+    }
+    const supportPct = support ? r2((price - support) / price * 100) : null;
+    const t1Pct = target1 ? r2((target1 - price) / price * 100) : null;
+
+    return {
+      ok: true, price, target1, target2, support, supportPct, t1Pct,
+      target: target1, targetSource: 'أقرب قمة فراكتالية غير مكسورة',
+      measuredMove, highCount: liveHi.length, lowCount: liveLo.length,
+      /* مدرج إقلاع نظيف = مسافة 3٪ فأكثر قبل أول عائق */
+      cleanRunway: t1Pct == null ? true : t1Pct >= 3,
+      levelsUp: liveHi.slice(0, 4), levelsDown: liveLo.slice(0, 4),
+      engine: 'core'
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     7) ملف الحجم — POC بالتعريف الصحيح
+     ──────────────────────────────────────────────────────────────────
+     POC ليس «إغلاق الشمعة الأعلى حجماً»، بل مستوى السعر الذي تداول عنده
+     أكبر حجم تراكمي عبر الفترة. يُحسب بتوزيع حجم كل شمعة على شرائح السعر
+     التي غطّاها مداها. الفرق ليس أكاديمياً: 40 جلسة حول 10 ريال وجلسة
+     ضخمة عند 20 تعطي بالتعريف القديم POC = 20 (سعر تداول يوماً واحداً).
+     ════════════════════════════════════════════════════════════════════ */
+  function volumeProfile(cs, opt) {
+    opt = opt || {};
+    const bins = opt.bins || 60;
+    if (!cs || cs.length < 5) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (const c of cs) { if (c.low < lo) lo = c.low; if (c.high > hi) hi = c.high; }
+    if (!isNum(lo) || !isNum(hi) || hi <= lo) return null;
+    const w = (hi - lo) / bins;
+    const hist = new Array(bins).fill(0);
+
+    for (const c of cs) {
+      const v = c.volume || 0;
+      if (v <= 0) continue;
+      const a = Math.max(0, Math.min(bins - 1, Math.floor((c.low - lo) / w)));
+      const b = Math.max(0, Math.min(bins - 1, Math.floor((c.high - lo) / w)));
+      const span = b - a + 1;
+      /* توزيع منتظم للحجم على الشرائح التي غطّاها مدى الشمعة */
+      for (let i = a; i <= b; i++) hist[i] += v / span;
+    }
+
+    let total = 0, pocIdx = 0;
+    for (let i = 0; i < bins; i++) { total += hist[i]; if (hist[i] > hist[pocIdx]) pocIdx = i; }
+    if (total <= 0) return null;
+
+    /* منطقة القيمة: توسّع من الـPOC للجهة الأكثر حجماً حتى بلوغ 70٪ */
+    let acc = hist[pocIdx], loI = pocIdx, hiI = pocIdx;
+    const targetVol = total * 0.70;
+    while (acc < targetVol && (loI > 0 || hiI < bins - 1)) {
+      const dn = loI > 0 ? hist[loI - 1] : -1;
+      const up = hiI < bins - 1 ? hist[hiI + 1] : -1;
+      if (up >= dn) { hiI++; acc += hist[hiI]; } else { loI--; acc += hist[loI]; }
+    }
+    const mid = i => lo + w * (i + 0.5);
+    return {
+      poc: r2(mid(pocIdx)),
+      valueAreaLow: r2(lo + w * loI),
+      valueAreaHigh: r2(lo + w * (hiI + 1)),
+      valueAreaPct: r2(acc / total * 100),
+      binWidth: r4(w),
+      bins, low: r2(lo), high: r2(hi),
+      histogram: hist
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     8) Cumulative — المؤشرات التراكمية
+     ──────────────────────────────────────────────────────────────────
+     VWAP تراكمي من أول شمعة في النطاق المحمّل ليس VWAP: إنه متوسط بطيء
+     لكامل الفترة. VWAP يحتاج نقطة تثبيت — جلسة، أو ارتكاز مؤكد.
+     ════════════════════════════════════════════════════════════════════ */
+  const Cumulative = {
+    /** VWAP متدحرج على نافذة — يجيب عن سؤال ذي معنى بلا نقطة تثبيت. */
+    rollingVWAP(cs, win) {
+      win = win || 20;
+      const out = new Array(cs.length).fill(null);
+      let pv = 0, vv = 0;
+      const q = [];
+      for (let i = 0; i < cs.length; i++) {
+        const c = cs[i], tp = (c.high + c.low + c.close) / 3, v = c.volume || 0;
+        q.push({ tp, v }); pv += tp * v; vv += v;
+        if (q.length > win) { const o = q.shift(); pv -= o.tp * o.v; vv -= o.v; }
+        if (q.length === win) out[i] = vv > 0 ? pv / vv : c.close;
       }
       return out;
     },
 
-    /** VWAP متدحرج على نافذة ثابتة — البديل العملي حين لا توجد نقطة تثبيت. */
-    rollingVWAP(candles, window = 20) {
-      const out = new Array(candles.length).fill(null);
-      for (let i = 0; i < candles.length; i++) {
-        if (i < window - 1) continue;
-        let pv = 0, vol = 0;
-        for (let j = i - window + 1; j <= i; j++) {
-          const tp = (candles[j].high + candles[j].low + candles[j].close) / 3;
-          pv += tp * (candles[j].volume || 0); vol += candles[j].volume || 0;
-        }
-        out[i] = vol > 0 ? pv / vol : candles[i].close;
+    /** VWAP مثبّت على فهرس ارتكاز — «هل من اشترى منذ الانعكاس في ربح؟» */
+    anchoredVWAP(cs, anchorIdx) {
+      const out = new Array(cs.length).fill(null);
+      const a = clamp(anchorIdx | 0, 0, cs.length - 1);
+      let pv = 0, vv = 0;
+      for (let i = a; i < cs.length; i++) {
+        const c = cs[i], tp = (c.high + c.low + c.close) / 3, v = c.volume || 0;
+        pv += tp * v; vv += v;
+        out[i] = vv > 0 ? pv / vv : c.close;
       }
+      /* قبل نقطة التثبيت لا يوجد VWAP مثبّت — تُملأ بالإغلاق لا بالصفر */
+      for (let i = 0; i < a; i++) out[i] = cs[i].close;
       return out;
     },
 
     /** On-Balance Volume. */
-    obv(candles) {
+    obv(cs) {
       const out = [0];
-      for (let i = 1; i < candles.length; i++) {
-        const c = candles[i].close, p = candles[i - 1].close, v = candles[i].volume || 0;
-        out.push(out[i - 1] + (c > p ? v : c < p ? -v : 0));
+      for (let i = 1; i < cs.length; i++) {
+        const v = cs[i].volume || 0;
+        out.push(out[i - 1] + (cs[i].close > cs[i - 1].close ? v : cs[i].close < cs[i - 1].close ? -v : 0));
       }
       return out;
     },
 
-    /** خط التجميع/التوزيع (Accumulation/Distribution) — يزن الحجم بموقع
-     *  الإغلاق داخل مدى الشمعة، فيميّز "حجم عالٍ بإغلاق ضعيف" عن العكس،
-     *  وهو ما يعجز OBV عن رؤيته لأنه يعتمد إشارة التغيّر فقط. */
-    adLine(candles) {
-      const out = [];
-      let acc = 0;
-      for (const c of candles) {
-        const range = c.high - c.low;
+    /**
+     * خط التجميع/التوزيع — يزن الحجم بموقع الإغلاق داخل مدى الجلسة،
+     * فيميّز «حجم عالٍ بإغلاق ضعيف» عن «حجم عالٍ بإغلاق قوي». وهو تمييز
+     * يعجز عنه OBV لاعتماده على إشارة التغيّر وحدها.
+     */
+    adLine(cs) {
+      const out = []; let acc = 0;
+      for (let i = 0; i < cs.length; i++) {
+        const c = cs[i], range = c.high - c.low;
         const mfm = range > 0 ? ((c.close - c.low) - (c.high - c.close)) / range : 0;
         acc += mfm * (c.volume || 0);
         out.push(acc);
@@ -620,1196 +721,1068 @@
     },
 
     /**
-     * تباعد مؤشر تراكمي عن السعر، مُطبَّع بحيث يكون قابلاً للمقارنة بين
-     * الأسهم: ميل كل سلسلة يُقسَم على مداها في النافذة نفسها، فيصبح
-     * الرقمان بلا وحدة. المقارنة الخام (أسهم مقابل ريالات) كانت بلا معنى.
+     * تباعد بين السعر ومؤشر تراكمي على نافذة — بمقارنة ميلين مُطبّعين.
+     * التطبيع ضروري: ميل OBV بالأسهم وميل السعر بالريالات، ومقارنتهما
+     * خاماً تقارن وحدتين مختلفتين.
      */
-    divergence(candles, series, window = 20) {
-      const n = candles.length;
-      if (n < window + 2) return { type: null, why: 'نافذة غير كافية', strength: 0 };
-      const segS = series.slice(-window), segP = candles.slice(-window).map(c => c.close);
-      const rangeS = Math.max(...segS) - Math.min(...segS) || 1;
-      const rangeP = Math.max(...segP) - Math.min(...segP) || 1;
-      const slopeS = (Stats.linreg(segS).slope * window) / rangeS;
-      const slopeP = (Stats.linreg(segP).slope * window) / rangeP;
-      const gap = slopeS - slopeP;
-      let type = null;
-      if (slopeS > 0.15 && slopeP < 0.05) type = 'bullish';
-      else if (slopeS < -0.15 && slopeP > -0.05) type = 'bearish';
-      return {
-        type,
-        slopeSeries: round(slopeS, 3), slopePrice: round(slopeP, 3),
-        strength: round(Math.abs(gap), 3),
-        why: type === 'bullish' ? 'المؤشر التراكمي يصعد بينما السعر ثابت/هابط ← تجميع خفي'
-          : type === 'bearish' ? 'المؤشر التراكمي يهبط بينما السعر ثابت/صاعد ← تصريف خفي'
-            : 'لا تباعد واضح بين المؤشر التراكمي والسعر'
-      };
+    divergence(cs, series, win) {
+      win = Math.min(win || 20, cs.length - 1, series.length - 1);
+      if (win < 5) return { type: null, why: 'نافذة قصيرة جداً لقياس التباعد' };
+      const pseg = cs.slice(-win).map(c => c.close);
+      const sseg = series.slice(-win);
+      const pR = Stats.linreg(pseg), sR = Stats.linreg(sseg);
+      const pNorm = pseg[pseg.length - 1] ? pR.slope / Math.abs(pseg[pseg.length - 1]) * 100 : 0;
+      const scale = Math.max(1e-9, Stats.median(sseg.map(Math.abs)) || Stats.sd(sseg) || 1);
+      const sNorm = sR.slope / scale * 100;
+      const EPS = 0.02;   /* عتبة «مسطّح» — تحت هذا لا ميل يُعتدّ به */
+      if (pNorm < -EPS && sNorm > EPS)
+        return { type: 'bullish', why: `السعر ينزل (${pNorm.toFixed(2)}٪/جلسة) بينما المؤشر التراكمي يصعد — تجميع تحت ضغط سعري` };
+      if (pNorm > EPS && sNorm < -EPS)
+        return { type: 'bearish', why: `السعر يصعد (${pNorm.toFixed(2)}٪/جلسة) بينما المؤشر التراكمي ينزل — توزيع خلف ارتفاع` };
+      return { type: null, why: `لا تباعد على آخر ${win} جلسة (ميل السعر ${pNorm.toFixed(2)}٪ والمؤشر ${sNorm.toFixed(2)} بنفس الاتجاه)` };
     }
   };
 
   /* ════════════════════════════════════════════════════════════════════
-     7) ملف الحجم الحقيقي (Volume Profile) والنطاق القيمي
+     9) التحليل الطيفي — Fisher's g-test
      ──────────────────────────────────────────────────────────────────
-     النسخة السابقة عرّفت POC بأنه "إغلاق الشمعة الأعلى حجماً" — وهذا ليس
-     POC. الـPOC هو مستوى السعر الذي تداول عنده أكبر حجم تراكمي عبر
-     الفترة كلها، ويُحسب بتوزيع حجم كل شمعة على شرائح السعر التي غطّتها.
+     ثلاثة عيوب كانت في النسخة السابقة، وكلها مُصلَحة هنا:
+
+     (1) اختبار الدلالة كان z-score على طاقات الطيف نفسه. تشغيله على مسارات
+         مشي عشوائي محض يصنّف الأغلبية الساحقة «دالة إحصائياً» — أي أن
+         العلامة الخضراء لم تكن تعني شيئاً. البديل: اختبار Fisher's g، وهو
+         الاختبار المضبوط لأكبر ذرة في الطيف الدوري تحت فرضية الضجيج
+         الأبيض الغاوسي، بقيمة احتمال حقيقية.
+
+     (2) المسح كان على أطوال دورات صحيحة 5..60، وهي شبكة غير منتظمة في
+         التردد: 55 و56 تكادان تكونان نفس التردد بينما 5 و6 متباعدتان جداً.
+         البديل: ترددات فورييه المنتظمة k/N، وهي أيضاً شرط استقلال الذرات
+         الذي يقوم عليه اختبار فيشر أصلاً.
+
+     (3) الإسقاط الأمامي عامل موجة *العوائد* كأنها موجة *السعر* — خطأ طور
+         مقداره ربع دورة. الصحيح: الدلالة تُختبر على العوائد (وهي أقرب
+         للاستقرارية)، والطور يُلائم على لوغاريتم السعر منزوع الاتجاه عند
+         التردد نفسه. تردد الموجة واحد في السلسلتين، والطور وحده يختلف.
      ════════════════════════════════════════════════════════════════════ */
 
-  /**
-   * @param {object} opts
-   *   bins        عدد شرائح السعر (افتراضي 60)
-   *   capOutliers يحدّ مساهمة أي جلسة عند 3× وسيط الحجم.
-   *
-   * ملاحظة منهجية مهمة: ملف الحجم الحقيقي يُبنى من بيانات التِك، حيث
-   * يتوزّع حجم اليوم الواحد على عشرات مستويات السعر خلال الجلسة. نحن هنا
-   * نملك شموعاً يومية فقط، فيهبط حجم اليوم كله داخل شريحة ضيّقة. النتيجة:
-   * جلسة واحدة بحجم استثنائي (صفقة تبادلية مثلاً) تُعيد كتابة الـPOC
-   * بالكامل — قياسنا: ×20 حجم في يوم واحد أزاح الـPOC بنسبة 25.6٪.
-   * هذا أثر تقريب البيانات لا حقيقة سوقية، لذا يُفعَّل الحدّ افتراضياً
-   * عند استخدام الملف كمرساة قيمة (valueBand)، ويُترك مطفأً حين يُعرض
-   * الحجم كما وقع فعلاً.
-   */
-  function volumeProfile(candles, binsOrOpts = 60, maybeOpts = {}) {
-    const opts = typeof binsOrOpts === 'object' ? binsOrOpts : { bins: binsOrOpts, ...maybeOpts };
-    const bins = opts.bins ?? 60;
-    if (!candles.length) return null;
-    const hi = Math.max(...candles.map(c => c.high));
-    const lo = Math.min(...candles.map(c => c.low));
-    if (!(hi > lo)) return null;
-    const width = (hi - lo) / bins;
-    const hist = new Array(bins).fill(0);
-
-    let cap = Infinity;
-    if (opts.capOutliers) {
-      const vols = candles.map(c => c.volume || 0).filter(v => v > 0);
-      const med = vols.length ? Stats.quantile(vols, 0.5) : 0;
-      if (med > 0) cap = med * 3;
-    }
-
-    for (const c of candles) {
-      const v = Math.min(c.volume || 0, cap);
-      if (!v) continue;
-      /* توزيع حجم الشمعة بالتساوي على الشرائح التي غطّاها مدى high-low */
-      const b0 = clamp(Math.floor((c.low - lo) / width), 0, bins - 1);
-      const b1 = clamp(Math.floor((c.high - lo) / width), 0, bins - 1);
-      const span = b1 - b0 + 1;
-      for (let b = b0; b <= b1; b++) hist[b] += v / span;
-    }
-
-    const total = hist.reduce((s, v) => s + v, 0) || 1;
-    let pocBin = 0;
-    for (let b = 1; b < bins; b++) if (hist[b] > hist[pocBin]) pocBin = b;
-
-    /* منطقة القيمة: نتوسّع من الـPOC للجانبين حتى نغطّي 70٪ من الحجم */
-    let acc = hist[pocBin], lowBin = pocBin, highBin = pocBin;
-    while (acc / total < 0.70 && (lowBin > 0 || highBin < bins - 1)) {
-      const below = lowBin > 0 ? hist[lowBin - 1] : -1;
-      const above = highBin < bins - 1 ? hist[highBin + 1] : -1;
-      if (above >= below) { highBin++; acc += hist[highBin]; }
-      else { lowBin--; acc += hist[lowBin]; }
-    }
-
-    const binPrice = (b) => lo + (b + 0.5) * width;
-    return {
-      poc: round(binPrice(pocBin)),
-      valueAreaLow: round(binPrice(lowBin) - width / 2),
-      valueAreaHigh: round(binPrice(highBin) + width / 2),
-      valueAreaPct: round((acc / total) * 100, 1),
-      rangeLow: round(lo), rangeHigh: round(hi),
-      bins: hist.map((v, b) => ({ price: round(binPrice(b)), volPct: round((v / total) * 100, 2) }))
-    };
-  }
-
-  /**
-   * النطاق القيمي المرجعي — بديل "السعر العادل" السابق.
-   *
-   * لماذا حُذف السعر العادل القديم: كان حاصل ضرب أربعة عوامل مخترعة،
-   * أحدها (عامل الحجم) يعتمد على حجم *يوم واحد*. القياس أظهر أن مضاعفة
-   * حجم آخر يوم ×4 ترفع "السعر العادل" من 82.91 إلى 124.41 — أي أن
-   * الرقم كان يتحرك 50٪ بسبب متغيّر لا علاقة له بالقيمة إطلاقاً.
-   *
-   * البديل هنا لا يدّعي معرفة "القيمة الحقيقية" (وهي لا تُشتق من الشارت
-   * أصلاً)، بل يعرض **نطاقاً مرجعياً إحصائياً** مبنياً على ثلاثة مراسٍ
-   * قابلة للتحقق: POC الحجمي، وVWAP المثبّت، وقناة الانحدار.
-   */
-  function valueBand(candles, opts = {}) {
-    const n = candles.length;
-    if (n < 30) return { ok: false, reason: `يتطلب 30 شمعة (متوفر ${n})` };
-    const closes = candles.map(c => c.close);
-    const price = closes[n - 1];
-
-    const vp = volumeProfile(candles, { bins: 60, capOutliers: true });
-    const pivot = lastConfirmedPivot(candles, 3);
-    /* نضمن نافذة تثبيت لا تقل عن 20 جلسة: ارتكاز حديث جداً يجعل الـVWAP
-       محسوباً من شمعتين أو ثلاث، فتهيمن جلسة واحدة على المرساة بالكامل. */
-    const MIN_ANCHOR_BARS = 20;
-    const rawAnchor = pivot ? pivot.i : Math.max(0, n - 60);
-    const anchorIdx = Math.min(rawAnchor, Math.max(0, n - MIN_ANCHOR_BARS));
-    const avwapArr = Cumulative.anchoredVWAP(candles, anchorIdx, { capOutliers: true });
-    const avwap = avwapArr[n - 1];
-
-    /* قناة انحدار على لوغاريتم السعر — الانحراف المعياري للبواقي يعطي
-       عرض القناة، وهو مقياس تجريبي لا افتراضي */
-    const logP = closes.map(v => Math.log(v));
-    const reg = Stats.linreg(logP);
-    const resid = logP.map((v, i) => v - (reg.intercept + reg.slope * i));
-    const rStd = Stats.std(resid);
-    const fitNow = reg.intercept + reg.slope * (n - 1);
-    const regMid = Math.exp(fitNow);
-    const regLow = Math.exp(fitNow - 2 * rStd);
-    const regHigh = Math.exp(fitNow + 2 * rStd);
-
-    const anchors = [
-      { label: 'POC الحجمي (أكثر سعر تداولاً)', value: vp ? vp.poc : null },
-      { label: `VWAP مثبّت على ${pivot ? (pivot.type === 'L' ? 'آخر قاع مؤكد' : 'آخر قمة مؤكدة') : 'آخر 60 شمعة'}`, value: round(avwap) },
-      { label: 'وسط قناة الانحدار', value: round(regMid) }
-    ].filter(a => isNum(a.value));
-
-    const vals = anchors.map(a => a.value);
-    const center = Stats.mean(vals);
-    const spread = vals.length > 1 ? Stats.std(vals) : Math.abs(regHigh - regLow) / 4;
-
-    const devPct = round(((price - center) / center) * 100, 2);
-    /* التصنيف نسبةً إلى تشتّت المراسي نفسها، لا إلى عتبات ثابتة مخترعة */
-    const zVsAnchors = spread > 0 ? (price - center) / spread : 0;
-
-    return {
-      ok: true,
-      price: round(price),
-      anchors,
-      center: round(center),
-      bandLow: round(Math.max(regLow, center - 2 * spread)),
-      bandHigh: round(Math.min(regHigh, center + 2 * spread)),
-      regressionLow: round(regLow), regressionHigh: round(regHigh), regressionR2: round(reg.r2, 3),
-      valueArea: vp ? { low: vp.valueAreaLow, high: vp.valueAreaHigh, poc: vp.poc } : null,
-      deviationPct: devPct,
-      zVsAnchors: round(zVsAnchors, 2),
-      /* لا "شراء قوي / بيع قوي" — وصف موقع فقط، والقرار للمستخدم */
-      position: Math.abs(zVsAnchors) < 1 ? 'داخل نطاق المراسي المرجعية'
-        : zVsAnchors >= 1 ? 'أعلى من كل المراسي المرجعية (امتداد سعري)'
-          : 'أدنى من كل المراسي المرجعية (انضغاط سعري)',
-      caveat: 'هذا نطاق مرجعي إحصائي مشتق من الشارت والحجم فقط. ليس تقييماً للشركة، ولا يتضمن أرباحاً أو ميزانية أو أخباراً.'
-    };
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     8) التذبذب — بوحدات صريحة
-     ════════════════════════════════════════════════════════════════════ */
-
-  /** تذبذب سنوي بالنسبة المئوية من العوائد اللوغاريتمية اليومية.
-   *  252 غير مناسبة لتداول: السنة فيه ≈ 246 جلسة (٥ أيام أسبوعياً ناقص
-   *  العطل الرسمية). النسخة السابقة لم تكن تُسنّن أصلاً وكانت تعرض
-   *  جذر متوسط مربّع العوائد على أنه "٪ تذبذب". */
-  function volatility(closes, opts = {}) {
-    const sessionsPerYear = opts.sessionsPerYear ?? 246;
-    const n = closes.length;
-    if (n < 3) return { ok: false, reason: 'بيانات غير كافية' };
-    const rets = [];
-    for (let i = 1; i < n; i++) {
-      if (closes[i] > 0 && closes[i - 1] > 0) rets.push(Math.log(closes[i] / closes[i - 1]));
-    }
-    if (rets.length < 2) return { ok: false, reason: 'بيانات غير كافية' };
-    const daily = Stats.std(rets);
-    return {
-      ok: true,
-      dailyPct: round(daily * 100, 2),
-      annualPct: round(daily * Math.sqrt(sessionsPerYear) * 100, 1),
-      /* المدى اليومي المتوقع بثقة 95٪ — رقم قابل للاستخدام في تحديد الوقف */
-      expectedDailyRangePct: round(1.96 * daily * 100, 2),
-      sampleSize: rets.length
-    };
-  }
-
-  function atr(candles, period = 14) {
-    const n = candles.length;
-    if (n < period + 1) return null;
-    const tr = [];
-    for (let i = 1; i < n; i++) {
-      tr.push(Math.max(
-        candles[i].high - candles[i].low,
-        Math.abs(candles[i].high - candles[i - 1].close),
-        Math.abs(candles[i].low - candles[i - 1].close)
-      ));
-    }
-    /* Wilder smoothing — المتوسط البسيط الذي كان مستخدماً يعطي قيماً
-       أعلى تذبذباً ويجعل مسافة الوقف تقفز بلا سبب */
-    let a = Stats.mean(tr.slice(0, period));
-    for (let i = period; i < tr.length; i++) a = (a * (period - 1) + tr[i]) / period;
-    return round(a, 4);
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     9) النوافذ الزمنية — غان وفيبوناتشي، بوحدات صحيحة
-     ──────────────────────────────────────────────────────────────────
-     الخطأ الجذري السابق: خلط الوحدات. مناطق فيبوناتشي الزمنية تُقاس
-     بالشموع (جلسات)، ودورات غان التقويمية تُقاس بالأيام التقويمية، وكانت
-     تُجمَع في قائمة واحدة بعد ضربها في "معدّل تقريبي" مخترع (1.4).
-     هنا كل نافذة تحمل وحدتها، والتحويل إلى تاريخ يمرّ عبر تقويم تداول
-     الفعلي (أحد→خميس)، فلا يقع تاريخ متوقع في يوم عطلة.
-     ════════════════════════════════════════════════════════════════════ */
-
-  const FIB_BARS = [13, 21, 34, 55, 89, 144];
-  const GANN_CALENDAR_DAYS = [30, 45, 60, 90, 120, 180, 270, 360];
-  const BAR_TOLERANCE = 2;
-  const DAY_TOLERANCE = 4;
-
-  /**
-   * يبني النوافذ الزمنية القادمة من ارتكاز مؤكد.
-   * @returns {Array} [{label, unit:'bars'|'days', barsAhead, date, source}]
-   */
-  function timeWindows(candles, pivot, opts = {}) {
-    const horizonDays = opts.horizonDays ?? 240;
-    const n = candles.length;
-    if (!pivot || pivot.i >= n) return [];
-
-    const lastDate = new Date(candles[n - 1].time * 1000);
-    const pivotDate = new Date(candles[pivot.i].time * 1000);
-    const barsSince = (n - 1) - pivot.i;
-    const daysSince = Math.round((lastDate - pivotDate) / 86400e3);
-
-    const out = [];
-
-    /* (أ) مناطق فيبوناتشي الزمنية — تُقاس بالشموع، وتُحوَّل لتاريخ عبر
-       تقويم التداول الفعلي بدل أي معامل تحويل تقريبي */
-    for (const f of FIB_BARS) {
-      const ahead = f - barsSince;
-      if (ahead <= 0) continue;
-      const date = SaudiMarket.addTradingDays(lastDate, ahead);
-      const daysLeft = Math.round((date - lastDate) / 86400e3);
-      if (daysLeft > horizonDays) continue;
-      out.push({ label: `منطقة فيبوناتشي الزمنية ${f} جلسة`, unit: 'bars', barsAhead: ahead, daysLeft, date, source: 'fib' });
-    }
-
-    /* (ب) دورات غان التقويمية — تُقاس بالأيام التقويمية مباشرة.
-       تاريخ الدورة نفسه تقويمي بحت وقد يقع في جمعة أو سبت. النافذة
-       *القابلة للتداول* هي أول جلسة تالية له، ونعرض الاثنين صراحة بدل
-       إعطاء المستخدم تاريخاً لا يفتح فيه السوق أصلاً. */
-    for (const g of GANN_CALENDAR_DAYS) {
-      const daysLeft = g - daysSince;
-      if (daysLeft <= 0 || daysLeft > horizonDays) continue;
-      const cycleDate = new Date(lastDate.getTime() + daysLeft * 86400e3);
-      const date = new Date(cycleDate.getTime());
-      let shifted = 0;
-      while (!SaudiMarket.isTradingDay(date)) { date.setUTCDate(date.getUTCDate() + 1); shifted++; }
-      const barsAhead = Math.max(1, SaudiMarket.tradingDaysBetween(lastDate, date));
-      out.push({
-        label: `دورة غان ${g} يوم تقويمي` + (shifted ? ` (تقع في عطلة — أول جلسة بعدها)` : ''),
-        unit: 'days', barsAhead, daysLeft: daysLeft + shifted,
-        date, cycleDate, shiftedFromWeekend: shifted > 0, source: 'gann'
-      });
-    }
-
-    /* (ج) الدورة الذاتية للسهم — فقط إن كانت منتظمة فعلاً */
-    const dc = dominantPivotCycle(candles, 3);
-    if (dc && dc.reliable) {
-      for (let k = 1; k <= 2; k++) {
-        const ahead = dc.cycle * k - barsSince;
-        if (ahead <= 0) continue;
-        const date = SaudiMarket.addTradingDays(lastDate, ahead);
-        const daysLeft = Math.round((date - lastDate) / 86400e3);
-        if (daysLeft > horizonDays) continue;
-        out.push({
-          label: `دورة السهم الذاتية ×${k} (${dc.cycle} جلسة، اتساق ${dc.consistencyPct}٪)`,
-          unit: 'bars', barsAhead: ahead, daysLeft, date, source: 'cycle'
-        });
-      }
-    }
-
-    /* (د) الانعطافات الطيفية — فقط من دورة اجتازت اختبار الدلالة */
-    const spec = spectral(candles.map(c => c.close));
-    if (spec.ok && spec.significant) {
-      for (const t of projectCycleTurns(spec, n - 1, 60)) {
-        const date = SaudiMarket.addTradingDays(lastDate, t.barsAhead);
-        const daysLeft = Math.round((date - lastDate) / 86400e3);
-        if (daysLeft > horizonDays) continue;
-        out.push({
-          label: `انعطاف طيفي (دورة ${spec.period} جلسة، p=${spec.pValueText}) — ${t.type === 'peak' ? 'قمة متوقعة' : 'قاع متوقع'}`,
-          unit: 'bars', barsAhead: t.barsAhead, daysLeft, date, source: 'spectral', turnType: t.type
-        });
-      }
-    }
-
-    out.sort((a, b) => a.barsAhead - b.barsAhead);
-    return out;
-  }
-
-  /** توافق زمني: كم دليلاً زمنياً *مستقلاً* يشير إلى نفس النافذة القريبة. */
-  function timeConfluence(candles, pivot) {
-    const n = candles.length;
-    const barsSince = (n - 1) - pivot.i;
-    const lastDate = new Date(candles[n - 1].time * 1000);
-    const daysSince = Math.round((lastDate - new Date(candles[pivot.i].time * 1000)) / 86400e3);
-
-    const fib = FIB_BARS.find(f => Math.abs(barsSince - f) <= BAR_TOLERANCE) || null;
-    const gann = GANN_CALENDAR_DAYS.find(g => Math.abs(daysSince - g) <= DAY_TOLERANCE) || null;
-    const dc = dominantPivotCycle(candles, 3);
-    let cycle = null;
-    if (dc && dc.reliable) {
-      for (let k = 1; k <= 3; k++) if (Math.abs(barsSince - dc.cycle * k) <= BAR_TOLERANCE) { cycle = dc.cycle * k; break; }
-    }
-    const spec = spectral(candles.map(c => c.close));
-    const specHit = spec.ok && spec.significant &&
-      projectCycleTurns(spec, n - 1, 3).some(t => t.barsAhead <= 2);
-
-    const evidence = [
-      fib ? { name: `فيبوناتشي ${fib} جلسة`, hit: true } : { name: 'فيبوناتشي زمني', hit: false },
-      gann ? { name: `غان ${gann} يوم`, hit: true } : { name: 'غان تقويمي', hit: false },
-      cycle ? { name: `دورة السهم ${cycle} جلسة`, hit: true } : { name: 'دورة السهم الذاتية', hit: false },
-      specHit ? { name: `انعطاف طيفي (p=${spec.pValueText})`, hit: true } : { name: 'انعطاف طيفي دال', hit: false }
-    ];
-    const count = evidence.filter(e => e.hit).length;
-
-    return {
-      barsSincePivot: barsSince, daysSincePivot: daysSince,
-      evidence, count, total: evidence.length,
-      /* تصنيف نصي فقط — ولا يُترجم أبداً إلى نسبة مئوية */
-      label: count >= 3 ? 'توافق قوي' : count === 2 ? 'توافق متوسط' : count === 1 ? 'دليل منفرد' : 'لا توافق زمني'
-    };
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     10) محرك الاختبار التاريخي — walk-forward، حتمي، بقيمة احتمال
-     ──────────────────────────────────────────────────────────────────
-     ثلاثة إصلاحات جذرية مقارنة بالنسخة السابقة:
-     (أ) خط الأساس كان عيّنة عشوائية بحجم n باستخدام Math.random، فكان
-         "الحكم" يتغيّر بين تشغيل وآخر لنفس السهم (تحقّقنا: نفس المدخلات
-         أعطت حكماً إيجابياً مرة و"ضئيل" مرة). الآن: خط الأساس هو التوزيع
-         غير المشروط الكامل — كل شمعة مؤهّلة، بلا عشوائية إطلاقاً.
-     (ب) لا يوجد حكم بلا قيمة احتمال. الفرق في نسبة الربح يُختبر باختبار
-         نسبتين، ويُعرض p-value وحجم العينة وفاصل Wilson.
-     (ج) مسافة الوقف كانت 0.5×ATR، فكان متوسط عمر الصفقة أقل من شمعتين
-         (قياس فعلي) — أي أن الضجيج وحده كان يُغلق الصفقات. الافتراضي
-         الآن 1.5×ATR، وهو قابل للضبط.
-     ════════════════════════════════════════════════════════════════════ */
-
-  const BT_DEFAULTS = {
-    atrStopMult: 1.5,
-    rewardRisk: 2.0,
-    maxHoldBars: 30,
-    minSignals: 20,        /* أقل من ذلك لا يسمح بأي استنتاج إحصائي */
-    minHistory: 80,
-    stepBars: 5,
-    alpha: 0.05
-  };
-
-  /**
-   * يحاكي صفقة واحدة على البيانات اللاحقة فقط.
-   * ملاحظة على غموض الشمعة الواحدة: إن لامست الشمعة الوقف والهدف معاً،
-   * نفترض الوقف أولاً (الافتراض المتحفّظ). أي محاكاة تفترض العكس تُنتج
-   * نتائج متفائلة زائفة.
-   */
-  function simulateTrade(candles, entryIdx, dirUp, cfg) {
-    const c = { ...BT_DEFAULTS, ...cfg };
-    if (entryIdx >= candles.length - 1) return null;
-    const entry = candles[entryIdx].close;
-    const a = atr(candles.slice(0, entryIdx + 1), 14) || entry * 0.02;
-    const risk = a * c.atrStopMult;
-    if (!(risk > 0)) return null;
-    const stop = dirUp ? entry - risk : entry + risk;
-    const target = dirUp ? entry + risk * c.rewardRisk : entry - risk * c.rewardRisk;
-    if (stop <= 0) return null;
-
-    const last = Math.min(candles.length - 1, entryIdx + c.maxHoldBars);
-    for (let i = entryIdx + 1; i <= last; i++) {
-      const { high, low } = candles[i];
-      if (dirUp) {
-        if (low <= stop) return { outcome: 'stop', rMultiple: -1, pnlPct: (stop - entry) / entry * 100, bars: i - entryIdx };
-        if (high >= target) return { outcome: 'target', rMultiple: c.rewardRisk, pnlPct: (target - entry) / entry * 100, bars: i - entryIdx };
-      } else {
-        if (high >= stop) return { outcome: 'stop', rMultiple: -1, pnlPct: (entry - stop) / entry * 100, bars: i - entryIdx };
-        if (low <= target) return { outcome: 'target', rMultiple: c.rewardRisk, pnlPct: (entry - target) / entry * 100, bars: i - entryIdx };
-      }
-    }
-    const exit = candles[last].close;
-    const pnl = dirUp ? (exit - entry) / entry * 100 : (entry - exit) / entry * 100;
-    return { outcome: 'timeout', rMultiple: (dirUp ? exit - entry : entry - exit) / risk, pnlPct: pnl, bars: last - entryIdx };
-  }
-
-  function summarize(trades) {
-    if (!trades.length) return null;
-    const wins = trades.filter(t => t.pnlPct > 0).length;
-    const pnls = trades.map(t => t.pnlPct);
-    const rs = trades.map(t => t.rMultiple);
-    const grossWin = pnls.filter(p => p > 0).reduce((s, v) => s + v, 0);
-    const grossLoss = Math.abs(pnls.filter(p => p <= 0).reduce((s, v) => s + v, 0));
-    const w = Stats.wilson(wins, trades.length);
-    const mR = Stats.mean(rs), sdR = Stats.std(rs);
-    /* أقصى تراجع على منحنى المضاعفات المتراكمة */
-    let peak = 0, cum = 0, maxDD = 0;
-    for (const r of rs) { cum += r; peak = Math.max(peak, cum); maxDD = Math.max(maxDD, peak - cum); }
-    return {
-      count: trades.length,
-      wins,
-      winRatePct: round(w.p * 100, 1),
-      winRateCI: [round(w.lo * 100, 1), round(w.hi * 100, 1)],
-      avgPnlPct: round(Stats.mean(pnls), 2),
-      expectancyR: round(mR, 3),
-      /* نسبة شارب للصفقة (ليست سنوية) — عائد متوسط لكل وحدة تشتّت */
-      sharpePerTrade: sdR ? round(mR / sdR, 2) : null,
-      profitFactor: grossLoss ? round(grossWin / grossLoss, 2) : (grossWin ? null : 0),
-      maxDrawdownR: round(maxDD, 2),
-      avgBarsHeld: round(Stats.mean(trades.map(t => t.bars)), 1)
-    };
-  }
-
-  /**
-   * اختبار walk-forward لإشارة الدورة الطيفية على سهم واحد.
-   * في كل خطوة يُعاد بناء الطيف من candles.slice(0, i+1) فقط.
-   */
-  function backtestSpectral(candles, cfg = {}) {
-    const c = { ...BT_DEFAULTS, ...cfg };
-    const n = candles.length;
-    if (n < c.minHistory + c.maxHoldBars + 20) {
-      return { ok: false, reason: `تاريخ غير كافٍ (متوفر ${n} شمعة، مطلوب ${c.minHistory + c.maxHoldBars + 20}+)` };
-    }
-
-    const signals = [];
-    for (let i = c.minHistory; i < n - c.maxHoldBars; i += c.stepBars) {
-      const hist = candles.slice(0, i + 1);
-      const spec = spectral(hist.map(x => x.close), { alpha: c.alpha });
-      if (!spec.ok || !spec.significant) continue;
-      const turns = projectCycleTurns(spec, i, 10);
-      const soon = turns.find(t => t.barsAhead <= 3);
-      if (!soon) continue;
-      const dirUp = soon.type === 'valley';
-      const trade = simulateTrade(candles, i, dirUp, c);
-      if (trade) signals.push({ ...trade, idx: i, dirUp });
-    }
-
-    /* خط الأساس: التوزيع غير المشروط الكامل — كل شمعة مؤهّلة، في كلا
-       الاتجاهين. حتمي تماماً، ويمثّل "ماذا لو دخلت بلا إشارة إطلاقاً". */
-    const baseline = [];
-    for (let i = c.minHistory; i < n - c.maxHoldBars; i++) {
-      for (const dir of [true, false]) {
-        const t = simulateTrade(candles, i, dir, c);
-        if (t) baseline.push(t);
-      }
-    }
-
-    const sig = summarize(signals);
-    const base = summarize(baseline);
-    if (!base) return { ok: false, reason: 'تعذّر بناء خط أساس صالح من تاريخ هذا السهم' };
-    if (!sig) {
-      /* صفر إشارة ليس عطلاً — هو النتيجة الصحيحة لسهم بلا دورة دالة.
-         النسخة السابقة كانت تعيد رسالة عطل عامة تُقرأ كخلل تقني. */
-      return {
-        ok: false, underpowered: true, signalCount: 0, signal: null, baseline: base,
-        reason: 'لم تُصدر الإشارة الطيفية أي دخول على تاريخ هذا السهم — لا توجد دورة دالة إحصائياً تُبنى عليها. هذه نتيجة صحيحة، لا خلل.'
-      };
-    }
-
-    if (signals.length < c.minSignals) {
-      return {
-        ok: false, underpowered: true, signalCount: signals.length,
-        signal: sig, baseline: base,
-        reason: `عدد الإشارات ${signals.length} أقل من الحد الأدنى ${c.minSignals} — العينة لا تسمح باستنتاج إحصائي. النتائج معروضة للاطلاع فقط ولا يجوز البناء عليها.`
-      };
-    }
-
-    const p = Stats.twoProportionP(sig.wins, sig.count, base.wins, base.count);
-    const edge = round(sig.winRatePct - base.winRatePct, 1);
-    const significant = p <= c.alpha && edge > 0;
-
-    return {
-      ok: true,
-      signalCount: signals.length,
-      signal: sig, baseline: base,
-      edgeWinRatePct: edge,
-      edgeExpectancyR: round(sig.expectancyR - base.expectancyR, 3),
-      pValue: round(p, 4),
-      pValueText: p < 0.001 ? '<0.001' : p.toFixed(3),
-      significant,
-      verdict: significant
-        ? `الإشارة تتفوّق على الدخول العشوائي على هذا السهم: فارق ${edge}+ نقطة في نسبة الربح (p=${p < 0.001 ? '<0.001' : p.toFixed(3)}، عينة ${sig.count} صفقة)`
-        : `لا يوجد دليل إحصائي على تفوّق الإشارة على هذا السهم (فارق ${edge} نقطة، p=${p.toFixed(3)} > ${c.alpha}) — الفرق ضمن ما تفسّره الصدفة عند حجم العينة هذا`,
-      config: { atrStopMult: c.atrStopMult, rewardRisk: c.rewardRisk, maxHoldBars: c.maxHoldBars, alpha: c.alpha }
-    };
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     11) خطة التنفيذ — مبنية على بنية حقيقية، وعلى حدود السوق السعودي
-     ──────────────────────────────────────────────────────────────────
-     النسخة السابقة كانت تضع الهدف عند 2R دائماً ثم تعرض "R:R = 1:2"
-     كأنه نتيجة تحليل — وهي حشو تعريفي (الهدف عُرِّف بأنه 2R). كما كانت
-     تشتق الوقف والهدف من امتدادات فراكتالية قد تقع في الجهة الخاطئة:
-     القياس أظهر وقفاً *فوق* سعر الدخول في 4 من 5 عيّنات.
-     ════════════════════════════════════════════════════════════════════ */
-
-  function structuralLevels(candles, price, lookback = 120) {
-    const seg = candles.slice(-lookback);
-    const pivots = detectPivots(seg, 3);
-    const supports = pivots.filter(p => p.type === 'L' && p.price < price).map(p => p.price).sort((a, b) => b - a);
-    const resistances = pivots.filter(p => p.type === 'H' && p.price > price).map(p => p.price).sort((a, b) => a - b);
-    return { supports, resistances };
-  }
-
-  function executionPlan(candles, opts = {}) {
-    /* حارس مدخلات: الدالة عامة، وتمريرها رقماً أو null كان ينهار عند
-       candles[n-1].close لأن `undefined < 40` يساوي false فيتجاوز الفحص. */
-    if (!Array.isArray(candles)) return { ok: false, reason: 'مدخل غير صالح: يتطلب مصفوفة شموع' };
-    const n = candles.length;
-    if (n < 40) return { ok: false, reason: 'بيانات غير كافية لبناء خطة' };
-    const price = candles[n - 1].close;
-    const dirUp = opts.dirUp !== false;
-    const a = atr(candles, 14) || price * 0.02;
-    const atrMult = opts.atrStopMult ?? BT_DEFAULTS.atrStopMult;
-    const { supports, resistances } = structuralLevels(candles, price);
-
-    /* الوقف: خلف أقرب مستوى بنيوي في الجهة الصحيحة، أو مسافة ATR —
-       أيّهما أبعد، حتى لا يقع الوقف داخل ضجيج الجلسة العادي. */
-    const atrStop = dirUp ? price - a * atrMult : price + a * atrMult;
-    const structStop = dirUp
-      ? (supports.length ? supports[0] - a * 0.25 : null)
-      : (resistances.length ? resistances[0] + a * 0.25 : null);
-    let stop = atrStop, stopSource = `مسافة ${atrMult}×ATR من سعر الدخول`;
-    if (isNum(structStop) && ((dirUp && structStop < atrStop) || (!dirUp && structStop > atrStop))) {
-      stop = structStop;
-      stopSource = `خلف أقرب ${dirUp ? 'دعم' : 'مقاومة'} بنيوي (${round(dirUp ? supports[0] : resistances[0])}) بهامش ربع ATR`;
-    }
-    if (dirUp && stop <= 0) return { ok: false, reason: 'وقف غير صالح' };
-
-    const risk = Math.abs(price - stop);
-    if (!(risk > 0)) return { ok: false, reason: 'مسافة مخاطرة صفرية' };
-
-    /* الهدف: أقرب مستوى بنيوي مقابل — إن وُجد. وإلا امتداد ATR.
-       نحسب R:R من الهدف الفعلي بدل فرضه مسبقاً. */
-    const structTarget = dirUp ? (resistances.length ? resistances[0] : null)
-      : (supports.length ? supports[0] : null);
-    const fallbackTarget = dirUp ? price + risk * 2 : price - risk * 2;
-    const target1 = isNum(structTarget) ? structTarget : fallbackTarget;
-    const targetSource = isNum(structTarget)
-      ? `أقرب ${dirUp ? 'مقاومة' : 'دعم'} بنيوي فعلي` : 'امتداد 2R (لا يوجد مستوى بنيوي مقابل ضمن النطاق)';
-    const rr1 = round(Math.abs(target1 - price) / risk, 2);
-
-    /* حدود السوق السعودي: كم جلسة يلزم نظرياً لبلوغ الهدف مع ±10٪ يومياً */
-    const sessionsToTarget = SaudiMarket.minSessionsToReach(price, target1);
-    const limits = SaudiMarket.dailyLimits(price);
-
-    return {
-      ok: true, dirUp,
-      entry: round(price), stop: round(stop), stopSource,
-      riskPerShare: round(risk), riskPct: round((risk / price) * 100, 2),
-      target1: round(target1), targetSource, rr1,
-      /* تحذير صريح حين لا يستحق الوضع الدخول أصلاً */
-      viable: rr1 >= 1.5,
-      viabilityNote: rr1 >= 1.5 ? null
-        : `أقرب مستوى بنيوي مقابل يعطي عائداً/مخاطرة ${rr1} فقط — أقل من 1.5. الدخول هنا غير مجدٍ بالبنية الحالية، والانتظار أفضل من توسيع الهدف قسراً.`,
-      atr: round(a),
-      dailyLimitUp: limits.up, dailyLimitDown: limits.down,
-      minSessionsToTarget: sessionsToTarget,
-      resistances: resistances.slice(0, 3).map(v => round(v)),
-      supports: supports.slice(0, 3).map(v => round(v))
-    };
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     12) تدقيق جودة البيانات — يمنع بناء تحليل على مدخلات فاسدة
-     ════════════════════════════════════════════════════════════════════ */
-
-  function auditCandles(candles) {
-    const issues = [];
-    if (!Array.isArray(candles) || !candles.length) return { ok: false, issues: ['لا توجد شموع'], count: 0 };
-    let badOHLC = 0, nonPositive = 0, zeroVol = 0, dupTime = 0, outOfOrder = 0, gaps = 0;
-    const seen = new Set();
-    for (let i = 0; i < candles.length; i++) {
-      const c = candles[i];
-      if (!isNum(c.open) || !isNum(c.high) || !isNum(c.low) || !isNum(c.close)) { badOHLC++; continue; }
-      if (c.close <= 0 || c.open <= 0) nonPositive++;
-      if (c.high < Math.max(c.open, c.close) - 1e-9 || c.low > Math.min(c.open, c.close) + 1e-9) badOHLC++;
-      if (!c.volume) zeroVol++;
-      if (seen.has(c.time)) dupTime++; else seen.add(c.time);
-      if (i > 0 && c.time <= candles[i - 1].time) outOfOrder++;
-      /* فجوة تتجاوز 10 أيام تقويمية بين شمعتين يوميتين متتاليتين = تعليق
-         تداول أو عطلة طويلة — تُبطل حسابات الدورات التقويمية إن أُهملت */
-      if (i > 0 && (c.time - candles[i - 1].time) > 10 * 86400) gaps++;
-    }
-    if (badOHLC) issues.push(`${badOHLC} شمعة بقيم OHLC غير متسقة`);
-    if (nonPositive) issues.push(`${nonPositive} شمعة بسعر غير موجب`);
-    if (dupTime) issues.push(`${dupTime} طابع زمني مكرر`);
-    if (outOfOrder) issues.push(`${outOfOrder} شمعة خارج الترتيب الزمني`);
-    if (gaps) issues.push(`${gaps} فجوة زمنية تتجاوز 10 أيام (تعليق تداول أو عطلة ممتدة)`);
-    if (zeroVol > candles.length * 0.2) issues.push(`${zeroVol} شمعة بحجم صفري (سيولة ضعيفة جداً)`);
-    return { ok: issues.length === 0, issues, count: candles.length, zeroVolumeBars: zeroVol };
-  }
-
-  /** ينظّف الشموع: يزيل المكرّرات، يرتّب زمنياً، ويسقط الفاسدة. */
-  function sanitizeCandles(raw) {
-    if (!Array.isArray(raw)) return [];
-    const byTime = new Map();
-    for (const c of raw) {
-      if (!c || !isNum(c.time)) continue;
-      const o = +c.open, h = +c.high, l = +c.low, cl = +c.close;
-      if (![o, h, l, cl].every(isNum)) continue;
-      if (cl <= 0 || o <= 0 || h <= 0 || l <= 0) continue;
-      /* نصحّح انعكاسات high/low الطفيفة بدل إسقاط الشمعة بالكامل —
-         النسخة السابقة كانت تُسقطها، فتفقد جلسات حقيقية بلا إشعار */
-      const high = Math.max(o, h, l, cl), low = Math.min(o, h, l, cl);
-      byTime.set(c.time, { time: c.time, open: o, high, low, close: cl, volume: Math.max(0, +c.volume || 0) });
-    }
-    return [...byTime.values()].sort((a, b) => a.time - b.time);
-  }
-
-
-  /* ════════════════════════════════════════════════════════════════════
-     13) الطيف المحسّن — تصحيح خطأ شبكة فورييه (السبب الجذري لانحراف
-         النوافذ الزمنية)
-     ──────────────────────────────────────────────────────────────────
-     النسخة السابقة (spectral) صحيحة إحصائياً: اختبار Fisher's g يعطي
-     معدّل إيجابيات كاذبة 5.3٪ مقاساً على 300 مسار مشي عشوائي، ويكشف
-     40/40 من الدورات المزروعة. المشكلة ليست في *هل توجد دورة* بل في
-     *أين نحن منها الآن* — وهي بالضبط ما تُبنى عليه النافذة الزمنية.
-
-     السبب الجذري المقاس: التردد يُختار من شبكة فورييه المنتظمة k/N،
-     وخطوة هذه الشبكة في وحدة *الدورة* تتناسب مع P²/N. عند N=299:
-
-         الدورة الحقيقية 40 ⟵ أقرب ما تعرضه الشبكة هو 42.71 (خطأ 6.8٪)
-         خطوة الشبكة عند هذا الطول = 5.3 جلسة كاملة
-
-     ثم تُلاءم الموجة الجيبية على النافذة كلها بهذا التردد الخاطئ قليلاً،
-     فينجرف الطور تراكمياً عبر 300 شمعة. القياس: انجراف 48٪ من دورة —
-     أي أن «القمة المتوقعة» تقع عملياً عند القاع الحقيقي. القياس الشامل
-     أعطى وسيط خطأ طور 14.5٪ من الدورة **حتى على دورة نقية بلا أي ضجيج**،
-     وهذا يثبت أن الخطأ نظامي لا إحصائي.
-
-     ثلاثة إصلاحات:
-     (أ) تنقية التردد خارج الشبكة ببحث المقطع الذهبي على الدورية المستمرة.
-     (ب) ملاءمة الطور على *نافذة حديثة* (٤ دورات) لا على التاريخ كله —
-         الطور يجب أن يصف أين الدورة الآن، لا متوسطها عبر سنتين.
-     (ج) عدم يقين معلن: كل انعطاف يُعرض بـ ±جلسات محسوبة من حدّ كرامر-راو،
-         ويتّسع كلما بَعُد الأفق — لأنه كذلك فعلاً.
-     ════════════════════════════════════════════════════════════════════ */
-
-  /** الدورية عند تردد اعتباطي (ليس على الشبكة). */
-  function periodogramAt(x, f) {
-    const N = x.length, w = 2 * Math.PI * f;
-    let re = 0, im = 0;
-    for (let t = 0; t < N; t++) { re += x[t] * Math.cos(w * t); im += x[t] * Math.sin(w * t); }
+  /** طاقة الدورية عند تردد اعتباطي f (دورة/عيّنة) — أساس التنقية خارج الشبكة. */
+  function _powerAt(x, f) {
+    const N = x.length; let re = 0, im = 0;
+    const w = 2 * Math.PI * f;
+    for (let t = 0; t < N; t++) { const a = w * t; re += x[t] * Math.cos(a); im -= x[t] * Math.sin(a); }
     return (re * re + im * im) / N;
   }
 
-  /** بحث المقطع الذهبي عن ذروة الدورية داخل [lo, hi]. */
-  function refinePeakFreq(x, lo, hi, iters = 60) {
-    const gr = (Math.sqrt(5) - 1) / 2;
-    let a = lo, b = hi;
-    let c = b - gr * (b - a), d = a + gr * (b - a);
-    let fc = periodogramAt(x, c), fd = periodogramAt(x, d);
-    for (let i = 0; i < iters && (b - a) > 1e-9; i++) {
-      if (fc > fd) { b = d; d = c; fd = fc; c = b - gr * (b - a); fc = periodogramAt(x, c); }
-      else { a = c; c = d; fc = fd; d = a + gr * (b - a); fd = periodogramAt(x, d); }
+  /**
+   * الدورية عند ترددات فورييه k/N، مقصورةً على النطاق القابل للتداول.
+   *
+   * 🛠️ لماذا نقصر النطاق: بلا قيد يمتدّ المسح حتى تردد نايكويست (دورة
+   * جلستين). قياسنا على بيانات حقيقية أعطى «الدورة المهيمنة: 2.2 جلسة»
+   * تُعرض للمستخدم كنافذة توقيت. دورة بطول جلستين أو ثلاث ليست دورة سوقية
+   * بل بنية الضجيج اليومي نفسه (ارتداد الفارق السعري)، ولا يمكن تداولها:
+   * نافذة عدم اليقين حولها أوسع من الدورة كلها.
+   * والحدّ الأعلى N/3 لأن دورة لم تكتمل ثلاث مرات داخل العيّنة لا يمكن
+   * تمييزها عن الاتجاه — وهي أصلاً مطروحة مع الاتجاه الخطي.
+   *
+   * القصر مشروع إحصائياً: اختبار فيشر يبقى مضبوطاً على أي مجموعة جزئية من
+   * ذرات فورييه المستقلة، بشرط أن يكون m عدد الذرات المفحوصة فعلاً — وهو
+   * ما تفعله هذه الدالة. (ولهذا تسمّي الواجهة النسبة «من طاقة النطاق
+   * المفحوص» لا «من الطاقة الكلية».)
+   */
+  function _periodogram(x, minPeriod, maxPeriod) {
+    const N = x.length;
+    const kMax = Math.min(Math.floor((N - 1) / 2), Math.floor(N / Math.max(2, minPeriod)));
+    const kMin = Math.max(1, Math.ceil(N / Math.max(minPeriod + 1, maxPeriod)));
+    const I = [], freqs = [], ks = [];
+    for (let k = kMin; k <= kMax; k++) {
+      const f = k / N;
+      I.push(_powerAt(x, f)); freqs.push(f); ks.push(k);
     }
-    return (a + b) / 2;
+    return { I, freqs, ks, m: I.length, N, kMin, kMax };
   }
 
   /**
-   * التحليل الطيفي المحسّن.
-   *
-   * @param {number[]} closes
-   * @param {object} opts
-   *   alpha        مستوى الدلالة (0.05)
-   *   maxCycles    أقصى عدد دورات متراكبة تُستخرج (3)
-   *   phaseCycles  كم دورة تُستعمل نافذةً لملاءمة الطور (4)
+   * قيمة احتمال Fisher's g الدقيقة:
+   *   P(g ≥ gObs) = Σ_{j=1}^{J} (−1)^(j−1) C(m,j) (1 − j·g)^(m−1)
+   * تُحسب في فضاء اللوغاريتم لأن C(m,j) يفيض عند m كبيرة.
    */
-  function spectralPro(closes, opts = {}) {
-    const alpha = opts.alpha ?? 0.05;
-    const maxCycles = opts.maxCycles ?? 3;
-    const phaseCycles = opts.phaseCycles ?? 4;
-    const n = closes.length;
-    if (n < 60) return { ok: false, reason: `يتطلب 60 شمعة على الأقل (متوفر ${n})` };
+  function _fisherG_p(g, m) {
+    if (!isNum(g) || g <= 0) return 1;
+    if (g >= 1) return 0;
+    const J = Math.min(m, Math.floor(1 / g));
+    let p = 0;
+    for (let j = 1; j <= J; j++) {
+      const base = 1 - j * g;
+      if (base <= 0) break;
+      const lnTerm = Stats.lnChoose(m, j) + (m - 1) * Math.log(base);
+      const term = Math.exp(lnTerm);
+      if (!isFinite(term)) break;
+      p += (j % 2 === 1 ? term : -term);
+      if (term < 1e-18 && j > 2) break;
+    }
+    return clamp(p, 0, 1);
+  }
 
-    for (let i = 0; i < n; i++) if (!(closes[i] > 0)) return { ok: false, reason: 'أسعار غير صالحة' };
+  /** يزيل الاتجاه الخطي ويعيد {y, r2}. */
+  function _detrend(series) {
+    const reg = Stats.linreg(series);
+    const y = series.map((v, i) => v - (reg.slope * i + reg.intercept));
+    return { y, r2: reg.r2, slope: reg.slope };
+  }
 
-    /* العوائد اللوغاريتمية: الوسط الذي تكون فيه فرضية الضجيج الأبيض معقولة */
+  /** ملاءمة جيبية بالمربعات الصغرى عند تردد معلوم: y ≈ a·cos(ωt) + b·sin(ωt). */
+  function _fitSinusoid(y, f) {
+    const N = y.length, w = 2 * Math.PI * f;
+    let scc = 0, sss = 0, scs = 0, syc = 0, sys = 0;
+    for (let t = 0; t < N; t++) {
+      const c = Math.cos(w * t), s = Math.sin(w * t);
+      scc += c * c; sss += s * s; scs += c * s; syc += y[t] * c; sys += y[t] * s;
+    }
+    const det = scc * sss - scs * scs;
+    let a, b;
+    if (Math.abs(det) < 1e-12) { a = 2 * syc / N; b = 2 * sys / N; }
+    else { a = (syc * sss - sys * scs) / det; b = (sys * scc - syc * scs) / det; }
+    const amp = Math.hypot(a, b);
+    /* y = A·cos(ωt + φ) حيث φ = −atan2(b, a). عند φ الطور صفر ⇒ قمة. */
+    const phi = -Math.atan2(b, a);
+    let ssRes = 0;
+    for (let t = 0; t < N; t++) {
+      const fit = a * Math.cos(w * t) + b * Math.sin(w * t);
+      ssRes += (y[t] - fit) * (y[t] - fit);
+    }
+    const sigma = Math.sqrt(ssRes / Math.max(1, N - 3));
+    return { a, b, amp, phi, sigma, N };
+  }
+
+  const TAU = 2 * Math.PI;
+  const wrap = th => ((th % TAU) + TAU) % TAU;
+
+  /**
+   * @param {number[]} prices سلسلة أسعار الإغلاق
+   * @param {{alpha?:number, refine?:boolean, minLen?:number}} opt
+   */
+  function spectral(prices, opt) {
+    opt = opt || {};
+    const alpha = opt.alpha == null ? 0.05 : opt.alpha;
+    const refine = opt.refine !== false;
+    const MIN = opt.minLen || 60;
+
+    const p = Stats.clean(prices).filter(v => v > 0);
+    if (p.length < MIN) return { ok: false, reason: `عيّنة ${p.length} جلسة — التحليل الطيفي يتطلب ${MIN}+` };
+
+    /* ① الدلالة تُختبر على العوائد اللوغاريتمية (أقرب للاستقرارية) */
     const rets = [];
-    for (let i = 1; i < n; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
-    const Nr = rets.length;
+    for (let i = 1; i < p.length; i++) rets.push(Math.log(p[i] / p[i - 1]));
+    const mr = Stats.mean(rets);
+    const x = rets.map(v => v - mr);
 
-    /* لوغاريتم السعر منزوع الاتجاه — الوسط الذي تُقاس فيه قمم/قيعان السعر */
-    const logP = closes.map(Math.log);
-    const trend = Stats.linreg(logP);
-    const detr = logP.map((v, i) => v - (trend.intercept + trend.slope * i));
+    /* النطاق القابل للتداول: من 6 جلسات (أقصر دورة يمكن تنفيذها فعلاً)
+       إلى ثلث العيّنة (أطول دورة تكرّرت ثلاث مرات على الأقل). */
+    const minPeriod = opt.minPeriod == null ? 6 : opt.minPeriod;
+    const maxPeriod = opt.maxPeriod == null ? Math.max(minPeriod + 2, Math.floor(x.length / 3)) : opt.maxPeriod;
 
-    const minP = 5, maxP = Math.max(8, Math.floor(Nr / 3));
-    const cycles = [];
-    let resid = rets.slice();
-    const residMean = Stats.mean(resid);
-    resid = resid.map(v => v - residMean);
+    const pg = _periodogram(x, minPeriod, maxPeriod);
+    if (pg.m < 8) return { ok: false, reason: `عدد ترددات فورييه داخل النطاق ${minPeriod}–${maxPeriod} جلسة غير كافٍ (${pg.m})` };
 
-    for (let round_ = 0; round_ < maxCycles; round_++) {
-      const pg = periodogram(resid).filter(p => p.period >= minP && p.period <= maxP);
-      if (pg.length < 4) break;
+    let total = 0, peak = 0;
+    for (let i = 0; i < pg.m; i++) { total += pg.I[i]; if (pg.I[i] > pg.I[peak]) peak = i; }
+    if (total <= 0) return { ok: false, reason: 'طاقة طيفية صفرية — السلسلة ثابتة' };
 
-      const test = fisherGTest(pg.map(p => p.power));
-      /* تصحيح تسلسلي: الدورة الثانية تُختبر بعد إزالة الأولى، فاحتمال
-         الصدفة يتضاعف مع كل جولة (Bonferroni تسلسلي محافظ). */
-      const pAdj = clamp(test.p * (round_ + 1), 0, 1);
-      if (pAdj > alpha) break;
+    const g = pg.I[peak] / total;
+    const pValue = _fisherG_p(g, pg.m);
+    const significant = pValue < alpha;
 
-      const peak = pg.reduce((a, b) => (b.power > a.power ? b : a));
-      const bandTotal = pg.reduce((acc, p) => acc + p.power, 0) || 1;
-      const bandShare = round(peak.power / bandTotal * 100, 1);
-      const topList = pg.slice().sort((a, b) => b.power - a.power).slice(0, 5)
-        .map(p => ({ period: round(p.period, 1), sharePct: round(p.power / bandTotal * 100, 1) }));
+    /* عدد الذرات الدالة (دورات متراكبة) — نفس اختبار فيشر مطبّقاً ذرّة ذرّة */
+    let nCycles = 0;
+    for (let i = 0; i < pg.m; i++) if (_fisherG_p(pg.I[i] / total, pg.m) < alpha) nCycles++;
 
-      /* (أ) تنقية التردد خارج الشبكة — نصف خطوة على كل جانب */
-      const half = 0.5 / Nr;
-      const fRef = refinePeakFreq(resid, Math.max(1 / maxP * 0.5, peak.freq - half), peak.freq + half);
-      const period = 1 / fRef;
-      if (!(period >= minP && period <= maxP)) break;
-
-      /* (ب) الطور على نافذة حديثة = phaseCycles دورة (بحد أدنى ٢ دورة) */
-      const W = clamp(Math.round(period * phaseCycles), Math.round(period * 2) + 2, n);
-      const win = detr.slice(n - W);
-      const fit = fitSinusoid(win, fRef);
-      /* الطور مُعاد إلى مرجع t=0 للسلسلة الكاملة حتى تبقى الإسقاطات متسقة */
-      const phaseAtFull = fit.phase - 2 * Math.PI * fRef * (n - W);
-
-      /* عدم اليقين: تشتّت البواقي حول الملاءمة داخل النافذة */
-      const wRad = 2 * Math.PI * fRef;
-      let sse = 0;
-      for (let t = 0; t < W; t++) {
-        const pred = fit.A * Math.cos(wRad * t) + fit.B * Math.sin(wRad * t);
-        sse += (win[t] - pred) ** 2;
+    /* ② تنقية التردد خارج شبكة فورييه — بلاها ينجرف الطور تراكمياً */
+    const fGrid = pg.freqs[peak];
+    let fBest = fGrid;
+    if (refine) {
+      const step = 1 / pg.N;
+      /* التنقية محصورة داخل النطاق المفحوص: خروجها منه يعيد تردداً لم
+         يُختبر عليه فيشر، فتصبح قيمة الاحتمال المعروضة لتردد آخر. */
+      const fLo = 1 / maxPeriod, fHi = 1 / minPeriod;
+      let lo = Math.max(fLo, fGrid - step), hi = Math.min(fHi, fGrid + step);
+      if (!(hi > lo)) { lo = fGrid; hi = fGrid; }
+      /* بحث ذهبي على الطاقة المستمرة */
+      const gr = (Math.sqrt(5) - 1) / 2;
+      let c = hi - gr * (hi - lo), d = lo + gr * (hi - lo);
+      let fc = _powerAt(x, c), fd = _powerAt(x, d);
+      for (let it = 0; it < 60 && (hi - lo) > 1e-9; it++) {
+        if (fc > fd) { hi = d; d = c; fd = fc; c = hi - gr * (hi - lo); fc = _powerAt(x, c); }
+        else { lo = c; c = d; fc = fd; d = lo + gr * (hi - lo); fd = _powerAt(x, d); }
       }
-      const sigma = Math.sqrt(sse / Math.max(1, W - 3));
-      const R = fit.amplitude;
-      const snr = R > 0 ? R / Math.max(sigma, 1e-12) : 0;
-      /* حدّ كرامر-راو لجيبية في ضجيج أبيض:
-           var(φ̂) ≈ 2σ²/(R²·W)   ,   var(ω̂) ≈ 24σ²/(R²·W³)  */
-      const sePhase = R > 0 ? Math.sqrt(2 * sigma * sigma / (R * R * W)) : Math.PI;
-      const seOmega = R > 0 ? Math.sqrt(24 * sigma * sigma / (R * R * W * W * W)) : 0;
-
-      cycles.push({
-        period: round(period, 2), freq: fRef, phase: phaseAtFull,
-        amplitude: R, amplitudePct: round((Math.exp(R) - 1) * 100, 2),
-        gridPeriod: round(peak.period, 2), bandSharePct: bandShare,
-        top: round_ === 0 ? topList : undefined,
-        gridErrorPct: round((peak.period - period) / period * 100, 2),
-        pValue: round(pAdj, 4),
-        snr: round(snr, 2),
-        sePhase, seOmega,
-        /* عدم يقين التوقيت الآن، بالجلسات */
-        seBarsNow: round(sePhase / (2 * Math.PI) * period, 2),
-        windowBars: W
-      });
-
-      /* إزالة الدورة من البواقي للبحث عن الدورة التالية */
-      const fitR = fitSinusoid(resid, fRef);
-      for (let t = 0; t < resid.length; t++) {
-        resid[t] -= fitR.A * Math.cos(wRad * t) + fitR.B * Math.sin(wRad * t);
-      }
+      fBest = (lo + hi) / 2;
+      if (_powerAt(x, fBest) < _powerAt(x, fGrid)) fBest = fGrid;
     }
+    const period = 1 / fBest;
+    const gridErrorPct = r2(Math.abs(fBest - fGrid) / fGrid * 100);
 
-    /* ── حين لا تجتاز أي دورة اختبار الدلالة ──
-       الخطأ السابق: كانت الدالة تعود بلا أي وصف للدورة إطلاقاً، فتطبع
-       الواجهة «الدورة المهيمنة: null جلسة». هذا أسوأ من الرقم الخاطئ لأنه
-       يبدو عطلاً تقنياً بينما النتيجة صحيحة تماماً.
+    /* ③ الطور يُلائم على لوغاريتم السعر منزوع الاتجاه، على نافذة حديثة
+       طولها أربع دورات (وبحد أدنى 60 جلسة) حتى يعبّر الطور عن الحاضر
+       لا عن متوسط تاريخ طويل. */
+    const logP = p.map(v => Math.log(v));
+    const W = clamp(Math.round(Math.max(4 * period, 60)), 40, logP.length);
+    const win = logP.slice(logP.length - W);
+    const det = _detrend(win);
+    const fit = _fitSinusoid(det.y, fBest);
 
-       الصواب: نصف **أقوى مرشّح** بكامل أرقامه (دورة منقّاة، سعة، موقع
-       الطور) ونعلن صراحة أنه لم يجتز العتبة. الفرق بين «لا يوجد شيء»
-       و«يوجد هذا لكنه لا يتميّز عن الضجيج» فرق جوهري للمستخدم: الأول
-       يوحي بعطل، والثاني معلومة. والإسقاط الزمني يبقى ممنوعاً في
-       الحالتين — projectTurnsPro يشترط significant. */
-    if (!cycles.length) {
-      const pg0 = periodogram(rets).filter(p => p.period >= minP && p.period <= maxP);
-      const t0 = pg0.length >= 4 ? fisherGTest(pg0.map(p => p.power)) : { p: 1, g: null };
-      const base = {
-        ok: true, significant: false, cycles: [], nCycles: 0,
-        n, lastIndex: n - 1,
-        pValue: round(t0.p, 4), pValueText: t0.p < 0.001 ? '<0.001' : t0.p.toFixed(3),
-        gStatistic: t0.g,
-        trendR2: round(trend.r2, 3), trendSlopePerBar: round(trend.slope, 6),
-        verdict: `لا دليل على دورة — الطيف لا يختلف عن ضجيج عشوائي (p=${t0.p.toFixed(3)} > ${alpha})`
-      };
-      if (!pg0.length) return base;
+    const thetaLast = wrap(TAU * fBest * (W - 1) + fit.phi);
+    const cyclePosPct = r2(thetaLast / TAU * 100);
+    const amplitudePct = r2(fit.amp * 100);
+    const snr = fit.sigma > 0 ? r2((fit.amp / Math.SQRT2) / fit.sigma) : null;
+    const bandSharePct = r2(g * 100);
 
-      /* وصف أقوى مرشّح — بنفس دقة المسار الدال، لكن بلا أي صلاحية توقيت */
-      const pk = pg0.reduce((a, b) => (b.power > a.power ? b : a));
-      const bandTotal0 = pg0.reduce((acc, p) => acc + p.power, 0) || 1;
-      const half0 = 0.5 / Nr;
-      const fRef0 = refinePeakFreq(rets.map(v => v - Stats.mean(rets)),
-        Math.max(1 / maxP * 0.5, pk.freq - half0), pk.freq + half0);
-      const per0 = 1 / fRef0;
-      if (!(per0 >= minP && per0 <= maxP)) return base;
-      const W0 = clamp(Math.round(per0 * phaseCycles), Math.round(per0 * 2) + 2, n);
-      const fit0 = fitSinusoid(detr.slice(n - W0), fRef0);
-      const ph0 = fit0.phase - 2 * Math.PI * fRef0 * (n - W0);
-      const pn0 = (((2 * Math.PI * fRef0 * (n - 1) + ph0) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const order = pg.I.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v).slice(0, 5);
+    const top = order.map(o => ({
+      period: r2(1 / pg.freqs[o.i]),
+      sharePct: r2(o.v / total * 100)
+    }));
 
-      /* نسبة الإشارة إلى الضجيج داخل النافذة — تشرح *لماذا* رُفض المرشّح */
-      const w0 = 2 * Math.PI * fRef0; let sse0 = 0;
-      const win0 = detr.slice(n - W0);
-      for (let t = 0; t < W0; t++) {
-        const pr = fit0.A * Math.cos(w0 * t) + fit0.B * Math.sin(w0 * t);
-        sse0 += (win0[t] - pr) ** 2;
-      }
-      const sg0 = Math.sqrt(sse0 / Math.max(1, W0 - 3));
-
-      return Object.assign(base, {
-        candidate: true,
-        period: round(per0, 2), freq: fRef0, phase: ph0,
-        amplitudePct: round((Math.exp(fit0.amplitude) - 1) * 100, 2),
-        cyclePosPct: round(pn0 / (2 * Math.PI) * 100, 1),
-        bandSharePct: round(pk.power / bandTotal0 * 100, 1),
-        snr: round(fit0.amplitude > 0 ? fit0.amplitude / Math.max(sg0, 1e-12) : 0, 2),
-        gridErrorPct: round((pk.period - per0) / per0 * 100, 2),
-        top: pg0.slice().sort((a, b) => b.power - a.power).slice(0, 5)
-          .map(p => ({ period: round(p.period, 1), sharePct: round(p.power / bandTotal0 * 100, 1) })),
-        candidateNote: `أقوى مرشّح: دورة ${round(per0, 1)} جلسة تستحوذ على ${round(pk.power / bandTotal0 * 100, 1)}٪ من طاقة النطاق — لكنها لا تتميّز عن الضجيج (p=${t0.p.toFixed(3)}). يُعرض للوصف فقط، ولا تُشتق منه أي نافذة زمنية.`
-      });
-    }
-
-    const main = cycles[0];
-    const phaseNow = (((2 * Math.PI * main.freq * (n - 1) + main.phase) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const verdict = significant
+      ? `ذروة طاقة عند دورة ${r2(period)} جلسة لا تفسّرها الصدفة (p = ${Stats.pText(pValue)}). الدورة صالحة لاشتقاق نافذة زمنية، بشرط تأكيد التماسك خارج العيّنة.`
+      : `الطيف لا يختلف عن ضجيج عشوائي (p = ${Stats.pText(pValue)} عند عتبة ${alpha}). لا تُشتق نافذة زمنية من دورة غير دالة: رسم موجة جيبية على ضجيج ينتج تواريخ دقيقة المظهر بلا أساس.`;
 
     return {
-      ok: true, significant: true,
-      n, lastIndex: n - 1,
-      cycles, nCycles: cycles.length,
-      period: main.period, freq: main.freq, phase: main.phase,
-      amplitudePct: main.amplitudePct,
-      bandSharePct: main.bandSharePct, top: main.top || [],
-      cyclePosPct: round(phaseNow / (2 * Math.PI) * 100, 1),  /* 0٪=قمة · 50٪=قاع */
-      pValue: main.pValue,
-      pValueText: main.pValue < 0.001 ? '<0.001' : main.pValue.toFixed(3),
-      snr: main.snr,
-      seBarsNow: main.seBarsNow,
-      gridErrorPct: main.gridErrorPct,
-      trendR2: round(trend.r2, 3), trendSlopePerBar: round(trend.slope, 6),
-      verdict: `${cycles.length} دورة دالة — المهيمنة ${main.period} جلسة (p=${main.pValue < 0.001 ? '<0.001' : main.pValue.toFixed(3)}، نسبة إشارة/ضجيج ${main.snr})`
+      ok: true,
+      significant,
+      pValue: r4(pValue), pValueText: Stats.pText(pValue),
+      gStatistic: r4(g),
+      freq: r4(fBest),
+      period: r2(period),
+      periodBars: Math.round(period),
+      phase: r4(thetaLast),
+      cyclePosPct,
+      amplitudePct,
+      bandSharePct,
+      snr,
+      nCycles,
+      gridErrorPct,
+      trendR2: r3(det.r2),
+      alpha,
+      sampleSize: p.length,
+      m: pg.m,
+      scannedBand: { minPeriod, maxPeriod: Math.round(maxPeriod) },
+      top,
+      verdict,
+      /* ما تحتاجه دوال الإسقاط: الدورة الدالة بمعاملاتها الكاملة */
+      cycles: significant ? [{
+        freq: fBest, period, amp: fit.amp, phase: thetaLast,
+        sigma: fit.sigma, N: W, snr
+      }] : []
     };
   }
 
-  /**
-   * إسقاط الانعطافات من الطيف المحسّن — **بعدم يقين معلن**.
-   * عدم اليقين يتّسع مع الأفق لأن خطأ التردد يتراكم: انعطاف بعد 5 جلسات
-   * أدقّ بكثير من انعطاف بعد 50، وعرضهما بنفس الثقة تضليل.
-   */
-  function projectTurnsPro(spec, horizonBars = 90, opts = {}) {
-    if (!spec || !spec.ok || !spec.significant || !spec.cycles.length) return [];
-    const composite = opts.composite !== false;
-    const cyc = composite ? spec.cycles : [spec.cycles[0]];
-    const last = spec.lastIndex;
+  /* spectralPro هو نفسه مع التنقية خارج الشبكة مفعّلة صراحةً. */
+  function spectralPro(prices, opt) {
+    return spectral(prices, Object.assign({ refine: true }, opt || {}));
+  }
 
-    const val = (t) => cyc.reduce((s, c) =>
-      s + c.amplitude * Math.cos(2 * Math.PI * c.freq * t + c.phase), 0);
+  /* ════════════════════════════════════════════════════════════════════
+     10) إسقاط الانعطافات — بعدم يقين معلن
+     ──────────────────────────────────────────────────────────────────
+     عرض تاريخ واحد بلا نطاق ادّعاء دقة غير موجودة: انعطاف بعد 5 جلسات
+     أدقّ بكثير من انعطاف بعد 50، وعرضهما بنفس الثقة تضليل.
 
-    const turns = [];
-    let prev = val(last), prevSlope = prev - val(last - 1);
-    for (let t = last + 1; t <= last + horizonBars; t++) {
-      const v = val(t), slope = v - prev;
-      const barsAhead = t - 1 - last;
-      if (barsAhead > 0 && ((prevSlope > 0 && slope <= 0) || (prevSlope < 0 && slope >= 0))) {
-        const type = prevSlope > 0 ? 'peak' : 'valley';
-        /* عدم اليقين: خطأ الطور + خطأ التردد المتراكم عبر h جلسة */
-        const m = spec.cycles[0];
-        const sdRad = Math.sqrt(m.sePhase ** 2 + (m.seOmega * barsAhead) ** 2);
-        const sdBars = sdRad / (2 * Math.PI) * m.period;
-        turns.push({
-          type, barsAhead,
-          sdBars: round(sdBars, 1),
-          loBars: Math.max(1, Math.round(barsAhead - 1.96 * sdBars)),
-          hiBars: Math.round(barsAhead + 1.96 * sdBars),
-          /* نافذة عملية لا تتجاوز نصف دورة — أوسع من ذلك بلا معنى تنفيذي */
-          usable: 1.96 * sdBars < m.period / 4
+     النطاق مشتقّ من حدّ كرامر-راو الأدنى لمقدّري التردد والطور لموجة
+     جيبية في ضجيج أبيض (Rife & Boorstyn):
+        var(ω̂) ≥ 12σ² / (A²·N·(N²−1))
+        var(φ̂) ≥ 2σ²(2N−1) / (A²·N·(N+1))
+     وخطأ توقيت انعطاف يبعد h جلسة:  sd_θ(h) = √(var(φ̂) + h²·var(ω̂))
+     ثم يُحوَّل إلى جلسات بالقسمة على ω. لذلك يتّسع النطاق كلما بَعُد
+     الأفق — لأنه كذلك فعلاً.
+     ════════════════════════════════════════════════════════════════════ */
+  function projectTurnsPro(spec, horizon) {
+    horizon = horizon || 60;
+    if (!spec || !spec.cycles || !spec.cycles.length) return [];
+    const c = spec.cycles[0];
+    const w = TAU * c.freq;
+    if (!(w > 0)) return [];
+    const A = c.amp, sg = c.sigma, N = c.N;
+    const snr2 = (A > 0 && sg > 0) ? (A * A) / (sg * sg) : 0;
+    const varOmega = snr2 > 0 ? 12 / (snr2 * N * (N * N - 1)) : Infinity;
+    const varPhi = snr2 > 0 ? 2 * (2 * N - 1) / (snr2 * N * (N + 1)) : Infinity;
+
+    const out = [];
+    const th = wrap(c.phase);
+    /* قمة عند θ ≡ 0 (mod 2π)، وقاع عند θ ≡ π. تُحسب أول واحدة من كل نوع
+       ثم تتكرّر كل دورة كاملة. */
+    const firstPeak = (TAU - th) / w;
+    const firstValley = (th <= Math.PI ? (Math.PI - th) : (TAU + Math.PI - th)) / w;
+    const halfPeriod = Math.PI / w;
+    const push = (t0, type) => {
+      for (let h = t0; h <= horizon + 1e-9; h += 2 * halfPeriod) {
+        if (h <= 0.5) continue;
+        const sdTheta = Math.sqrt(varPhi + h * h * varOmega);
+        const sdBars = isFinite(sdTheta) ? sdTheta / w : null;
+        const barsAhead = Math.round(h);
+        out.push({
+          type,
+          barsAhead,
+          sdBars: sdBars == null ? null : r2(sdBars),
+          loBars: sdBars == null ? null : Math.max(0, Math.round(h - 1.959963985 * sdBars)),
+          hiBars: sdBars == null ? null : Math.round(h + 1.959963985 * sdBars),
+          /* «قابل للاستعمال» = عدم اليقين أضيق من ربع دورة. أوسع من ذلك
+             يعني أن النافذة تغطي القمة والقاع معاً فلا تميّز بينهما. */
+          usable: sdBars != null && sdBars <= c.period / 4
         });
       }
-      prev = v; prevSlope = slope;
-    }
-    return turns;
+    };
+    push(firstPeak, 'peak');
+    push(firstValley, 'valley');
+    return out.sort((a, b) => a.barsAhead - b.barsAhead);
+  }
+
+  /** نسخة مبسّطة بلا نطاق عدم يقين — للتوافق مع المستهلكين القدامى. */
+  function projectCycleTurns(spec, currentIndex, horizon) {
+    return projectTurnsPro(spec, horizon || 60).map(t => ({ type: t.type, barsAhead: t.barsAhead }));
   }
 
   /* ════════════════════════════════════════════════════════════════════
-     14) تماسك الدورة — هل تنبّأت فعلاً بانعطافات لم ترها؟
+     11) ARIMA(1,1,0) — تنبؤ بنطاق صحيح، وتصريح حين لا يعني شيئاً
      ──────────────────────────────────────────────────────────────────
-     قيمة الاحتمال من اختبار Fisher تجيب عن سؤال واحد: «هل هذه الذروة
-     الطيفية تفسّرها الصدفة؟». وهو سؤال *وصفي* عن العينة الماضية.
-     السؤال التنفيذي مختلف تماماً: «لو استعملتُ هذه الدورة للتنبؤ بموعد
-     الانعطاف، هل كانت ستصيب؟».
+     الخطأ الجذري السابق: نطاق عدم اليقين حُسب كـ σ·√h. هذه الصيغة صحيحة
+     فقط عند φ=0 (مشي عشوائي محض). للنموذج AR(1) على الفروق يكون التباين
+     التراكمي بعد h خطوة:
+        Var(h) = σ² · Σ_{k=1..h} [(1 − φ^k)/(1 − φ)]²
+     عند φ=0.7 و h=10 تعطي الصيغة الصحيحة 8.45 بينما σ√h تعطي 3.16، أي أن
+     النطاق المعروض كان أضيق بـ 63٪ من الحقيقة — إيحاء بدقة غير موجودة.
 
-     الطريقة: نبني الدورة من أول 60٪ من التاريخ فقط، ونُسقط انعطافاتها
-     على الـ40٪ الباقية، ثم نقيس كم منها وقع قرب ارتكاز حقيقي مؤكد ضمن
-     نافذة تسامح. ونقارن ذلك بمعدّل الإصابة المتوقّع بالصدفة (تغطية
-     النوافذ من المحور الزمني) باختبار ذي حدّين.
-
-     هذا رقم *مقاس* لكل سهم — لا مشتقّ من افتراض.
+     والحقل `meaningful` هو الإضافة الأهم: على سهم بلا زخم ذاتي يكون
+     التنبؤ مساوياً للسعر الحالي عملياً، والسعر الحالي يقع داخل فاصل
+     الثقة 95٪. عرض رقم تنبؤ في هذه الحالة بلا تصريح ادّعاء معرفة.
      ════════════════════════════════════════════════════════════════════ */
-  function cycleCoherence(candles, opts = {}) {
-    const n = candles.length;
-    const minHist = opts.minHistory ?? 120;
-    if (n < minHist + 60) return { ok: false, reason: `يتطلب ${minHist + 60} شمعة (متوفر ${n})` };
+  function forecastARIMA(prices, horizon) {
+    const h = Math.max(1, Math.round(horizon || 5));
+    const p = Stats.clean(prices).filter(v => v > 0);
+    if (p.length < 40) return { ok: false, reason: `عيّنة ${p.length} سعر — تقدير φ يتطلب 40+ لتكون له دلالة` };
 
-    const splitAt = Math.floor(n * 0.6);
-    const closes = candles.map(c => c.close);
-    const spec = spectralPro(closes.slice(0, splitAt), { alpha: opts.alpha ?? 0.05 });
-    if (!spec.ok || !spec.significant) {
-      return { ok: false, reason: 'لا دورة دالة في النصف الأول من التاريخ — لا شيء يُختبر خارج العيّنة' };
+    const d = [];
+    for (let i = 1; i < p.length; i++) d.push(p[i] - p[i - 1]);
+    const n = d.length - 1;
+    if (n < 20) return { ok: false, reason: 'فروق غير كافية لتقدير النموذج' };
+
+    /* انحدار OLS:  d_t = c + φ·d_{t−1} + ε_t */
+    let sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (let i = 1; i < d.length; i++) { const X = d[i - 1], Y = d[i]; sx += X; sy += Y; sxy += X * Y; sxx += X * X; }
+    const den = n * sxx - sx * sx;
+    if (Math.abs(den) < 1e-12) return { ok: false, reason: 'الفروق ثابتة — لا يمكن تقدير النموذج' };
+    const phi = (n * sxy - sx * sy) / den;
+    const c = (sy - phi * sx) / n;
+
+    let ss = 0;
+    for (let i = 1; i < d.length; i++) { const e = d[i] - (c + phi * d[i - 1]); ss += e * e; }
+    const sigma2 = ss / Math.max(1, n - 2);
+    const sigma = Math.sqrt(sigma2);
+    const seSlope = Math.sqrt(sigma2 * n / den);
+    const tStat = seSlope > 0 ? phi / seSlope : 0;
+    const phiP = Stats.twoSidedT(tStat, Math.max(1, n - 2));
+
+    /* تنبؤ تكراري للفروق ثم جمعها على آخر سعر */
+    let last = p[p.length - 1], dLast = d[d.length - 1], acc = 0;
+    for (let k = 0; k < h; k++) { dLast = c + phi * dLast; acc += dLast; }
+    const point = last + acc;
+
+    /* التباين التراكمي الصحيح لمجموع h فرقاً من AR(1) */
+    let varSum = 0;
+    const oneMinus = 1 - phi;
+    for (let k = 1; k <= h; k++) {
+      const psi = Math.abs(oneMinus) < 1e-9 ? k : (1 - Math.pow(phi, k)) / oneMinus;
+      varSum += psi * psi;
     }
-
-    const horizon = n - splitAt;
-    const turns = projectTurnsPro(spec, horizon, { composite: false });
-    if (!turns.length) return { ok: false, reason: 'لم تُسقط الدورة أي انعطاف داخل الفترة المحجوزة' };
-
-    /* الارتكازات الحقيقية المؤكدة في الفترة المحجوزة */
-    const pivots = detectPivots(candles, opts.k ?? 3).filter(p => p.i >= splitAt);
-    if (pivots.length < 3) return { ok: false, reason: 'ارتكازات مؤكدة غير كافية في الفترة المحجوزة' };
-
-    /* نافذة التسامح: ±10٪ من الدورة، بحد أدنى شمعتان */
-    const tol = Math.max(2, Math.round(spec.period * 0.10));
-
-    let hits = 0;
-    const detail = [];
-    for (const t of turns) {
-      const idx = splitAt - 1 + t.barsAhead;
-      if (idx >= n) continue;
-      const want = t.type === 'valley' ? 'L' : 'H';
-      const near = pivots.find(p => p.type === want && Math.abs(p.i - idx) <= tol);
-      if (near) hits++;
-      detail.push({ barsAhead: t.barsAhead, type: t.type, hit: !!near, off: near ? near.i - idx : null });
-    }
-    const tried = detail.length;
-    if (!tried) return { ok: false, reason: 'لا انعطافات قابلة للتقييم' };
-
-    /* معدّل الإصابة بالصدفة: نسبة المحور الزمني المغطاة بنوافذ التسامح
-       حول الارتكازات من النوع المطلوب */
-    const winSize = 2 * tol + 1;
-    const nL = pivots.filter(p => p.type === 'L').length;
-    const nH = pivots.filter(p => p.type === 'H').length;
-    const wantL = detail.filter(d => d.type === 'valley').length;
-    const pChanceL = clamp(nL * winSize / horizon, 0, 1);
-    const pChanceH = clamp(nH * winSize / horizon, 0, 1);
-    const pChance = tried ? (wantL * pChanceL + (tried - wantL) * pChanceH) / tried : 0;
-
-    /* اختبار ذي حدّين أحادي الطرف: P(X ≥ hits) */
-    let pVal = 0;
-    for (let k = hits; k <= tried; k++) {
-      const ln = Stats.lnChoose(tried, k) + k * Math.log(Math.max(pChance, 1e-12)) + (tried - k) * Math.log(Math.max(1 - pChance, 1e-12));
-      pVal += Math.exp(ln);
-    }
-    pVal = clamp(pVal, 0, 1);
-
-    const ci = Stats.wilson(hits, tried);
-    const alpha = opts.alpha ?? 0.05;
-    const reliable = pVal <= alpha && hits / tried > pChance;
+    const sdH = sigma * Math.sqrt(varSum);
+    const z = 1.959963985;
+    const lo = point - z * sdH, hi = point + z * sdH;
+    const meaningful = last < lo || last > hi;
 
     return {
       ok: true,
-      period: spec.period,
-      hits, tried,
-      hitRatePct: round(hits / tried * 100, 1),
-      hitRateCI: [round(ci.lo * 100, 1), round(ci.hi * 100, 1)],
-      chanceRatePct: round(pChance * 100, 1),
-      toleranceBars: tol,
-      pValue: round(pVal, 4),
-      pValueText: pVal < 0.001 ? '<0.001' : pVal.toFixed(3),
-      reliable,
-      medianOffBars: (() => {
-        const offs = detail.filter(d => d.hit).map(d => Math.abs(d.off)).sort((a, b) => a - b);
-        return offs.length ? offs[Math.floor(offs.length / 2)] : null;
-      })(),
-      verdict: reliable
-        ? `الدورة أصابت ${hits} من ${tried} انعطافاً خارج العيّنة (${round(hits / tried * 100, 1)}٪ مقابل ${round(pChance * 100, 1)}٪ بالصدفة، p=${pVal < 0.001 ? '<0.001' : pVal.toFixed(3)}) — توقيتها قابل للاعتماد على هذا السهم`
-        : `أصابت ${hits} من ${tried} (${round(hits / tried * 100, 1)}٪) مقابل ${round(pChance * 100, 1)}٪ متوقعة بالصدفة، p=${pVal.toFixed(3)} — لا دليل على أن توقيت الدورة يتفوّق على التخمين هنا`,
-      detail
+      point: r2(point), lo: r2(lo), hi: r2(hi),
+      bandPct: r2(z * sdH / point * 100),
+      expectedChangePct: r2((point - last) / last * 100),
+      phi: r3(phi), phiSe: r4(seSlope), phiT: r3(tStat),
+      phiPValue: Stats.pText(phiP), phiSignificant: phiP < 0.05,
+      sigma: r3(sigma), horizon: h, sampleSize: p.length,
+      meaningful,
+      note: meaningful
+        ? `السعر الحالي (${r2(last)}) يقع خارج فاصل الثقة 95٪ للتنبؤ ⇒ النموذج يميّز توقّعه عن «بلا تغيّر». هذا شرط ضروري لا كافٍ: النموذج خطّي ولا يرى أخباراً ولا أرباحاً.`
+        : `السعر الحالي (${r2(last)}) يقع داخل فاصل الثقة 95٪ [${r2(lo)} — ${r2(hi)}] ⇒ التنبؤ لا يختلف إحصائياً عن «بلا تغيّر». الرقم المعروض أعلاه صحيح حسابياً لكنه بلا مضمون توقّعي.`
     };
   }
 
   /* ════════════════════════════════════════════════════════════════════
-     15) دورات الارتكاز التجريبية — بديل عدّ غان/فيبوناتشي الأعمى
+     12) تماسك الدورة خارج العيّنة
      ──────────────────────────────────────────────────────────────────
-     التحليل الزمني الحالي يسأل: «هل المسافة منذ الارتكاز تساوي 34 أو 55
-     أو 90؟». والمشكلة أن هذه الأرقام مفروضة من خارج السهم. لم يُسأل قط:
-     هل لهذا السهم *فعلاً* ميل لانعطافات عند هذه المسافات؟
+     اختبار فيشر يجيب عن سؤال وصفي: «هل هذه الذروة تفسّرها الصدفة في
+     العيّنة الماضية؟». وهذا الاختبار يجيب عن السؤال التنفيذي: «لو
+     استعملتُ الدورة للتنبؤ بموعد انعطاف لم أره، هل كانت ستصيب؟».
 
-     هنا نقلب السؤال: نأخذ كل المسافات بين الارتكازات المؤكدة المتتالية
-     لهذا السهم، ونبني منها توزيعه التجريبي، ثم نختبر كل رقم مرشّح مقابل
-     فرضية عدم: «المسافات موزّعة كما لو كانت الانعطافات عشوائية بنفس
-     المعدّل». الرقم الذي يتكرّر أكثر مما تفسّره الصدفة هو دورة حقيقية
-     لهذا السهم — سواء صادف أن يكون رقم فيبوناتشي أم لا.
+     الطريقة: تُبنى الدورة من أول 60٪ من التاريخ فقط، وتُسقط انعطافاتها
+     على الـ40٪ المحجوزة، ثم يُقاس كم منها وقع قرب ارتكاز حقيقي مؤكد.
+     ومعدّل الصدفة ليس مفترضاً: يُقاس فعلياً كنسبة جلسات المنطقة المحجوزة
+     الواقعة داخل نافذة تسامح من ارتكاز مطابق النوع.
      ════════════════════════════════════════════════════════════════════ */
-  function empiricalPivotCycles(candles, opts = {}) {
-    const k = opts.k ?? 3;
-    const alpha = opts.alpha ?? 0.10;
-    const nPerm = opts.permutations ?? 300;
-    const pv = detectPivots(candles, k);
-    if (pv.length < 10) return { ok: false, reason: `ارتكازات مؤكدة غير كافية (${pv.length}) — يتطلب 10 على الأقل` };
+  function cycleCoherence(cs, opt) {
+    opt = opt || {};
+    const k = opt.k || 3;
+    if (!cs || cs.length < 120) return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — اختبار التماسك يتطلب 120+ (60٪ تدريب و40٪ حجز)` };
 
-    const span = candles.length;
-    const idxs = pv.map(p => p.i).sort((x, y) => x - y);
-    const maxGap = Math.min(200, Math.floor(span / 2));
+    const split = Math.floor(cs.length * 0.6);
+    const train = cs.slice(0, split);
+    const spec = spectralPro(train.map(c => c.close), { alpha: 0.05 });
+    if (!spec.ok) return { ok: false, reason: 'تعذّر بناء الطيف على فترة التدريب: ' + spec.reason };
+    if (!spec.significant) return { ok: false, reason: `لا دورة دالة في فترة التدريب (p = ${spec.pValueText}) — لا شيء يُختبر تماسكه` };
 
-    /* كل المسافات بين أزواج الارتكازات */
-    const gapsOf = (arr) => {
-      const out = [];
-      for (let i = 0; i < arr.length; i++)
-        for (let j = i + 1; j < arr.length; j++) {
-          const d = arr[j] - arr[i];
-          if (d >= 4 && d <= maxGap) out.push(d);
-        }
-      return out;
+    const testLen = cs.length - split;
+    const turns = projectTurnsPro(spec, testLen).filter(t => t.barsAhead >= 1 && t.barsAhead <= testLen);
+    if (!turns.length) return { ok: false, reason: 'الدورة لا تُنتج انعطافاً داخل الفترة المحجوزة' };
+
+    /* الارتكازات الحقيقية داخل الفترة المحجوزة (بفهارس نسبية) */
+    const piv = detectPivots(cs, k)
+      .filter(p => p.i >= split && p.confirmedAt <= cs.length - 1)
+      .map(p => ({ rel: p.i - split + 1, type: p.type }));
+    if (piv.length < 3) return { ok: false, reason: `${piv.length} ارتكاز مؤكد فقط في الفترة المحجوزة — عيّنة أصغر من أن تُختبر` };
+
+    const tol = Math.max(2, Math.round(spec.period / 8));
+    const match = (bars, type) => piv.some(p =>
+      p.type === (type === 'valley' ? 'L' : 'H') && Math.abs(p.rel - bars) <= tol);
+
+    let hits = 0; const offs = [];
+    for (const t of turns) {
+      const want = t.type === 'valley' ? 'L' : 'H';
+      let best = null;
+      for (const p of piv) if (p.type === want) {
+        const off = Math.abs(p.rel - t.barsAhead);
+        if (best == null || off < best) best = off;
+      }
+      if (best != null && best <= tol) { hits++; offs.push(best); }
+    }
+    void match;
+
+    /* معدّل الصدفة مقاس لا مفترض: نسبة جلسات الفترة المحجوزة الواقعة
+       داخل ±tol من ارتكاز مطابق النوع، بمتوسط النوعين بوزن الانعطافات. */
+    const covered = type => {
+      const set = new Set();
+      for (const p of piv) if (p.type === type)
+        for (let b = p.rel - tol; b <= p.rel + tol; b++) if (b >= 1 && b <= testLen) set.add(b);
+      return set.size / testLen;
     };
-    const gaps = gapsOf(idxs);
-    if (gaps.length < 25) return { ok: false, reason: 'أزواج ارتكاز غير كافية' };
+    const cV = covered('L'), cH = covered('H');
+    const nV = turns.filter(t => t.type === 'valley').length;
+    const chance = turns.length ? (cV * nV + cH * (turns.length - nV)) / turns.length : 0;
 
-    const tolOf = d => Math.max(1, Math.round(d * 0.08));
-    const countIn = (arr, lo, hi) => { let n = 0; for (const d of arr) if (d >= lo && d <= hi) n++; return n; };
+    const pValue = Stats.binomTailP(hits, turns.length, Math.max(1e-6, Math.min(0.999, chance)));
+    const ci = Stats.wilsonCI(hits, turns.length);
+    const hitRate = hits / turns.length;
+    const reliable = turns.length >= 5 && hitRate > chance && pValue < 0.05;
 
-    /* ══ فرضية العدم بالتبديل (permutation) ══
-       اختبار بواسون على أزواج الارتكازات كان يعطي 35٪ إيجابيات كاذبة —
-       قياس فعلي على 120 مسار مشي عشوائي. السبب أن الأزواج ليست مستقلة:
-       كل ارتكاز يدخل في عشرات الأزواج، فحجم العينة الفعّال أصغر بكثير
-       مما يفترضه بواسون، وقيمة الاحتمال تخرج متفائلة بشكل منهجي.
+    return {
+      ok: true,
+      reliable,
+      hits, tried: turns.length,
+      hitRatePct: r2(hitRate * 100),
+      hitRateCI: [r2(ci[0] * 100), r2(ci[1] * 100)],
+      chanceRatePct: r2(chance * 100),
+      pValue: r4(pValue), pValueText: Stats.pText(pValue),
+      toleranceBars: tol,
+      medianOffBars: offs.length ? r2(Stats.median(offs)) : null,
+      trainBars: split, testBars: testLen,
+      period: spec.period,
+      verdict: reliable
+        ? `الدورة تماسكت خارج العيّنة: ${hits} من ${turns.length} انعطافاً وقع قرب ارتكاز حقيقي مؤكد (${r2(hitRate * 100)}٪ مقابل ${r2(chance * 100)}٪ بالصدفة، p = ${Stats.pText(pValue)}). هذه أقوى شهادة تقدّمها المنصة لتوقيت سهم.`
+        : `الدورة لم تتماسك خارج العيّنة: ${hits} من ${turns.length} (${r2(hitRate * 100)}٪) مقابل ${r2(chance * 100)}٪ متوقعة بالصدفة، p = ${Stats.pText(pValue)}. دورة دالة إحصائياً لكنها غير متماسكة = نمط في الماضي بلا قيمة توقيتية للمستقبل.`
+    };
+  }
 
-       البديل: نخلط *المسافات بين الارتكازات المتتالية* بترتيب عشوائي
-       ببذرة ثابتة. هذا يحفظ عدد الارتكازات وتوزيع تباعدها تماماً، ويهدم
-       البنية الدورية وحدها — وهي بالضبط الفرضية المراد اختبارها. */
-    const inter = [];
-    for (let i = 1; i < idxs.length; i++) inter.push(idxs[i] - idxs[i - 1]);
-    const rand = seededRandom(seedFromString('pivotcycles:' + span + ':' + idxs.length));
+  /* ════════════════════════════════════════════════════════════════════
+     13) دورات الارتكاز التجريبية — بديل عدّ غان/فيبوناتشي الأعمى
+     ──────────────────────────────────────────────────────────────────
+     التحليل الزمني التقليدي يسأل: «هل المسافة منذ الارتكاز تساوي 34 أو 55
+     أو 90؟» — أرقام مفروضة من خارج السهم، ولم يُسأل قط هل لهذا السهم فعلاً
+     ميل لانعطافات عندها. هنا يُقلب السؤال: تؤخذ كل المسافات بين ارتكازات
+     هذا السهم المؤكدة، وتُقارن بفرضية عدم مبنية على خلط تباعد الارتكازات
+     نفسه — خلط يحفظ عدد الارتكازات وتوزيع تباعدها ويهدم البنية الدورية
+     وحدها.
 
-    const nullCounts = [];      /* [perm][candidateIdx] */
-    const permGapsList = [];
-    for (let p = 0; p < nPerm; p++) {
-      const sh = inter.slice();
-      for (let i = sh.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); const t = sh[i]; sh[i] = sh[j]; sh[j] = t; }
-      const pos = [idxs[0]];
-      for (const d of sh) pos.push(pos[pos.length - 1] + d);
-      permGapsList.push(gapsOf(pos));
+     لماذا التبديل لا بواسون: أزواج الارتكازات ليست مستقلة (إن كان
+     a→b و b→c مسافتين، فـ a→c مقيّدة بهما)، واختبار بواسون البسيط يعطي
+     إيجابيات كاذبة كثيرة على مسارات مشي عشوائي لهذا السبب بالذات.
+     ════════════════════════════════════════════════════════════════════ */
+  const CLASSIC_CYCLES = [13, 21, 34, 45, 55, 89, 90, 120, 144, 180];
+
+  function empiricalPivotCycles(cs, opt) {
+    opt = opt || {};
+    const perms = opt.permutations || 300;
+    const k = opt.k || 3;
+    const q = opt.fdr == null ? 0.10 : opt.fdr;
+
+    if (!cs || cs.length < 120) return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — اختبار الدورات التجريبية يتطلب 120+` };
+    const piv = detectPivots(cs, k);
+    if (piv.length < 8) return { ok: false, reason: `${piv.length} ارتكاز مؤكد فقط — مطلوب 8+ لبناء توزيع مسافات` };
+
+    const pos = piv.map(p => p.i);
+    const maxC = Math.min(120, Math.floor(cs.length / 3));
+    if (maxC < 10) return { ok: false, reason: 'الأفق الزمني أقصر من أن يحمل دورة' };
+
+    /* توزيع المسافات كمدرّج تكراري، ثم مجاميع تراكمية للاستعلام السريع */
+    const histOf = positions => {
+      const h = new Uint32Array(maxC + 2);
+      for (let a = 0; a < positions.length; a++)
+        for (let b = a + 1; b < positions.length; b++) {
+          const dd = positions[b] - positions[a];
+          if (dd >= 1 && dd <= maxC) h[dd]++;
+        }
+      const pre = new Uint32Array(maxC + 2);
+      for (let i = 1; i <= maxC; i++) pre[i] = pre[i - 1] + h[i];
+      return pre;
+    };
+    const win = (pre, c, tol) => pre[Math.min(maxC, c + tol)] - pre[Math.max(0, c - tol - 1)];
+
+    const obsPre = histOf(pos);
+
+    /* فرضية العدم: خلط تباعد الارتكازات (يحفظ العدد والتوزيع، يهدم الدورية) */
+    const gaps = [];
+    for (let i = 1; i < pos.length; i++) gaps.push(pos[i] - pos[i - 1]);
+    const cands = [];
+    for (let c = 5; c <= maxC; c++) cands.push({ c, tol: Math.max(1, Math.round(c * 0.08)) });
+
+    const ge = new Uint32Array(cands.length);
+    const sums = new Float64Array(cands.length);
+    let seed = 20240917;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+    for (let it = 0; it < perms; it++) {
+      const g2 = gaps.slice();
+      for (let i = g2.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = g2[i]; g2[i] = g2[j]; g2[j] = t; }
+      const pp = [pos[0]];
+      for (const gg of g2) pp.push(pp[pp.length - 1] + gg);
+      const pre = histOf(pp);
+      for (let ci = 0; ci < cands.length; ci++) {
+        const v = win(pre, cands[ci].c, cands[ci].tol);
+        sums[ci] += v;
+        if (v >= win(obsPre, cands[ci].c, cands[ci].tol)) ge[ci]++;
+      }
     }
 
-    /* المرشّحون: أرقام غان/فيبوناتشي + أكثر المسافات تكراراً في السهم نفسه */
-    const classic = [13, 21, 34, 55, 89, 144, 30, 45, 60, 90, 120, 180];
-    const histo = new Map();
-    for (const d of gaps) histo.set(d, (histo.get(d) || 0) + 1);
-    const own = [...histo.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(e => e[0]);
+    const rows = cands.map((cd, ci) => {
+      const observed = win(obsPre, cd.c, cd.tol);
+      const expected = sums[ci] / perms;
+      return {
+        cycle: cd.c, tolerance: cd.tol, observed,
+        expected: r2(expected),
+        lift: expected > 0 ? r2(observed / expected) : null,
+        pRaw: (1 + ge[ci]) / (1 + perms)
+      };
+    }).filter(r => r.observed >= 3);
 
-    const seen = new Set(), cands = [];
-    for (const c of [...classic, ...own]) {
-      if (c < 5 || c > maxGap || seen.has(c)) continue;
-      seen.add(c);
-      const tol = tolOf(c);
-      const obs = countIn(gaps, c - tol, c + tol);
-      if (obs < 4) continue;
-      let ge = 0, sum = 0;
-      for (const pg of permGapsList) { const v = countIn(pg, c - tol, c + tol); sum += v; if (v >= obs) ge++; }
-      const expected = sum / nPerm;
-      /* قيمة احتمال التبديل بتصحيح المضافة (add-one) — لا تعطي صفراً أبداً */
-      const p = (ge + 1) / (nPerm + 1);
-      if (obs <= expected) continue;
-      cands.push({
-        cycle: c, observed: obs, expected: round(expected, 1), tolerance: tol,
-        pValue: round(p, 5), lift: round(obs / Math.max(expected, 1e-9), 2), classic: classic.includes(c)
+    if (!rows.length) return { ok: true, cycles: [], pivotCount: piv.length, permutations: perms, note: 'لا مسافة تكرّرت ثلاث مرات فأكثر — لا شيء يُختبر' };
+
+    const pass = Stats.benjaminiHochberg(rows.map(r => r.pRaw), q);
+    let kept = rows.filter((r, i) => pass[i] && r.lift != null && r.lift > 1);
+
+    /* دمج الدورات المتجاورة: 34 و35 و36 دورة واحدة لا ثلاث */
+    kept.sort((a, b) => a.pRaw - b.pRaw || b.lift - a.lift);
+    const merged = [];
+    for (const r of kept) {
+      if (merged.some(m => Math.abs(m.cycle - r.cycle) <= Math.max(m.tolerance, r.tolerance))) continue;
+      merged.push(r);
+    }
+    const cycles = merged.slice(0, 5).map(r => ({
+      cycle: r.cycle, observed: r.observed, expected: r.expected,
+      lift: r.lift, tolerance: r.tolerance,
+      pValue: Stats.pText(r.pRaw),
+      pValueRaw: r4(r.pRaw),
+      classic: CLASSIC_CYCLES.some(x => Math.abs(x - r.cycle) <= r.tolerance)
+    })).sort((a, b) => a.cycle - b.cycle);
+
+    return {
+      ok: true,
+      cycles,
+      pivotCount: piv.length,
+      permutations: perms,
+      candidatesTested: rows.length,
+      note: cycles.length
+        ? `${cycles.length} دورة اجتازت اختبار التبديل وتصحيح Benjamini-Hochberg من ${rows.length} مسافة مرشّحة — هذه أرقام هذا السهم، لا أرقام مفروضة عليه.`
+        : `لا مسافة زمنية على هذا السهم تتكرّر أكثر مما ينتجه الخلط العشوائي (${rows.length} مرشّحاً فُحص). النتيجة صحيحة لا عطل: عدّ 34 و55 و90 على هذا السهم بلا أساس تجريبي.`
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     14) التوافق الزمني والنوافذ — بوحدات مصرَّح بها
+     ──────────────────────────────────────────────────────────────────
+     الخطأ الجذري السابق كان خلط الوحدات: دورات غان بالأيام التقويمية،
+     ومناطق فيبوناتشي بالشموع مضروبة في «معدّل تقريبي» 1.4 يوم/شمعة. نتيجة
+     ذلك تاريخ مزاح بأيام، وقد يقع في جمعة أو سبت — وهما عطلة السوق
+     السعودي، فيُعرض «نافذة حرجة» في يوم لا يفتح فيه السوق أصلاً.
+     هنا: كل نافذة تحمل وحدتها صراحةً، والتحويل يمرّ على تقويم تداول فعلي.
+     ════════════════════════════════════════════════════════════════════ */
+  const FIB_BARS = [13, 21, 34, 55, 89, 144, 233];
+  const GANN_DAYS = [45, 90, 120, 144, 180, 270, 360];
+
+  function _pivotDate(cs, idx) {
+    const t = cs[idx] && cs[idx].time;
+    return isNum(t) ? new Date(t * 1000) : null;
+  }
+
+  function timeConfluence(cs, pivot) {
+    const n = cs.length;
+    const pi = pivot && isNum(pivot.i) ? pivot.i : n - 1;
+    const barsSince = n - 1 - pi;
+    const pd = _pivotDate(cs, pi), nowD = _pivotDate(cs, n - 1);
+    const daysSince = (pd && nowD) ? Math.round((nowD - pd) / 86400000) : barsSince;
+
+    const evidence = [];
+    const tolBars = Math.max(2, Math.round(barsSince * 0.06));
+
+    const fibHit = FIB_BARS.find(f => Math.abs(f - barsSince) <= tolBars);
+    evidence.push({
+      name: `فيبوناتشي زمني (جلسات): ${barsSince} جلسة منذ الارتكاز${fibHit ? ` — عند ${fibHit} ±${tolBars}` : ''}`,
+      hit: !!fibHit, unit: 'bars', value: fibHit || null
+    });
+
+    const tolDays = Math.max(3, Math.round(daysSince * 0.06));
+    const gannHit = GANN_DAYS.find(g => Math.abs(g - daysSince) <= tolDays);
+    evidence.push({
+      name: `غان تقويمي (أيام): ${daysSince} يوماً منذ الارتكاز${gannHit ? ` — عند ${gannHit} ±${tolDays}` : ''}`,
+      hit: !!gannHit, unit: 'days', value: gannHit || null
+    });
+
+    const dc = dominantPivotCycle(cs, 3);
+    let dcHit = false, dcLabel = 'دورة السهم الذاتية: لم تُكتشف';
+    if (dc) {
+      if (!dc.reliable) dcLabel = `دورة السهم الذاتية: ${dc.cycle} جلسة لكن اتساقها ${dc.consistencyPct}٪ — غير منتظمة فلا تُحتسب`;
+      else {
+        const mult = Math.round(barsSince / dc.cycle);
+        const off = Math.abs(barsSince - mult * dc.cycle);
+        dcHit = mult >= 1 && off <= Math.max(2, Math.round(dc.cycle * 0.12));
+        dcLabel = `دورة السهم الذاتية: ${dc.cycle} جلسة — المسافة الحالية ${dcHit ? `عند المضاعف ${mult}` : `بين المضاعفات (انحراف ${off} جلسة)`}`;
+      }
+    }
+    evidence.push({ name: dcLabel, hit: dcHit, unit: 'bars', value: dc ? dc.cycle : null });
+
+    let spHit = false, spLabel = 'انعطاف طيفي: لا دورة دالة على هذا السهم';
+    try {
+      const sp = spectralPro(cs.map(c => c.close), { alpha: 0.05 });
+      if (sp.ok && sp.significant) {
+        const turns = projectTurnsPro(sp, Math.max(10, Math.round(sp.period / 2)));
+        const near = turns.filter(t => t.barsAhead <= Math.max(2, Math.round(sp.period / 12)) && t.usable);
+        spHit = near.length > 0;
+        spLabel = spHit
+          ? `انعطاف طيفي: ${near[0].type === 'valley' ? 'قاع' : 'قمة'} متوقع خلال ${near[0].barsAhead} جلسة (دورة ${sp.period}، p = ${sp.pValueText})`
+          : `انعطاف طيفي: دورة ${sp.period} جلسة دالة (p = ${sp.pValueText}) لكن لا انعطاف وشيك`;
+      } else if (sp.ok) spLabel = `انعطاف طيفي: الطيف غير دال (p = ${sp.pValueText})`;
+    } catch (e) { /* الطيف اختياري هنا — غيابه لا يُسقط بقية الأدلة */ }
+    evidence.push({ name: spLabel, hit: spHit, unit: 'bars', value: null });
+
+    const count = evidence.filter(e => e.hit).length;
+    const total = evidence.length;
+    const label = count >= 3 ? 'توافق زمني قوي' : count === 2 ? 'توافق زمني جزئي'
+      : count === 1 ? 'دليل زمني واحد' : 'لا توافق زمني عند المسافة الحالية';
+
+    return { barsSincePivot: barsSince, daysSincePivot: daysSince, evidence, count, total, label, pivotIndex: pi };
+  }
+
+  function timeWindows(cs, pivot, opt) {
+    opt = opt || {};
+    const horizonDays = opt.horizonDays || 240;
+    const n = cs.length;
+    if (!cs.length || !pivot || !isNum(pivot.i)) return [];
+    const pi = clamp(pivot.i, 0, n - 1);
+    const barsSince = n - 1 - pi;
+    const pd = _pivotDate(cs, pi);
+    const today = _pivotDate(cs, n - 1) || new Date();
+    const daysSince = pd ? Math.round((today - pd) / 86400000) : barsSince;
+    const out = [];
+
+    const calDaysAhead = d => Math.round((d - today) / 86400000);
+
+    /* ① فيبوناتشي زمني — وحدته جلسات تداول */
+    for (const f of FIB_BARS) {
+      const ahead = f - barsSince;
+      if (ahead <= 0) continue;
+      const date = SaudiMarket.addTradingDays(today, ahead);
+      const daysLeft = calDaysAhead(date);
+      if (daysLeft > horizonDays) continue;
+      out.push({
+        label: `فيبوناتشي زمني — ${f} جلسة من الارتكاز`,
+        unit: 'bars', barsAhead: ahead, daysLeft, date, shiftedFromWeekend: false, source: 'fib'
       });
     }
 
-    if (!cands.length) return { ok: true, cycles: [], pivotCount: pv.length, tested: 0, lastPivot: pv[pv.length - 1], note: 'لا مسافة زمنية تتكرّر أكثر مما ينتجه خلط تباعد الارتكازات — عدّ غان/فيبوناتشي هنا بلا أساس تجريبي على هذا السهم' };
-
-    /* تصحيح الاختبارات المتعددة على المرشّحين */
-    const pass = Stats.benjaminiHochberg(cands.map(c => c.pValue), alpha);
-    let kept = cands.filter((c, i) => pass[i]).sort((a, b) => a.pValue - b.pValue || b.lift - a.lift);
-
-    /* دمج المرشّحين المتجاورين (34 و35 و36 دورة واحدة لا ثلاث) */
-    const merged = [];
-    for (const c of kept) {
-      if (merged.some(m => Math.abs(m.cycle - c.cycle) <= Math.max(m.tolerance, c.tolerance))) continue;
-      merged.push(c);
+    /* ② غان تقويمي — وحدته أيام تقويمية، وقد تقع في عطلة فتُزاح صراحةً */
+    if (pd) {
+      for (const g of GANN_DAYS) {
+        const ahead = g - daysSince;
+        if (ahead <= 0 || ahead > horizonDays) continue;
+        const raw = new Date(pd.getTime() + g * 86400000);
+        const shifted = SaudiMarket.nextTradingDay(raw);
+        const wasShifted = shifted.getTime() !== raw.getTime();
+        const bars = Math.max(1, SaudiMarket.tradingDaysBetween(today, shifted));
+        out.push({
+          label: `دورة غان التقويمية — ${g} يوماً من الارتكاز`,
+          unit: 'days', barsAhead: bars, daysLeft: calDaysAhead(shifted), date: shifted,
+          shiftedFromWeekend: wasShifted, source: 'gann'
+        });
+      }
     }
+
+    /* ③ الدورة الذاتية — لا تُدرَج إلا إن كانت منتظمة فعلاً */
+    const dc = dominantPivotCycle(cs, 3);
+    if (dc && dc.reliable) {
+      for (let m = 1; m <= 4; m++) {
+        const ahead = dc.cycle * m - barsSince;
+        if (ahead <= 0) continue;
+        const date = SaudiMarket.addTradingDays(today, ahead);
+        const daysLeft = calDaysAhead(date);
+        if (daysLeft > horizonDays) continue;
+        out.push({
+          label: `دورة السهم الذاتية ×${m} — ${dc.cycle * m} جلسة (اتساق ${dc.consistencyPct}٪)`,
+          unit: 'bars', barsAhead: ahead, daysLeft, date, shiftedFromWeekend: false, source: 'own'
+        });
+      }
+    }
+
+    /* ④ الانعطافات الطيفية — الوحيدة التي تحمل نطاق عدم يقين مقاساً */
+    try {
+      const sp = spectralPro(cs.map(c => c.close), { alpha: 0.05 });
+      if (sp.ok && sp.significant) {
+        for (const t of projectTurnsPro(sp, 120).slice(0, 4)) {
+          const date = SaudiMarket.addTradingDays(today, t.barsAhead);
+          const daysLeft = calDaysAhead(date);
+          if (daysLeft > horizonDays) continue;
+          out.push({
+            label: `انعطاف طيفي — ${t.type === 'valley' ? 'قاع' : 'قمة'} متوقع (دورة ${sp.period} جلسة، p = ${sp.pValueText})${t.sdBars != null ? ` ± ${t.sdBars} جلسة` : ''}`,
+            unit: 'bars', barsAhead: t.barsAhead, daysLeft, date,
+            shiftedFromWeekend: false, source: 'spectral',
+            sdBars: t.sdBars, loBars: t.loBars, hiBars: t.hiBars, usable: t.usable
+          });
+        }
+      }
+    } catch (e) { /* اختياري */ }
+
+    return out.sort((a, b) => a.barsAhead - b.barsAhead);
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     15) النطاق القيمي المرجعي
+     ──────────────────────────────────────────────────────────────────
+     لا يدّعي معرفة «القيمة الحقيقية» — وهي لا تُشتق من الشارت أصلاً بل من
+     الأرباح والميزانية والقطاع. ما يعرضه نطاق مرجعي إحصائي من ثلاث مراسٍ
+     قابلة للتحقق: POC الحجمي، وVWAP مثبّت على آخر ارتكاز مؤكد، ووسط قناة
+     الانحدار — مع تنويه صريح بحدود الطريقة.
+     ════════════════════════════════════════════════════════════════════ */
+  function valueBand(cs) {
+    if (!cs || cs.length < 60) return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — النطاق القيمي يتطلب 60+` };
+    const n = cs.length, price = r2(cs[n - 1].close);
+    const closes = cs.map(c => c.close);
+
+    const vp = volumeProfile(cs, { bins: 60 });
+    const piv = lastConfirmedPivot(cs, 3);
+    const av = piv ? Cumulative.anchoredVWAP(cs, piv.i)[n - 1] : null;
+
+    const reg = Stats.linreg(closes);
+    const fitted = closes.map((_, i) => reg.slope * i + reg.intercept);
+    const resid = closes.map((v, i) => v - fitted[i]);
+    const rsd = Stats.sd(resid);
+    const regMid = fitted[n - 1];
+
+    const anchors = [];
+    if (vp) anchors.push({ label: 'نقطة التحكّم الحجمية (POC)', value: vp.poc, key: 'poc' });
+    if (isNum(av)) anchors.push({ label: `VWAP مثبّت على آخر ارتكاز مؤكد (${piv.type === 'L' ? 'قاع' : 'قمة'} ${piv.price})`, value: r2(av), key: 'avwap' });
+    anchors.push({ label: 'وسط قناة الانحدار الخطي', value: r2(regMid), key: 'reg' });
+
+    if (anchors.length < 2) return { ok: false, reason: 'تعذّر بناء مرساتين مستقلتين على هذه البيانات' };
+
+    const vals = anchors.map(a => a.value);
+    const center = Stats.mean(vals);
+    const spread = Stats.sd(vals);
+    const bandLow = Math.min.apply(null, vals), bandHigh = Math.max.apply(null, vals);
+    const z = spread > 0 ? (price - center) / spread : 0;
+    const devPct = (price - center) / center * 100;
+
+    const position = Math.abs(z) < 1
+      ? 'داخل نطاق المراسي — السعر متسق مع مرجعيّاته'
+      : z >= 1
+        ? 'فوق نطاق المراسي — السعر متقدّم على مرجعيّاته'
+        : 'تحت نطاق المراسي — السعر متأخّر عن مرجعيّاته';
 
     return {
       ok: true,
-      pivotCount: pv.length,
-      tested: cands.length,
-      permutations: nPerm,
-      cycles: merged.slice(0, 5),
-      lastPivot: pv[pv.length - 1],
-      note: merged.length
-        ? `${merged.length} دورة زمنية اجتازت اختبار التبديل (${nPerm} خلطة) وتصحيح Benjamini-Hochberg من ${cands.length} مرشّحاً`
-        : `لا دورة اجتازت التصحيح من ${cands.length} مرشّحاً — عدّ غان/فيبوناتشي على هذا السهم لا يتفوّق على الصدفة`
+      price, anchors,
+      bandLow: r2(bandLow), bandHigh: r2(bandHigh), center: r2(center),
+      spread: r2(spread),
+      deviationPct: r2(devPct),
+      zVsAnchors: r2(z),
+      position,
+      valueArea: vp ? { low: vp.valueAreaLow, high: vp.valueAreaHigh, poc: vp.poc } : null,
+      regressionLow: r2(regMid - 2 * rsd),
+      regressionHigh: r2(regMid + 2 * rsd),
+      regressionR2: r3(reg.r2),
+      caveat: 'هذا نطاق مرجعي إحصائي من سلوك السعر والحجم فقط. ليس تقييماً أساسياً: لا يدخل فيه ربح الشركة ولا ميزانيتها ولا توزيعاتها ولا وضع قطاعها، وهي المحدّدات الفعلية للقيمة. تباعد السعر عن هذا النطاق ليس بذاته سبباً للشراء أو البيع.'
     };
   }
 
   /* ════════════════════════════════════════════════════════════════════
-     16) أهداف الفراكتال — هدف مشتقّ من البنية لا من مضاعف مخترع
+     16) الخطة التنفيذية — هدف من البنية، ووقف خارج الضجيج
      ──────────────────────────────────────────────────────────────────
-     «الهدف = 2R» ليس تحليلاً بل تعريفاً. الهدف الفراكتالي يأتي من بنية
-     السوق فعلياً: أقرب قمة فراكتالية لم تُكسر بعد هي المكان الذي توجد
-     فيه أوامر بيع معلّقة، وهي أول ما يوقف الحركة.
-     ثم الحركة المقيسة (measured move): ارتفاع آخر ساق دافعة مُسقَط من
-     قاعدة الاختراق — وهو الهدف الذي يفترض تكرار السلوك لا مضاعفة رقم.
+     ثلاثة عيوب في النسخة السابقة:
+
+     (1) الهدف كان يُعرَّف بأنه entry + 2×المخاطرة، ثم يُعرض «R:R = 1:2»
+         كأنه نتيجة تحليل. هذا حشو تعريفي: النسبة 2 لأننا كتبنا 2، لا لأن
+         السوق يعرض فرصة بهذه النسبة. هنا الهدف أقرب مستوى بنيوي فعلي،
+         والنسبة تُحسب منه — فتختلف من سهم لآخر لأنها تقيس شيئاً حقيقياً.
+
+     (2) مسافة الوقف كانت max(0.5×ATR, 0.5٪) — أي داخل ضجيج الجلسة
+         العادي، فيُضرب الوقف قبل أن تتاح للفكرة فرصة. الافتراضي هنا
+         1.5×ATR أو خلف أقرب مستوى بنيوي، أيّهما أبعد.
+
+     (3) لم يكن هناك مفهوم «صفقة غير مجدية» إطلاقاً: كل حالة تُنتج خطة.
+         الآن إن أعطى أقرب مستوى بنيوي عائداً/مخاطرة أقل من الحد الأدنى،
+         تُعلَن الخطة غير مجدية صراحةً بدل تضخيم الهدف قسراً لتجميل النسبة.
      ════════════════════════════════════════════════════════════════════ */
-  function fractalTargets(candles, opts = {}) {
-    const n = candles.length;
-    if (n < 25) return { ok: false, reason: 'شموع غير كافية' };
-    const price = candles[n - 1].close;
-    const k = opts.k ?? 2;                        /* فراكتال بيل ويليامز = 2 */
+  function executionPlan(cs, opt) {
+    opt = opt || {};
+    const dirUp = opt.dirUp !== false;
+    const atrMult = opt.atrStopMult == null ? 1.5 : opt.atrStopMult;
+    const minRR = opt.minRR == null ? 1.5 : opt.minRR;
+    if (!cs || cs.length < 30) return { ok: false, reason: 'شموع غير كافية لبناء خطة' };
 
-    const up = [], dn = [];                       /* قيعان / قمم فراكتالية */
-    for (let i = k; i < n - k; i++) {
-      let isLow = true, isHigh = true;
-      for (let j = 1; j <= k; j++) {
-        if (!(candles[i].low < candles[i - j].low && candles[i].low < candles[i + j].low)) isLow = false;
-        if (!(candles[i].high > candles[i - j].high && candles[i].high > candles[i + j].high)) isHigh = false;
-      }
-      if (isLow) up.push({ i, price: candles[i].low });
-      if (isHigh) dn.push({ i, price: candles[i].high });
+    const n = cs.length, entry = r2(cs[n - 1].close);
+    const a = atr(cs, 14);
+    if (!isNum(a) || a <= 0) return { ok: false, reason: 'تعذّر حساب ATR' };
+
+    const lv = structuralLevels(cs, entry);
+    const atrStop = dirUp ? entry - atrMult * a : entry + atrMult * a;
+
+    /* الوقف: خلف أقرب مستوى بنيوي أو 1.5×ATR — أيّهما أبعد عن الدخول.
+       «خلف» تعني بهامش ربع ATR حتى لا يقع الوقف على المستوى نفسه، حيث
+       تتكدّس الأوامر وتُلتقط السيولة. */
+    const pad = 0.25 * a;
+    let stop, stopSource;
+    if (dirUp) {
+      const sup = lv.supports.length ? lv.supports[0] : null;
+      const structStop = sup != null ? sup - pad : null;
+      if (structStop != null && structStop < atrStop) { stop = structStop; stopSource = `خلف أقرب دعم بنيوي (${r2(sup)}) بهامش ربع ATR`; }
+      else { stop = atrStop; stopSource = `${atrMult}×ATR تحت الدخول — لا دعم بنيوي أبعد من ذلك`; }
+    } else {
+      const res = lv.resistances.length ? lv.resistances[0] : null;
+      const structStop = res != null ? res + pad : null;
+      if (structStop != null && structStop > atrStop) { stop = structStop; stopSource = `فوق أقرب مقاومة بنيوية (${r2(res)}) بهامش ربع ATR`; }
+      else { stop = atrStop; stopSource = `${atrMult}×ATR فوق الدخول — لا مقاومة بنيوية أبعد من ذلك`; }
     }
-    if (!dn.length || !up.length) return { ok: false, reason: 'لا فراكتالات مكتملة' };
+    stop = r2(stop);
+    const risk = Math.abs(entry - stop);
+    if (!(risk > 0)) return { ok: false, reason: 'مسافة مخاطرة صفرية' };
 
-    /* قمة فراكتالية «حيّة» = فوق السعر ولم يُغلق فوقها بعد تكوّنها */
-    const liveHighs = dn.filter(f => f.price > price * 1.001 &&
-      !candles.slice(f.i + k + 1).some(c => c.close > f.price))
-      .sort((a, b) => a.price - b.price);
-    const liveLows = up.filter(f => f.price < price * 0.999)
-      .sort((a, b) => b.price - a.price);
+    /* الهدف: أقرب مستوى بنيوي في اتجاه الصفقة. إن لم يوجد، تُستعمل القمة
+       الفراكتالية الحيّة، وإن غابت أيضاً يُصرَّح بغياب هدف بنيوي. */
+    const ft = fractalTargets(cs, { k: 2 });
+    let target = null, targetSource = null;
+    if (dirUp) {
+      if (lv.resistances.length) { target = lv.resistances[0]; targetSource = 'أقرب مقاومة بنيوية (ارتكاز مؤكد فوق السعر)'; }
+      else if (ft.ok && ft.target1) { target = ft.target1; targetSource = 'أقرب قمة فراكتالية غير مكسورة'; }
+    } else {
+      if (lv.supports.length) { target = lv.supports[0]; targetSource = 'أقرب دعم بنيوي (ارتكاز مؤكد تحت السعر)'; }
+      else if (ft.ok && ft.support) { target = ft.support; targetSource = 'أقرب قاع فراكتالي غير مكسور'; }
+    }
 
-    /* الحركة المقيسة: آخر ساق من قاع فراكتالي إلى قمة فراكتالية تلته */
-    let measured = null;
-    const lastLow = up[up.length - 1], lastHigh = dn[dn.length - 1];
-    if (lastLow && lastHigh) {
-      const legLow = up.filter(f => f.i < lastHigh.i).pop();
-      if (legLow && lastHigh.price > legLow.price) {
-        const legH = lastHigh.price - legLow.price;
-        const base = liveLows[0] ? liveLows[0].price : legLow.price;
-        measured = round(base + legH);
+    let viable = true, viabilityNote = '';
+    let rr1 = null;
+    if (target == null) {
+      viable = false;
+      viabilityNote = dirUp
+        ? 'لا يوجد أي مستوى بنيوي فوق السعر ضمن التاريخ المحمّل — السهم في اكتشاف سعري. لا يمكن اشتقاق هدف من البنية، ووضع هدف بمضاعف ثابت هنا اختراع لا تحليل. وسّع النطاق الزمني أو تعامل معه بوقف متحرّك بلا هدف ثابت.'
+        : 'لا يوجد أي مستوى بنيوي تحت السعر ضمن التاريخ المحمّل — لا يمكن اشتقاق هدف من البنية.';
+      target = null;
+    } else {
+      const reward = Math.abs(target - entry);
+      rr1 = r2(reward / risk);
+      if (rr1 < minRR) {
+        viable = false;
+        viabilityNote = `أقرب مستوى بنيوي (${target}) يبعد ${r2(reward)} ر.س بينما المخاطرة ${r2(risk)} ر.س ⇒ العائد/المخاطرة 1:${rr1}، دون الحد الأدنى 1:${minRR}. الهدف لم يُضخَّم للوصول إلى النسبة: تضخيمه يجعل الرقم جميلاً والصفقة كما هي.`;
       }
     }
 
-    const t1 = liveHighs[0] ? round(liveHighs[0].price) : null;
-    const t2 = liveHighs[1] ? round(liveHighs[1].price) : null;
+    const lim = SaudiMarket.dailyLimits(entry);
+    const minSessions = target != null ? SaudiMarket.minSessionsBetween(entry, target) : null;
 
     return {
       ok: true,
-      price: round(price),
-      target1: t1,
-      target2: t2,
-      measuredMove: measured,
-      /* الهدف المعتمد: أقرب قمة حيّة، وإلا الحركة المقيسة */
-      target: t1 ?? measured,
-      targetSource: t1 ? 'أقرب قمة فراكتالية غير مكسورة' : (measured ? 'حركة مقيسة من آخر ساق دافعة' : null),
-      upsidePct: (t1 ?? measured) ? round(((t1 ?? measured) - price) / price * 100, 2) : null,
-      support: liveLows[0] ? round(liveLows[0].price) : null,
-      supportPct: liveLows[0] ? round((price - liveLows[0].price) / price * 100, 2) : null,
-      highCount: liveHighs.length, lowCount: liveLows.length,
-      /* مساحة نظيفة: لا قمة فراكتالية بين السعر والهدف = طريق مفتوح */
-      cleanRunway: liveHighs.length > 0 && liveHighs[0].price / price - 1 > 0.03
+      dirUp, viable, viabilityNote,
+      entry, stop,
+      riskPerShare: r2(risk), riskPct: r2(risk / entry * 100), stopSource,
+      target1: target, rr1, targetSource,
+      target2: dirUp ? (lv.resistances[1] != null ? lv.resistances[1] : null) : (lv.supports[1] != null ? lv.supports[1] : null),
+      atr: a, atrStopMult: atrMult, minRR,
+      dailyLimitUp: lim.up, dailyLimitDown: lim.down, dailyLimitPct: lim.limitPct,
+      minSessionsToTarget: minSessions,
+      supports: lv.supports.slice(0, 3), resistances: lv.resistances.slice(0, 3)
     };
   }
 
-  /* ════════════════════════════════════════════════════════════════════ */
+  /* ════════════════════════════════════════════════════════════════════
+     17) الاختبار التاريخي للإشارة الطيفية
+     ──────────────────────────────────────────────────────────────────
+     • بلا تسرّب زمني: عند كل شمعة يُعاد بناء الطيف من البيانات المتاحة
+       حتى تلك اللحظة فقط.
+     • خط الأساس ليس عيّنة عشوائية بل التوزيع غير المشروط الكامل — كل شمعة
+       مؤهّلة في الاتجاهين. لذلك النتيجة حتمية: خمس تشغيلات تعطي رقماً
+       متطابقاً حرفياً. النسخة السابقة كانت تستعمل Math.random فتغيّر حكمها
+       بين ضغطتي زر.
+     • المحاكاة متحفّظة: إن لامست شمعة واحدة الوقف والهدف معاً تُحتسب وقفاً،
+       لأن ترتيبهما داخل الجلسة غير معلوم من بيانات يومية.
+     • لا حكم دون 20 إشارة: فارق 5 نقاط بعيّنة 5 صفقات ضجيج بحت.
+     ════════════════════════════════════════════════════════════════════ */
+  const BT_MIN_SIGNALS = 20;
 
+  function _simulateTrade(cs, entryIdx, dirUp, stopDist, rewardRisk, maxHold) {
+    const entry = cs[entryIdx].close;
+    const stop = dirUp ? entry - stopDist : entry + stopDist;
+    const target = dirUp ? entry + rewardRisk * stopDist : entry - rewardRisk * stopDist;
+    const end = Math.min(cs.length - 1, entryIdx + maxHold);
+    for (let i = entryIdx + 1; i <= end; i++) {
+      const c = cs[i];
+      const hitStop = dirUp ? c.low <= stop : c.high >= stop;
+      const hitTgt = dirUp ? c.high >= target : c.low <= target;
+      /* متحفّظ: التلامس المزدوج يُحتسب وقفاً */
+      if (hitStop) return { r: -1, pnlPct: (dirUp ? stop - entry : entry - stop) / entry * 100, bars: i - entryIdx, exit: 'stop' };
+      if (hitTgt) return { r: rewardRisk, pnlPct: (dirUp ? target - entry : entry - target) / entry * 100, bars: i - entryIdx, exit: 'target' };
+    }
+    const out = cs[end].close;
+    const pnl = dirUp ? out - entry : entry - out;
+    return { r: pnl / stopDist, pnlPct: pnl / entry * 100, bars: end - entryIdx, exit: 'time' };
+  }
+
+  function _summarize(trades) {
+    const count = trades.length;
+    if (!count) return null;
+    const wins = trades.filter(t => t.r > 0).length;
+    const rs = trades.map(t => t.r);
+    const grossWin = trades.filter(t => t.r > 0).reduce((s, t) => s + t.r, 0);
+    const grossLoss = Math.abs(trades.filter(t => t.r < 0).reduce((s, t) => s + t.r, 0));
+    const meanR = Stats.mean(rs), sdR = Stats.sd(rs);
+    let eq = 0, peak = 0, dd = 0;
+    for (const t of trades) { eq += t.r; if (eq > peak) peak = eq; if (peak - eq > dd) dd = peak - eq; }
+    const ci = Stats.wilsonCI(wins, count);
+    return {
+      count, wins,
+      winRatePct: r2(wins / count * 100),
+      winRateCI: [r2(ci[0] * 100), r2(ci[1] * 100)],
+      expectancyR: r3(meanR),
+      avgPnlPct: r2(Stats.mean(trades.map(t => t.pnlPct))),
+      profitFactor: grossLoss > 0 ? r2(grossWin / grossLoss) : null,
+      sharpePerTrade: sdR > 0 ? r3(meanR / sdR) : null,
+      maxDrawdownR: r2(dd),
+      avgBarsHeld: r2(Stats.mean(trades.map(t => t.bars)))
+    };
+  }
+
+  function backtestSpectral(cs, opt) {
+    opt = opt || {};
+    const cfg = {
+      atrStopMult: opt.atrStopMult == null ? 1.5 : opt.atrStopMult,
+      rewardRisk: opt.rewardRisk == null ? 2 : opt.rewardRisk,
+      maxHoldBars: opt.maxHoldBars == null ? 20 : opt.maxHoldBars,
+      alpha: opt.alpha == null ? 0.05 : opt.alpha,
+      warmup: opt.warmup == null ? 100 : opt.warmup,
+      refitEvery: opt.refitEvery == null ? 5 : opt.refitEvery,
+      triggerBars: opt.triggerBars == null ? 2 : opt.triggerBars
+    };
+    if (!cs || cs.length < cfg.warmup + cfg.maxHoldBars + 20)
+      return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — الاختبار يتطلب ${cfg.warmup + cfg.maxHoldBars + 20}+ (إحماء ${cfg.warmup} جلسة ثم فترة اختبار)`, config: cfg };
+
+    const closes = cs.map(c => c.close);
+    const atrA = atrSeries(cs, 14);
+    const lastEntry = cs.length - 1 - cfg.maxHoldBars;
+
+    const sigTrades = [], baseTrades = [];
+    let spec = null, specAt = -1;
+
+    for (let t = cfg.warmup; t <= lastEntry; t++) {
+      const a = atrA[t];
+      if (!isNum(a) || a <= 0) continue;
+      const stopDist = cfg.atrStopMult * a;
+
+      /* خط الأساس: كل شمعة مؤهّلة في الاتجاهين — توزيع كامل بلا عشوائية */
+      baseTrades.push(_simulateTrade(cs, t, true, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
+      baseTrades.push(_simulateTrade(cs, t, false, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
+
+      /* الطيف يُعاد بناؤه من البيانات المتاحة حتى t فقط */
+      if (specAt < 0 || t - specAt >= cfg.refitEvery) {
+        spec = spectralPro(closes.slice(0, t + 1), { alpha: cfg.alpha });
+        specAt = t;
+      }
+      if (!spec || !spec.ok || !spec.significant) continue;
+
+      /* الطور يُقدَّم بعدد الجلسات المنقضية منذ آخر ملاءمة، فلا نعيد
+         الحساب كل شمعة دون أن نفقد صحة التوقيت. */
+      const drift = t - specAt;
+      const shifted = {
+        cycles: spec.cycles.map(c => Object.assign({}, c, { phase: wrap(c.phase + TAU * c.freq * drift) }))
+      };
+      const turns = projectTurnsPro(shifted, Math.max(6, cfg.triggerBars * 3));
+      const nv = turns.find(x => x.type === 'valley');
+      const np = turns.find(x => x.type === 'peak');
+      if (nv && nv.barsAhead <= cfg.triggerBars && nv.usable)
+        sigTrades.push(_simulateTrade(cs, t, true, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
+      else if (np && np.barsAhead <= cfg.triggerBars && np.usable)
+        sigTrades.push(_simulateTrade(cs, t, false, stopDist, cfg.rewardRisk, cfg.maxHoldBars));
+    }
+
+    const S = _summarize(sigTrades), B = _summarize(baseTrades);
+    const base = { config: cfg, signalCount: sigTrades.length, baselineCount: baseTrades.length, signal: S, baseline: B };
+
+    if (!S || !B) return Object.assign({ ok: false, reason: 'لم تصدر أي إشارة طيفية على هذا السهم — لا شيء يُقارن' }, base);
+    if (S.count < BT_MIN_SIGNALS)
+      return Object.assign({
+        ok: false,
+        reason: `${S.count} إشارة فقط — الحد الأدنى ${BT_MIN_SIGNALS} قبل إصدار أي حكم إحصائي. النسخة السابقة كانت تصدر حكماً «✅ تتفوّق» من 5 صفقات، وفارق 5 نقاط بهذه العيّنة ضجيج بحت.`
+      }, base);
+
+    const pValue = Stats.twoProportionP(S.wins, S.count, B.wins, B.count);
+    const edgeWin = r2(S.winRatePct - B.winRatePct);
+    const edgeExp = r3(S.expectancyR - B.expectancyR);
+    const significant = pValue < cfg.alpha && edgeWin > 0;
+
+    return Object.assign({
+      ok: true,
+      edgeWinRatePct: edgeWin,
+      edgeExpectancyR: edgeExp,
+      pValue: r4(pValue), pValueText: Stats.pText(pValue),
+      significant,
+      verdict: significant
+        ? `الإشارة الطيفية تتفوّق على خط الأساس بفارق ${edgeWin} نقطة في نسبة الربح و${edgeExp} R في التوقّع الرياضي، بقيمة احتمال ${Stats.pText(pValue)} على ${S.count} صفقة. النتيجة تخصّ هذا السهم وهذا التاريخ ولا تُعمَّم.`
+        : `الفارق عن خط الأساس (${edgeWin} نقطة، ${edgeExp} R) لا يُميَّز عن الصدفة عند مستوى ${cfg.alpha} (p = ${Stats.pText(pValue)}). على هذا السهم لا تُقدّم الإشارة الطيفية أفضلية مقاسة، والامتناع عن الحكم الإيجابي هو النتيجة الأمينة.`
+    }, base);
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     18) الواجهة المصدَّرة
+     ════════════════════════════════════════════════════════════════════ */
   return {
-    version: '2.1.0',
+    VERSION, SESSIONS_PER_YEAR,
     Stats, SaudiMarket, Cumulative,
-    seededRandom, seedFromString,
-    detectPivots, lastConfirmedPivot, dominantPivotCycle,
-    periodogram, fisherGTest, fitSinusoid, spectral, projectCycleTurns,
-    periodogramAt, refinePeakFreq, spectralPro, projectTurnsPro,
-    cycleCoherence, empiricalPivotCycles, fractalTargets,
-    forecastARIMA,
-    volumeProfile, valueBand, volatility, atr,
-    timeWindows, timeConfluence, FIB_BARS, GANN_CALENDAR_DAYS,
-    simulateTrade, summarize, backtestSpectral, BT_DEFAULTS,
-    structuralLevels, executionPlan,
-    auditCandles, sanitizeCandles,
-    _internal: { num, clamp, round, isNum }
+
+    /* بيانات */
+    sanitizeCandles, auditCandles,
+
+    /* مدى وتذبذب */
+    atr, atrSeries, volatility,
+
+    /* بنية */
+    detectPivots, lastConfirmedPivot, dominantPivotCycle, structuralLevels,
+    fractalTargets, volumeProfile, valueBand,
+
+    /* دورات وتنبؤ */
+    spectral, spectralPro, projectTurnsPro, projectCycleTurns,
+    forecastARIMA, cycleCoherence, empiricalPivotCycles,
+
+    /* زمن */
+    timeConfluence, timeWindows,
+
+    /* تنفيذ واختبار */
+    executionPlan, backtestSpectral, BT_MIN_SIGNALS
   };
 });
