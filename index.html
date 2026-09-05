@@ -4463,7 +4463,8 @@ async function runAI(){
         +(vol.ok?`\n- التذبذب اليومي ${vol.dailyPct}% | السنوي ${vol.annualPct}%`:'')
         +(sp?`\n- التحليل الطيفي: دورة ${sp.dominantPeriod} جلسة، p=${sp.pValueText} (${sp.isSignificant?'دالة إحصائياً':'غير دالة — لا دورة يُعتمد عليها'})`:'')
         +(fc.ok?`\n- تنبؤ ARIMA لخمس جلسات: ${fc.forecast} بفاصل ثقة 95% [${fc.lo}, ${fc.hi}] — ${fc.meaningful?'مميّز عن لا تغيّر':'غير مميّز إحصائياً عن لا تغيّر'}`:'')
-        +(plan?`\n- خطة محسوبة: دخول ${plan.entry} | وقف ${plan.stop} (${plan.stopSource}) | هدف ${plan.target1} (${plan.targetSource}) | R:R 1:${plan.rr1}${plan.viable?'':' — مصنّفة غير مجدية'}`:'')
+        +(plan&&plan.ok?`\n- خطة محسوبة: دخول ${plan.entry} | وقف ${plan.stop} (${plan.stopSource}) | هدف ${plan.target1} (${plan.targetSource}) | R:R 1:${plan.rr1}${plan.viable?'':' — مصنّفة غير مجدية'}`
+           :(plan?`\n- لا خطة تنفيذية: ${plan.reason}`:''))
         +`\n- حدّ التذبذب اليومي السعودي: ±10%`;
     }
   }catch(e){console.warn('AI context build failed',e);}
@@ -5817,7 +5818,11 @@ function buildExecutionPlan(price,pivot,tat,ind,dirUp,candles){
      ══════════════════════════════════════════════════════════════════ */
   if(!window.KSAEngine||!candles||!candles.length)return null;
   const plan=KSAEngine.executionPlan(candles,{dirUp});
-  if(!plan.ok)return null;
+  /* 🛠️ لا تُبتلع الخطة غير القابلة للبناء. المحرك يُرجع ok:false مع سبب
+     صريح (أشيعه: لا مستوى بنيوي في اتجاه الصفقة ⇒ السهم في اكتشاف سعري).
+     إعادة null هنا كانت تمحو السبب، فيقرأ المستخدم «تعذّر بناء خطة» بلا
+     أن يعرف أن السبب قابل للمعالجة بتوسيع النطاق الزمني. */
+  if(!plan.ok)return plan;
   /* نقطة الارتكاز تبقى مرجعاً سياقياً فقط — لا مصدراً لحساب المخاطرة */
   const pivotPrice=pivot?(pivot.p??pivot.price):null;
   plan.pivotPrice=pivotPrice!=null?+pivotPrice.toFixed(2):null;
@@ -6420,7 +6425,7 @@ async function smartTimingAnalysis() {
 
       <div style="${SEC}border-color:rgba(255,215,0,.3);">
         <div style="${HEAD}">7️⃣ السيناريو التنفيذي وإدارة المخاطر</div>
-        ${plan ? `
+        ${plan && plan.ok ? `
         <div style="${ROW}">📈 <b>الميل المستنتج:</b> <span style="color:${dirUp ? '#0ecf7e' : '#f04458'};font-weight:800">${signal}</span>
           (من نوع الارتكاز المؤكد: ${pivot.type === 'L' ? 'قاع' : 'قمة'})</div>
         <div style="${ROW}">✅ <b>شرط التأكيد قبل الدخول:</b> ${plan.confirmCondition}</div>
@@ -6459,7 +6464,11 @@ async function smartTimingAnalysis() {
           السهم تحرّك كثيراً منذ ذلك الانعكاس. الوقف والهدف أعلاه محسوبان من السعر الحالي والبنية الحالية،
           والارتكاز مرجع زمني للسياق لا مصدر لحساب المخاطرة.
         </div>` : ''}
-        ` : '<div style="color:#9aa4b8">تعذّر بناء خطة تنفيذية موثوقة على هذه البيانات.</div>'}
+        ` : `<div style="padding:10px 12px;background:rgba(240,68,88,.07);border:1px solid rgba(240,68,88,.28);border-radius:8px">
+              <div style="font-weight:800;color:#f04458;margin-bottom:5px">⛔ لا خطة تنفيذية على هذه البيانات</div>
+              <div style="font-size:12.5px;line-height:1.85;color:#c8d0e0">${(plan&&plan.reason)||'تعذّر بناء خطة تنفيذية موثوقة.'}</div>
+              ${plan&&plan.entry!=null?`<div style="font-size:11.5px;color:#9aa4b8;margin-top:6px">للسياق: السعر ${plan.entry} · الوقف المحسوب ${plan.stop} (${plan.stopSource}) · ATR ${plan.atr}</div>`:''}
+            </div>`}
       </div>
 
       <div style="${SEC}border-color:rgba(240,68,88,.25);background:rgba(240,68,88,.04);margin-bottom:0;">
