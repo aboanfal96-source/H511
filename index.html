@@ -439,6 +439,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <button class="pat-btn" id="pat-wolfe-btn" onclick="togglePattern('wolfe')"><span>🐺</span> موجة الذئب</button>
       <button class="pat-btn" id="pat-chan-btn" onclick="togglePattern('channel')"><span>📐</span> القناة السعرية</button>
       <button class="pat-btn" id="pat-frac-btn" onclick="togglePattern('frac')"><span>🎯</span> الفراكتال</button>
+      <button class="pat-btn" id="pat-card-btn" onclick="makeCard()" style="border-color:rgba(245,200,66,.45);color:#f5c842"><span>🖼</span> بطاقة النشر</button>
       <button class="pat-clear" onclick="clearPatterns()">مسح الرسم ✕</button>
     </div>
     <div class="pat-info" id="pat-info"></div>
@@ -7203,7 +7204,7 @@ function ddRenderTable() {
         <span title="أدلة الفئة أ" style="color:#0ecf7e;font-weight:700">${r.ev.A.length}أ</span> ·
         <span title="أدلة داعمة" style="color:#4a9eff">${r.ev.B.length}ب</span>${r.ev.C.length ? ` · <span title="أدلة مضادة" style="color:#f04458">${r.ev.C.length}ج</span>` : ''}
       </td>
-      <td><button onclick="event.stopPropagation();ddReport('${r.sym}')" style="background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.25);color:#FFD700;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:calc(var(--base-font)*0.75);font-family:inherit">القرار كاملاً</button></td>
+      <td><button onclick="event.stopPropagation();ddReport('${r.sym}')" style="background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.25);color:#FFD700;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:calc(var(--base-font)*0.75);font-family:inherit">القرار كاملاً</button>&nbsp;<button onclick="event.stopPropagation();makeCard('${r.sym}')" title="بطاقة جاهزة للنشر" style="background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.3);color:#a78bfa;padding:1px 7px;border-radius:3px;cursor:pointer;font-size:calc(var(--base-font)*0.75);font-family:inherit">🖼</button></td>
     </tr>`).join('');
 }
 
@@ -8347,5 +8348,395 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
 })();
 </script>
 
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   🖼 مولّد بطاقة الإشارة — بطاقة أعلاها البيانات وأسفلها الشارت
+   ──────────────────────────────────────────────────────────────────────
+   يبني صورة PNG واحدة (1080×1500) جاهزة للنشر في إكس أو تلقرام، مع نصّ
+   تغريدة ونصّ تلقرام جاهزين للنسخ. لا ينشر شيئاً بنفسه — أنت تراجع ثم
+   تنشر. المنصة لا تملك مفاتيح أي حساب.
+
+   بوّابة إلزامية: أي سهم على بيانات `initDemo` العشوائية لا تُبنى له
+   بطاقة إطلاقاً. نشر سعر دخول مُختلَق أسوأ من عدم النشر.
+   ══════════════════════════════════════════════════════════════════════ */
+(function(){
+  const W=1080,H=1500,PAD=54;
+  const C={bg0:'#05070f',bg1:'#0b1020',card:'#0d1224',line:'rgba(255,255,255,.08)',
+    t1:'#e6ecf7',t2:'#8fa0bd',t3:'#5a6a85',up:'#0ecf7e',dn:'#f04458',gd:'#f5c842',
+    pu:'#a78bfa',bl:'#4a9eff',cy:'#22d3ee'};
+  const AR="'IBM Plex Sans Arabic',system-ui,sans-serif";
+  const MN="'IBM Plex Mono',ui-monospace,monospace";
+
+  let _lastCard=null;   /* {sym,canvas,tweet,tg} */
+
+  const f2=v=>(v==null||!isFinite(v))?'—':(+v).toFixed(2);
+  /* تمييز العدد في العربية: 3–10 جمع، و11 فأكثر مفرد منصوب */
+  const jal=n=>(n>=3&&n<=10)?'جلسات':'جلسة';
+  const rng=(a,b)=>`${a}–${b} ${jal(b)}`;
+  const stkName=sym=>(typeof STKS!=='undefined'?(STKS.find(s=>s.sym===sym)?.name||''):'');
+
+  /* ── تحويل عدد الجلسات إلى تاريخ تداول سعودي إن توفّر المحرك ── */
+  function barsToDate(bars){
+    if(bars==null||!isFinite(bars))return null;
+    try{
+      if(window.KSAEngine&&KSAEngine.SaudiMarket&&KSAEngine.SaudiMarket.addTradingDays)
+        return KSAEngine.SaudiMarket.addTradingDays(new Date(),Math.round(bars))
+          .toLocaleDateString('ar-SA',{day:'numeric',month:'long'});
+    }catch(e){}
+    const d=new Date();let left=Math.round(bars);
+    while(left>0){d.setDate(d.getDate()+1);const w=d.getDay();if(w!==5&&w!==6)left--;}
+    return d.toLocaleDateString('ar-SA',{day:'numeric',month:'long'});
+  }
+
+  /* ══ جمع أرقام البطاقة من مصدر واحد متّسق ══════════════════════════
+     الأولوية لغرفة القرار: أرقامها مرّت على `tpCoherent` فدخولها ووقفها
+     وهدفها مشتقّة كلها من نقطة دخول واحدة. خطة `calcTradePlan` بديل. */
+  function collect(sym){
+    const cs=G.cans[sym];
+    if(!cs||cs.length<30)return{err:'شموع غير كافية لبناء بطاقة'};
+    if(G.demo.has(sym))return{err:'هذا السهم على بيانات تجريبية عشوائية — لا تُبنى له بطاقة'};
+
+    const price=G.pr[sym]||cs[cs.length-1].close, pct=G.pc[sym]||0;
+    let entry,stop,target,target2,rr,label,labelColor,src,betterEntry=null;
+
+    const dd=(typeof DD!=='undefined'&&DD.results)?DD.results.find(r=>r.sym===sym):null;
+    if(dd){
+      entry=dd.execPrice;stop=dd.tp.stop;target=dd.tp.targets[0]?.price;
+      target2=dd.tp.targets[1]?.price;rr=dd.rr;label=dd.label;labelColor=dd.color;
+      src='غرفة القرار';
+    }else{
+      const tp=calcTradePlan(sym);
+      if(!tp)return{err:'تعذّر بناء خطة دخول/وقف/هدف لهذا السهم'};
+      entry=tp.entry;stop=tp.stop;target=tp.targets[0]?.price;target2=tp.targets[1]?.price;
+      rr=tp.rrFirst;src='خطة الشارت';
+      const v=calcEntryVerdict(sym,tp);
+      label=v?.verdict||(tp.planType==='breakout'?'اختراق':'ارتداد');
+      labelColor=v?.vColor||C.gd;
+      if(v&&!v.isCurrentGood&&v.bestEntry)betterEntry={p:v.bestEntry,why:v.bestEntryWhy};
+    }
+    if(!(stop<entry))return{err:'الوقف ليس تحت الدخول — رقم مكسور، لا تُنشر بطاقة عليه'};
+    const risk=+(entry-stop).toFixed(2);
+    const upPct=target?+((target-entry)/entry*100).toFixed(1):null;
+
+    /* ── التوقيت: نافذة، لا تاريخ قاطع ── */
+    let tRow=null;try{tRow=_timeEntry(sym);}catch(e){}
+    let timing=null;
+    if(tRow&&tRow.state==='ok'){
+      const isValley=tRow.type==='valley';
+      const b=isValley?tRow.bars:(tRow.valleyBars!=null?tRow.valleyBars:tRow.bars);
+      const sd=isValley?tRow.sd:(tRow.valleySd!=null?tRow.valleySd:tRow.sd);
+      timing={
+        measured:tRow.tier==='cycle',
+        period:tRow.period||null,
+        kind:isValley?'قاع':'قمة',
+        bars:b,sd:sd,
+        lo:sd!=null?Math.max(0,Math.round(b-sd)):null,
+        hi:sd!=null?Math.round(b+sd):null,
+        date:barsToDate(b),
+        src:tRow.src||'—',
+        usable:!!tRow.usable
+      };
+    }
+
+    /* ── نافذة النشاط: من الدورة إن وُجدت، وإلا مدى افتراضي معلن ── */
+    /* النشاط يبدأ بعد القاع لا معه — فيُحسب من الحافة العليا للنافذة،
+       بعرض ربع الدورة. بدون هذا يتكرّر نفس المدى مرتين في البطاقة. */
+    let act;
+    if(timing&&timing.measured&&timing.hi!=null){
+      const wdt=Math.max(2,Math.round((timing.period||12)/4));
+      act=`${rng(timing.hi,timing.hi+wdt)} (بعد القاع المتوقّع)`;
+    }else act='٣–٧ جلسات — تقدير عام غير مقاس على السهم';
+
+    /* ── النماذج ── */
+    ensurePatternData(sym);
+    const harm=G.harmCache?.[sym],ew=G.ewCache?.[sym],fr=G.fracCache?.[sym];
+    const tags=[];
+    if(harm)tags.push(`🦋 ${harm.name} ${harm.sig==='شراء'?'صعودي':'هبوطي'}${harm.live?` ${harm.completion}٪`:''}`);
+    if(ew&&ew.wave!==0)tags.push(`🌊 ${ew.desc}`);
+    if(fr&&fr.ok&&fr.target1)tags.push(`🎯 قمة فراكتالية ${f2(fr.target1)}`);
+
+    return{sym,name:stkName(sym),price,pct,entry,stop,target,target2,rr,risk,upPct,
+      label,labelColor:labelColor||C.gd,src,timing,act,tags,cs,betterEntry,
+      demo:false};
+  }
+
+  /* ══ أدوات رسم ══ */
+  function rr_(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function txt(ctx,s,x,y,{size=26,color=C.t1,weight=400,align='right',font=AR,dir='rtl'}={}){
+    ctx.save();ctx.direction=dir;ctx.textAlign=align;ctx.textBaseline='alphabetic';
+    ctx.fillStyle=color;ctx.font=`${weight} ${size}px ${font}`;ctx.fillText(s,x,y);ctx.restore();
+  }
+  function dash(ctx,x1,y,x2,color,w=2,d=[8,7]){ctx.save();ctx.setLineDash(d);ctx.strokeStyle=color;
+    ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y);ctx.lineTo(x2,y);ctx.stroke();ctx.restore();}
+
+  /* ══ رسم الشارت داخل البطاقة ══════════════════════════════════════
+     شموع حقيقية من G.cans مع خطوط الدخول/الوقف/الهدف. نطاق السعر يشمل
+     الخطوط الثلاثة حتى لا يخرج الهدف أو الوقف خارج الإطار. */
+  function drawChart(ctx,d,x,y,w,h){
+    const bars=Math.min(70,d.cs.length),cs=d.cs.slice(-bars);
+    const axW=104,plotW=w-axW,plotX=x;
+    let lo=Math.min(...cs.map(c=>c.low)),hi=Math.max(...cs.map(c=>c.high));
+    [d.entry,d.stop,d.target].forEach(v=>{if(v!=null&&isFinite(v)){lo=Math.min(lo,v);hi=Math.max(hi,v);}});
+    const pad=(hi-lo)*0.08||1;lo-=pad;hi+=pad;
+    const Y=p=>y+h-((p-lo)/(hi-lo))*h;
+    const cw=plotW/bars, bw=Math.max(3,cw*0.62);
+
+    ctx.save();
+    rr_(ctx,x,y,w,h,14);ctx.fillStyle='rgba(4,6,14,.75)';ctx.fill();
+    ctx.strokeStyle=C.line;ctx.lineWidth=1;ctx.stroke();
+    ctx.clip();
+
+    /* شبكة أفقية */
+    for(let i=0;i<=4;i++){const gy=y+h*i/4;
+      ctx.strokeStyle='rgba(255,255,255,.045)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(x,gy);ctx.lineTo(x+plotW,gy);ctx.stroke();
+      txt(ctx,(hi-(hi-lo)*i/4).toFixed(2),x+w-10,gy+9,{size:19,color:C.t3,font:MN,align:'right',dir:'ltr'});
+    }
+    /* شموع */
+    cs.forEach((c,i)=>{
+      const cx=plotX+i*cw+cw/2, up=c.close>=c.open;
+      ctx.strokeStyle=up?'rgba(14,207,126,.75)':'rgba(240,68,88,.75)';ctx.lineWidth=1.6;
+      ctx.beginPath();ctx.moveTo(cx,Y(c.high));ctx.lineTo(cx,Y(c.low));ctx.stroke();
+      ctx.fillStyle=up?C.up:C.dn;
+      const oy=Y(c.open),cy2=Y(c.close);
+      ctx.fillRect(cx-bw/2,Math.min(oy,cy2),bw,Math.max(2,Math.abs(cy2-oy)));
+    });
+    /* خطوط الخطة */
+    const lines=[[d.target,C.up,'هدف '+f2(d.target)],[d.entry,C.gd,'دخول '+f2(d.entry)],[d.stop,C.dn,'وقف '+f2(d.stop)]];
+    lines.forEach(([v,col,lab])=>{
+      if(v==null||!isFinite(v))return;
+      const gy=Y(v);dash(ctx,x,gy,x+plotW,col,2.2);
+      ctx.save();ctx.direction='rtl';ctx.textAlign='right';
+      ctx.font=`600 20px ${AR}`;
+      const tw=ctx.measureText(lab).width+18;
+      rr_(ctx,x+10,gy-15,tw,28,6);ctx.fillStyle='rgba(5,7,15,.92)';ctx.fill();
+      ctx.strokeStyle=col;ctx.lineWidth=1.2;ctx.stroke();
+      ctx.fillStyle=col;ctx.fillText(lab,x+tw,gy+6);ctx.restore();
+    });
+    ctx.restore();
+  }
+
+  /* ══ البطاقة كاملة ══ */
+  async function render(d){
+    try{if(document.fonts&&document.fonts.ready)await document.fonts.ready;}catch(e){}
+    const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+    const ctx=cv.getContext('2d');
+
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,C.bg1);g.addColorStop(1,C.bg0);
+    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle='rgba(167,139,250,.22)';ctx.lineWidth=3;
+    rr_(ctx,14,14,W-28,H-28,26);ctx.stroke();
+
+    let y=PAD+46;
+    /* ── الرأس ── */
+    txt(ctx,'TADAWUL FILTERS PRO',W-PAD,y,{size:24,color:C.pu,weight:700,font:MN,dir:'ltr',align:'right'});
+    txt(ctx,new Date().toLocaleDateString('ar-SA',{weekday:'long',day:'numeric',month:'long'}),
+      PAD,y,{size:22,color:C.t3,align:'left'});
+    y+=22;ctx.strokeStyle=C.line;ctx.beginPath();ctx.moveTo(PAD,y);ctx.lineTo(W-PAD,y);ctx.stroke();
+
+    /* ── الرمز والاسم ── */
+    y+=76;
+    txt(ctx,d.sym,W-PAD,y,{size:72,color:C.t1,weight:700,font:MN,dir:'ltr',align:'right'});
+    const symW=(()=>{ctx.save();ctx.font=`700 72px ${MN}`;const w=ctx.measureText(d.sym).width;ctx.restore();return w;})();
+    txt(ctx,d.name,W-PAD-symW-24,y,{size:38,color:C.t2,weight:600});
+
+    /* شارة الإشارة */
+    ctx.save();ctx.font=`700 26px ${AR}`;
+    const lw=ctx.measureText(d.label).width+38;ctx.restore();
+    rr_(ctx,PAD,y-40,lw,50,10);ctx.fillStyle='rgba(245,200,66,.12)';ctx.fill();
+    ctx.strokeStyle=d.labelColor;ctx.lineWidth=1.6;ctx.stroke();
+    txt(ctx,d.label,PAD+lw-19,y-5,{size:26,color:d.labelColor,weight:700});
+
+    /* ── السعر ── */
+    y+=64;
+    txt(ctx,`${f2(d.price)} ر.س`,W-PAD,y,{size:40,color:C.t1,weight:600,font:MN,dir:'ltr',align:'right'});
+    const pcS=`${d.pct>=0?'▲ +':'▼ '}${d.pct.toFixed(2)}%`;
+    txt(ctx,pcS,W-PAD-210,y,{size:32,color:d.pct>=0?C.up:C.dn,weight:600,font:MN,dir:'ltr',align:'right'});
+
+    /* ── شبكة الأرقام ── */
+    y+=34;
+    const gh=148,gw=W-PAD*2;
+    rr_(ctx,PAD,y,gw,gh,16);ctx.fillStyle=C.card;ctx.fill();
+    ctx.strokeStyle=C.line;ctx.lineWidth=1;ctx.stroke();
+    const cells=[
+      ['الهدف',f2(d.target),C.up,d.upPct!=null?`+${d.upPct}٪`:''],
+      ['وقف الخسارة',f2(d.stop),C.dn,`مخاطرة ${f2(d.risk)}`],
+      ['سعر الدخول',f2(d.entry),C.gd,d.src],
+      ['عائد/مخاطرة',d.rr?`1:${d.rr}`:'—',C.bl,'']
+    ];
+    const cwid=gw/4;
+    cells.forEach((c,i)=>{
+      const cx=W-PAD-i*cwid-cwid/2;
+      txt(ctx,c[0],cx,y+42,{size:22,color:C.t3,align:'center'});
+      txt(ctx,c[1],cx,y+92,{size:42,color:c[2],weight:700,font:MN,align:'center',dir:'ltr'});
+      if(c[3])txt(ctx,c[3],cx,y+126,{size:19,color:C.t3,align:'center'});
+      if(i<3){ctx.strokeStyle=C.line;ctx.beginPath();
+        ctx.moveTo(W-PAD-(i+1)*cwid,y+22);ctx.lineTo(W-PAD-(i+1)*cwid,y+gh-22);ctx.stroke();}
+    });
+
+    /* ── التوقيت ── */
+    y+=gh+26;
+    const th=d.timing?128:96;
+    rr_(ctx,PAD,y,gw,th,16);ctx.fillStyle='rgba(34,211,238,.05)';ctx.fill();
+    ctx.strokeStyle='rgba(34,211,238,.22)';ctx.stroke();
+    if(d.timing){
+      const t=d.timing;
+      const range=t.lo!=null?`خلال ${rng(t.lo,t.hi)}`:`خلال ~${t.bars} ${jal(t.bars)}`;
+      txt(ctx,`⏱ ${t.kind} متوقّع: ${range}`,W-PAD-22,y+44,{size:29,color:C.cy,weight:700});
+      txt(ctx,`${t.date?'حول '+t.date+' · ':''}${t.src}`,W-PAD-22,y+80,{size:22,color:C.t2});
+      txt(ctx,t.measured?(t.usable?'نافذة مقاسة على السهم — لا تاريخ قاطع':'نافذة مقاسة لكن مداها واسع')
+        :'رقم كلاسيكي مفروض من خارج السهم — للمراقبة لا للتنفيذ',
+        W-PAD-22,y+112,{size:20,color:t.measured?C.t3:C.gd});
+    }else{
+      txt(ctx,'⏱ لا توجد دورة دالّة إحصائياً على هذا السهم',W-PAD-22,y+44,{size:27,color:C.t2,weight:600});
+      txt(ctx,'التوقيت غير مُشتق — الأرقام السعرية وحدها هي المرجع',W-PAD-22,y+78,{size:21,color:C.t3});
+    }
+    y+=th+16;
+    txt(ctx,`🚀 نافذة النشاط المتوقّعة: ${d.act}`,W-PAD,y+22,{size:24,color:C.t2,weight:600});
+
+    /* ── وسوم النماذج ── */
+    y+=48;
+    if(d.betterEntry){
+      txt(ctx,`↩️ دخول أفضل عند ${f2(d.betterEntry.p)} — ${d.betterEntry.why}`,W-PAD,y+16,{size:21,color:C.gd});
+      y+=32;
+    }
+    if(d.tags.length){
+      let tx=W-PAD;
+      ctx.save();ctx.font=`600 22px ${AR}`;
+      d.tags.slice(0,3).forEach(tag=>{
+        const tw=ctx.measureText(tag).width+30;
+        if(tx-tw<PAD)return;
+        rr_(ctx,tx-tw,y,tw,44,10);ctx.fillStyle='rgba(167,139,250,.09)';ctx.fill();
+        ctx.strokeStyle='rgba(167,139,250,.25)';ctx.lineWidth=1;ctx.stroke();
+        ctx.direction='rtl';ctx.textAlign='right';ctx.fillStyle=C.t2;
+        ctx.fillText(tag,tx-15,y+30);
+        tx-=tw+12;
+      });
+      ctx.restore();
+      y+=60;
+    }
+
+    /* ── الشارت ── */
+    const chH=H-y-152;
+    drawChart(ctx,d,PAD,y,W-PAD*2,chH);
+    txt(ctx,`آخر ${Math.min(70,d.cs.length)} شمعة · الإطار ${G.tfi||'1d'}`,W-PAD,y+chH+30,{size:20,color:C.t3});
+
+    /* ── التذييل ── */
+    const fy=H-PAD-18;
+    ctx.strokeStyle=C.line;ctx.beginPath();ctx.moveTo(PAD,fy-46);ctx.lineTo(W-PAD,fy-46);ctx.stroke();
+    txt(ctx,'تحليل فني آلي — ليس توصية استثمارية ولا دعوة للشراء أو البيع.',
+      W-PAD,fy-12,{size:21,color:C.t3});
+    txt(ctx,'القرار ومسؤوليته على القارئ وحده.',PAD,fy-12,{size:21,color:C.t3,align:'left'});
+    return cv;
+  }
+
+  /* ══ النصوص المرافقة ══════════════════════════════════════════════
+     نصّ إكس مضبوط تحت 280 محرفاً. التوقيت يُكتب نافذةً لا تاريخاً — النافذة
+     احتمالية بطبيعتها، وكتابتها كتاريخ محدّد تُكذَّب أمام المتابعين. */
+  function texts(d){
+    const t=d.timing;
+    const when=t?(t.lo!=null?`${t.kind} متوقّع خلال ${rng(t.lo,t.hi)}`
+      :`${t.kind} متوقّع خلال ~${t.bars} ${jal(t.bars)}`):'لا توقيت مقاس على هذا السهم';
+    const tweet=
+`#${d.sym} ${d.name}
+دخول ${f2(d.entry)} · وقف ${f2(d.stop)} · هدف ${f2(d.target)}${d.upPct!=null?` (+${d.upPct}٪)`:''}
+عائد/مخاطرة ${d.rr?'1:'+d.rr:'—'}
+⏱ ${when}
+🚀 نافذة النشاط ${d.act}
+تحليل فني — ليس توصية
+#تداول #الأسهم_السعودية`;
+
+    const tg=
+`📊 *${d.sym} — ${d.name}*
+السعر ${f2(d.price)} (${d.pct>=0?'+':''}${d.pct.toFixed(2)}٪)
+الحالة: ${d.label}
+
+🎯 *الخطة*
+دخول: \`${f2(d.entry)}\`
+وقف: \`${f2(d.stop)}\` (مخاطرة ${f2(d.risk)} للسهم)
+هدف أول: \`${f2(d.target)}\`${d.upPct!=null?` (+${d.upPct}٪)`:''}${d.target2?`\nهدف ثانٍ: \`${f2(d.target2)}\``:''}
+عائد/مخاطرة: ${d.rr?'1:'+d.rr:'—'}
+مصدر الأرقام: ${d.src}${d.betterEntry?`\n↩️ دخول أفضل عند \`${f2(d.betterEntry.p)}\` — ${d.betterEntry.why}`:''}
+
+⏱ *التوقيت*
+${when}${t&&t.date?` (حول ${t.date})`:''}
+المصدر: ${t?t.src:'—'}
+${t&&!t.measured?'⚠️ رقم كلاسيكي مفروض من خارج السهم — للمراقبة لا للتنفيذ':''}
+🚀 نافذة النشاط: ${d.act}
+${d.tags.length?'\n📐 '+d.tags.join(' · '):''}
+
+_تحليل فني آلي — ليس توصية استثمارية. القرار ومسؤوليته على القارئ._`;
+    return{tweet:tweet.trim(),tg:tg.trim()};
+  }
+
+  /* ══ نافذة المعاينة ══ */
+  function modal(cv,d,tx){
+    document.getElementById('card-modal')?.remove();
+    const m=document.createElement('div');
+    m.id='card-modal';
+    m.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(2,4,10,.88);display:flex;align-items:center;justify-content:center;padding:18px;backdrop-filter:blur(3px)';
+    const box=document.createElement('div');
+    box.style.cssText="background:#080b16;border:1px solid rgba(255,255,255,.12);border-radius:14px;max-width:560px;width:100%;max-height:94vh;overflow:auto;padding:16px;font-family:'IBM Plex Sans Arabic',sans-serif";
+    cv.style.cssText='width:100%;height:auto;border-radius:10px;display:block';
+    const bar=document.createElement('div');
+    bar.style.cssText='display:flex;gap:8px;flex-wrap:wrap;margin-top:14px';
+    const mk=(label,bg,bd,fn)=>{const b=document.createElement('button');b.textContent=label;
+      b.style.cssText=`flex:1;min-width:120px;padding:10px;border-radius:8px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;background:${bg};border:1px solid ${bd};color:#e6ecf7`;
+      b.onclick=fn;return b;};
+    const flash=(b,s)=>{const o=b.textContent;b.textContent=s;setTimeout(()=>b.textContent=o,1400);};
+
+    bar.appendChild(mk('⬇️ تحميل PNG','rgba(14,207,126,.14)','rgba(14,207,126,.4)',()=>{
+      const a=document.createElement('a');
+      a.download=`${d.sym}_${new Date().toISOString().slice(0,10)}.png`;
+      a.href=cv.toDataURL('image/png');a.click();
+    }));
+    bar.appendChild(mk('📋 نسخ الصورة','rgba(74,158,255,.14)','rgba(74,158,255,.4)',function(){
+      const b=this;
+      cv.toBlob(async blob=>{
+        try{await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);flash(b,'✅ نُسخت');}
+        catch(e){flash(b,'⚠️ استخدم التحميل');}
+      });
+    }));
+    bar.appendChild(mk('𝕏 نسخ نص التغريدة','rgba(167,139,250,.14)','rgba(167,139,250,.4)',function(){
+      const b=this;navigator.clipboard.writeText(tx.tweet).then(()=>flash(b,'✅ نُسخ'),()=>flash(b,'⚠️ فشل'));
+    }));
+    bar.appendChild(mk('✈️ نسخ نص تلقرام','rgba(34,211,238,.14)','rgba(34,211,238,.4)',function(){
+      const b=this;navigator.clipboard.writeText(tx.tg).then(()=>flash(b,'✅ نُسخ'),()=>flash(b,'⚠️ فشل'));
+    }));
+    bar.appendChild(mk('✕ إغلاق','rgba(255,255,255,.06)','rgba(255,255,255,.14)',()=>m.remove()));
+
+    const pre=document.createElement('pre');
+    pre.textContent=tx.tweet;
+    pre.style.cssText="margin-top:14px;padding:11px;background:#04060e;border:1px solid rgba(255,255,255,.08);border-radius:8px;color:#8fa0bd;font-size:11.5px;line-height:1.85;white-space:pre-wrap;direction:rtl;font-family:'IBM Plex Sans Arabic',sans-serif";
+    const cnt=document.createElement('div');
+    const L=tx.tweet.length;
+    cnt.textContent=`طول نص إكس: ${L}/280 محرف`;
+    cnt.style.cssText=`margin-top:6px;font-size:11px;color:${L>280?'#f04458':'#5a6a85'};text-align:left;direction:ltr`;
+
+    box.appendChild(cv);box.appendChild(bar);box.appendChild(pre);box.appendChild(cnt);
+    m.appendChild(box);
+    m.addEventListener('click',e=>{if(e.target===m)m.remove();});
+    document.body.appendChild(m);
+  }
+
+  /* ══ المدخل العام ══ */
+  async function makeCard(sym){
+    sym=sym||G.sel;
+    const d=collect(sym);
+    if(d.err){alert('⛔ '+d.err);return null;}
+    const cv=await render(d);
+    const tx=texts(d);
+    _lastCard={sym,canvas:cv,...tx};
+    modal(cv,d,tx);
+    return _lastCard;
+  }
+
+  window.makeCard=makeCard;
+  window.cardData=collect;          /* للاستعمال من عامل نشر خارجي لاحقاً */
+})();
+
+</script>
 </body>
 </html>
