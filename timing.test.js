@@ -364,6 +364,85 @@ test('الإشارة لا تُطلق على كل شيء', () => {
 });
 
 /* ══════════════════════════════════════════════════════════════════════ */
+group('«ماذا أفعل الآن؟» — سُلّم القرار');
+
+test('كل حالة تُنتج فعلاً واحداً معروفاً وسبباً', () => {
+  const cases = [
+    ['ضجيج محض', candles(300, 11)],
+    ['دورة قوية', candles(300, 909, { period: 24, amp: 0.07, noise: 0.005 })],
+    ['دورة + هبوط', candles(300, 55, { period: 22, amp: 0.06, drift: -0.001 })],
+    ['دورة ضعيفة', candles(300, 77, { period: 30, amp: 0.03, noise: 0.014 })]
+  ];
+  const seen = new Set();
+  for (const [name, cs] of cases) {
+    const a = T.actionPlan(cs);
+    ok(Object.values(T.ACTION).indexOf(a.action) >= 0, `${name}: حالة مجهولة «${a.action}»`);
+    ok(typeof a.action_ar === 'string' && a.action_ar.length > 10, `${name}: بلا فعل مكتوب`);
+    ok(typeof a.title === 'string' && a.title.length > 5, `${name}: بلا عنوان`);
+    ok(a.why.length > 0, `${name}: فعل بلا سبب`);
+    seen.add(a.action);
+    console.log(`      ${name.padEnd(13)} → ${a.action.padEnd(9)} ${a.action_ar.slice(0, 60)}`);
+  }
+  ok(seen.size >= 2, 'السُّلّم يعطي نفس الحالة لكل شيء — لا يميّز');
+});
+
+test('لا شراء يُقترح بلا سعر دخول ووقف وشرط تأكيد', () => {
+  for (let s = 1; s <= 30; s++) {
+    const a = T.actionPlan(candles(300, s * 67, { period: 18 + (s % 12), amp: 0.06, noise: 0.008 }));
+    if (a.action !== T.ACTION.READY) continue;
+    ok(a.plan && a.plan.ok && a.plan.viable, 'حالة «جاهز» بلا خطة صالحة');
+    ok(isFinite(a.plan.entry) && isFinite(a.plan.stop), 'خطة بلا دخول أو وقف');
+    ok(a.plan.target1 != null, 'خطة بلا هدف');
+    ok(a.steps.some(x => /تأكيد/.test(x)), 'اقتُرح دخول بلا شرط تأكيد سعري');
+    ok(a.action_ar.indexOf(String(a.plan.entry)) >= 0, 'الفعل لا يذكر سعر الدخول');
+  }
+});
+
+test('لا يُقترح تنفيذ على سهم بلا دورة دالة', () => {
+  let checked = 0;
+  for (let s = 1; s <= 25; s++) {
+    const cs = candles(300, s * 131);
+    const a = T.actionPlan(cs);
+    if (a.signal && a.signal.spectral && a.signal.spectral.significant) continue;
+    checked++;
+    ok(a.action === T.ACTION.NONE, `اقتُرح «${a.action}» على سهم بلا دورة دالة`);
+    ok(/البنية السعرية/.test(a.action_ar + a.steps.join(' ')), 'لم يُوجَّه إلى البديل السعري');
+  }
+  ok(checked > 0, 'لم تُفحص أي حالة بلا دورة');
+});
+
+test('لا رقم ثقة ولا احتمال نجاح في أي مخرَج', () => {
+  for (let s = 1; s <= 20; s++) {
+    const a = T.actionPlan(candles(300, s * 43, { period: 20 + s, amp: 0.06 }));
+    const blob = JSON.stringify({ t: a.title, a: a.action_ar, w: a.why, s: a.steps, m: a.measured });
+    ok(!/احتمال نجاح|نسبة نجاح|٪ ثقة|درجة ثقة/.test(blob), 'ظهر رقم ثقة مخترع: ' + blob.slice(0, 120));
+  }
+});
+
+test('الدليل المقاس السلبي يخفض «جاهز» إلى مراقبة', () => {
+  const cs = candles(300, 909, { period: 24, amp: 0.07, noise: 0.005 });
+  const plain = T.actionPlan(cs);
+  if (plain.action !== T.ACTION.READY) { console.log('      الحالة الأساس ليست «جاهز» — تُخطّى'); return; }
+  const measuredNegative = { ok: true, samples: 200, winners: [], gateStats: [], baseline: { winRatePct: 40 } };
+  const gated = T.actionPlan(cs, { measured: measuredNegative });
+  ok(/مراقبة/.test(gated.action_ar), 'لم يُخفَّض الحكم رغم أن القياس لا يدعمه: ' + gated.action_ar);
+  ok(typeof gated.measured === 'string' && gated.measured.length > 20, 'لا تفسير للدليل المقاس');
+});
+
+test('تمييز العدد والجنس في العربية صحيح', () => {
+  /* «بعد 9 جلسة» و«قمة متوقع» يُضعفان الثقة بقدر ما يُضعفها رقم خاطئ */
+  let sawPlural = false;
+  for (let s = 1; s <= 40; s++) {
+    const a = T.actionPlan(candles(300, s * 29, { period: 20 + (s % 15), amp: 0.05, noise: 0.01 }));
+    if (a.action !== T.ACTION.WATCH) continue;
+    ok(!/\b([3-9]|10) جلسة\b/.test(a.action_ar), 'خطأ تمييز: ' + a.action_ar);
+    ok(!/قمة متوقَّع\b/.test(a.action_ar), 'خطأ تذكير/تأنيث: ' + a.action_ar);
+    if (/جلسات/.test(a.action_ar)) sawPlural = true;
+  }
+  ok(sawPlural, 'لم تُفحص صيغة الجمع إطلاقاً');
+});
+
+/* ══════════════════════════════════════════════════════════════════════ */
 group('قياس أثر البوابات');
 
 test('يمتنع عن الحكم على عيّنة صغيرة', () => {
@@ -420,10 +499,18 @@ test('كل بوابة تُبلّغ عن نفسها ولو لم تمرّ إطلا
     ok(T.GATE_NAMES.indexOf(g.gate) >= 0, 'بوابة مجهولة: ' + g.gate);
     ok(Number.isFinite(g.fired) && g.fired >= 0, 'عدّاد مرور غير صالح: ' + g.gate);
     ok(g.firedPct >= 0 && g.firedPct <= 100.01, 'نسبة مرور خارج المدى: ' + g.gate);
-    /* الصمت ممنوع: إمّا رقم يُقرأ وإمّا سبب صريح لعدم قراءته */
-    if (g.fired === 0 || g.fired < r.config.minSamples)
+    /* الصمت ممنوع، وعرض رقم لا يُقرأ ممنوع أيضاً: إمّا رقم صالح، وإمّا
+       null مع سبب صريح. عرض «−20.69» بجوار «لا يُقرأ رقمها» يجمع أسوأ
+       الاثنين — العين تقرأ الرقم الملوّن لا الملاحظة. */
+    if (g.fired < r.config.minSamples) {
       ok(typeof g.note === 'string' && g.note.length > 10, `بوابة ${g.gate} بعيّنة ${g.fired} بلا تفسير`);
-    else ok(g.winRatePct != null && g.liftPts != null, `بوابة ${g.gate} بعيّنة كافية بلا أرقام`);
+      ok(g.winRatePct === null && g.liftPts === null,
+        `بوابة ${g.gate} تعرض رقماً (${g.winRatePct}٪ / ${g.liftPts}) من عيّنة ${g.fired} دون الحد الأدنى`);
+      ok(g.readable === false, 'readable يجب أن تكون false');
+    } else {
+      ok(g.winRatePct != null && g.liftPts != null, `بوابة ${g.gate} بعيّنة كافية بلا أرقام`);
+      ok(g.readable === true && g.note === null, 'بوابة بعيّنة كافية لا تحتاج ملاحظة');
+    }
   }
   console.log('      ' + r.gateStats.map(g => `${g.gate}:${g.fired}`).join(' · '));
 });

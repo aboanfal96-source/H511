@@ -683,8 +683,8 @@
     add('cycle', spec.significant && nearWindow,
       spec.significant
         ? (nearWindow
-          ? `دورة ${spec.period} جلسة دالة (p=${spec.pValueText})، و${nextTurn.type === 'valley' ? 'قاع' : 'قمة'} متوقع خلال ${nextTurn.barsAhead}±${nextTurn.sdBars} جلسة`
-          : `دورة ${spec.period} جلسة دالة لكن لا انعطاف قابل للاستعمال خلال النافذة${nextTurn ? ` (أقربها بعد ${nextTurn.barsAhead} جلسة${nextTurn.usable ? '' : ' وعدم يقينه أوسع من ربع دورة'})` : ''}`)
+          ? `دورة ${spec.period} جلسة دالة (p=${spec.pValueText})، و${turnAr(nextTurn.type)} خلال ${nextTurn.barsAhead}±${nextTurn.sdBars} جلسة`
+          : `دورة ${spec.period} جلسة دالة لكن لا انعطاف قابل للاستعمال خلال النافذة${nextTurn ? ` (أقربه بعد ${barsAr(nextTurn.barsAhead)}${nextTurn.usable ? '' : ' وعدم يقينه أوسع من ربع دورة'})` : ''}`)
         : `الطيف لا يختلف عن ضجيج عشوائي (p=${spec.pValueText}) — لا نافذة زمنية تُشتقّ منه`,
       { period: spec.period, pValue: spec.pValue, nextTurn });
 
@@ -725,6 +725,186 @@
         : `لا إشارة — لم تمرّ: ${missingRequired.join('، ')}`,
       caveat: 'score مجموع أوزان معلنة لبوابات مرّت، وليس احتمال نجاح. الرقم الوحيد ذو المعنى الاحتمالي يخرج من evaluateGates على بياناتك.'
     };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     6.5) «ماذا أفعل الآن؟» — تحويل حالة البوابات إلى جملة تنفيذية واحدة
+     ──────────────────────────────────────────────────────────────────
+     المستخدم كان مضطراً لقراءة أربعة أقسام (البوابات، النافذة الزمنية،
+     السيناريو التنفيذي، غرفة القرار) ليستنتج بنفسه: هل أشتري اليوم أم لا؟
+     وأغلب من يقرأ لوحة فيها أرقام خضراء يستنتج «نعم» بلا مبرّر.
+
+     هذه الدالة تفعل شيئاً واحداً: تمرّ على سُلّم قرار صريح وتتوقّف عند أول
+     شرط غير متحقّق، فتُخرج فعلاً واحداً وسببه. وقواعد السُّلّم معلنة في
+     الكود لا مخفيّة، فيمكن مراجعتها وتعديلها — وهذا ما يميّز «قاعدة قرار»
+     عن «توصية».
+
+     ⚠️ لا تُخرج هذه الدالة رقم ثقة ولا احتمال نجاح، ولا تقول «اشترِ» بلا
+     شرط تأكيد سعري. أعلى ما تصل إليه: «الشروط مكتملة — الدخول عند س بعد
+     تحقّق ص، والوقف ع». والتنفيذ قرارك أنت.
+
+     @param {Array} cs شموع يومية
+     @param {{signal?:object, measured?:object, dirUp?:boolean}} [opt]
+            measured: نتيجة evaluateGates إن سبق حسابها — بها يرتقي الحكم
+            من «قاعدة معلنة» إلى «قاعدة مقاسة على هذا السهم».
+     ════════════════════════════════════════════════════════════════════ */
+  /* تمييز العدد في العربية: 1 مفرد · 2 مثنّى · 3–10 جمع · 11+ مفرد منصوب.
+     «بعد 9 جلسة» و«قمة متوقع» أخطاء تُضعف الثقة بمنتج عربي بقدر ما يُضعفها
+     رقم خاطئ — القارئ يقرأ الاثنين معاً. */
+  function barsAr(n) {
+    n = Math.round(n);
+    if (n === 1) return 'جلسة واحدة';
+    if (n === 2) return 'جلستين';
+    if (n >= 3 && n <= 10) return `${n} جلسات`;
+    return `${n} جلسة`;
+  }
+  const turnAr = t => (t === 'valley' ? 'قاع متوقَّع' : 'قمة متوقَّعة');
+
+  const ACTION = {
+    NONE: 'no_trade',      /* لا صفقة، ولا انتظار: الأداة لا تنطبق */
+    WATCH: 'watch',        /* راقب — النافذة لم تُفتح بعد */
+    APPROACH: 'approach',  /* النافذة مفتوحة لكن السعر ليس عند البنية */
+    READY: 'ready'         /* الشروط مكتملة — تنفيذ مشروط بتأكيد سعري */
+  };
+
+  function actionPlan(cs, opt) {
+    opt = opt || {};
+    const out = { ok: false, action: ACTION.NONE, title: '', action_ar: '', why: [], steps: [] };
+
+    if (!cs || cs.length < 80) {
+      out.title = 'لا يمكن الحكم';
+      out.action_ar = 'وسّع النطاق الزمني';
+      out.why.push(`العيّنة ${cs ? cs.length : 0} جلسة، والحد الأدنى 80.`);
+      out.steps.push('وسّع النطاق من أزرار الفريم أعلى الشارت إلى سنة أو سنتين، ثم أعد فتح التقرير.');
+      return out;
+    }
+
+    const sig = opt.signal || timingSignal(cs, { dirUp: opt.dirUp });
+    if (!sig.ok) {
+      out.title = 'لا يمكن الحكم';
+      out.action_ar = 'لا تحليل زمني على هذه البيانات';
+      out.why.push(sig.reason || 'تعذّر بناء سلسلة البوابات.');
+      return out;
+    }
+    out.ok = true;
+    out.signal = sig;
+
+    const gate = n => sig.gates.find(g => g.name === n) || { pass: false, why: '—' };
+    const cyc = gate('cycle'), liq = gate('liquidity');
+    const spec = sig.spectral || {};
+    const turn = sig.nextTurn;
+
+    /* الدليل المقاس، إن وُجد — يُغيّر مستوى الثقة في القاعدة لا القاعدة نفسها */
+    const m = opt.measured;
+    let measuredNote = null, measuredBlocks = false;
+    if (m && m.ok) {
+      const cycStat = (m.gateStats || []).find(g => g.gate === 'cycle');
+      if (!m.winners || !m.winners.length) {
+        measuredBlocks = true;
+        measuredNote = `القياس على هذا السهم: لا تركيبة بوابات تفوّقت على الدخول غير المشروط بدلالة إحصائية (${m.samples} نقطة قياس). فالنافذة — إن فُتحت — للمراقبة لا للتنفيذ.`;
+      } else {
+        measuredNote = `القياس على هذا السهم: «${m.winners[0].label}» تعطي ${m.winners[0].winRatePct}٪ إصابة (فاصل ${m.winners[0].winRateCI[0]}–${m.winners[0].winRateCI[1]}٪) مقابل ${m.baseline.winRatePct}٪ لخط الأساس، بتغطية ${m.winners[0].coveragePct}٪ من الفرص.`;
+      }
+      if (cycStat && cycStat.fired === 0)
+        measuredNote += ' وبوابة الدورة لم تمرّ ولا مرّة خلال فترة القياس كلها.';
+    }
+
+    /* ① لا دورة دالة ⇒ التوقيت الزمني لا ينطبق على هذا السهم إطلاقاً */
+    if (!spec.significant) {
+      out.action = ACTION.NONE;
+      out.title = 'هذا السهم لا يُتداول بالتوقيت الزمني';
+      out.action_ar = 'لا تنتظر تاريخاً — تعامل معه بالبنية السعرية وحدها';
+      out.why.push(`الطيف لا يختلف عن ضجيج عشوائي (p = ${spec.pValueText || '—'}) ⇒ لا دورة تُشتقّ منها نافذة.`);
+      out.why.push('هذه نتيجة صحيحة لا عطل، وهي حال أغلب الأسهم.');
+      out.steps.push('افتح تبويب «🧭 غرفة القرار» واضغط «احسب القرارات» — القرار هناك مبني على الدعوم والمقاومات والسيولة، ولا يحتاج دورة.');
+      out.steps.push('أو استعمل القسم «7️⃣ السيناريو التنفيذي» في هذا التقرير: دخول ووقف وهدف مشتقّة من البنية السعرية.');
+      if (measuredNote) out.measured = measuredNote;
+      return out;
+    }
+
+    /* ② دورة دالة لكن النافذة لم تُفتح بعد ⇒ مراقبة بتاريخ */
+    if (!cyc.pass) {
+      out.action = ACTION.WATCH;
+      out.title = 'دورة قائمة، والنافذة لم تُفتح بعد';
+      out.why.push(cyc.why);
+      if (turn && turn.barsAhead != null) {
+        let date = null;
+        try { date = E.SaudiMarket.addTradingDays(new Date(), turn.barsAhead); } catch (e) { }
+        out.action_ar = `راقب — ${turnAr(turn.type)} بعد ${barsAr(turn.barsAhead)}`
+          + (turn.sdBars != null ? ` ± ${turn.sdBars}` : '')
+          + (date ? ` (${date.toLocaleDateString('ar-SA')})` : '');
+        out.window = { type: turn.type, barsAhead: turn.barsAhead, sdBars: turn.sdBars, loBars: turn.loBars, hiBars: turn.hiBars, usable: turn.usable, date };
+        out.steps.push('ضع تنبيهاً قبل النافذة بجلستين، ولا تدخل عند بلوغ التاريخ وحده: التاريخ يفتح المراقبة، والدخول يفتحه السعر.');
+        if (turn.usable === false) out.why.push('وعدم يقين هذا الانعطاف أوسع من ربع دورة، أي أن النافذة تغطّي القمة والقاع معاً فلا تميّز بينهما.');
+      } else {
+        out.action_ar = 'راقب — لا انعطاف قابل للاستعمال ضمن الأفق القريب';
+        out.steps.push('أعد فتح التقرير بعد بضع جلسات؛ النافذة تتقدّم مع الزمن.');
+      }
+      if (measuredNote) out.measured = measuredNote;
+      return out;
+    }
+
+    /* ③ النافذة مفتوحة لكن السعر ليس عند بنية سيولة ⇒ انتظار وصول السعر */
+    if (!liq.pass) {
+      out.action = ACTION.APPROACH;
+      out.title = 'النافذة الزمنية مفتوحة — والسعر ليس عند بنية';
+      out.action_ar = 'انتظر وصول السعر إلى منطقة بنيوية قبل أي دخول';
+      out.why.push(cyc.why);
+      out.why.push(liq.why);
+      const zones = (sig.liquidity && sig.liquidity.zones) || [];
+      const price = sig.liquidity && sig.liquidity.price;
+      if (zones.length && price != null) {
+        const near = zones.map(z => ({ z, d: Math.min(Math.abs(price - z.top), Math.abs(price - z.bot)) }))
+          .sort((a, b) => a.d - b.d).slice(0, 2);
+        out.zones = near.map(x => x.z);
+        out.steps.push(`أقرب المناطق: ${near.map(x => `${x.z.kind} ${x.z.bot}–${x.z.top}`).join(' · ')}. الدخول يُدرس عند وصول السعر إليها، لا قبله.`);
+      } else {
+        out.steps.push('لا توجد فجوة قيمة عادلة ولا كتلة أوامر حيّة في اتجاه الصفقة — والدخول بلا بنية دخول بلا مرجع للوقف.');
+      }
+      if (measuredNote) out.measured = measuredNote;
+      return out;
+    }
+
+    /* ④ الشرطان الإلزاميان تحقّقا ⇒ نطلب الأسعار من المحرك */
+    const plan = E.executionPlan(cs, { dirUp: sig.dirUp });
+    if (!plan.ok) {
+      out.action = ACTION.NONE;
+      out.title = 'التوقيت جاهز — ولا خطة تنفيذية';
+      out.action_ar = 'لا صفقة: لا يوجد هدف يُشتقّ من البنية';
+      out.why.push(cyc.why); out.why.push(liq.why);
+      out.why.push(plan.reason || 'تعذّر بناء خطة.');
+      out.steps.push('وسّع النطاق الزمني ليظهر مستوى بنيوي أبعد، أو تعامل مع السهم بوقف متحرّك بلا هدف ثابت.');
+      if (measuredNote) out.measured = measuredNote;
+      return out;
+    }
+    out.plan = plan;
+
+    if (!plan.viable) {
+      out.action = ACTION.NONE;
+      out.title = 'التوقيت جاهز — والصفقة غير مجدية';
+      out.action_ar = `لا صفقة: العائد/المخاطرة 1:${plan.rr1} دون الحد الأدنى 1:${plan.minRR}`;
+      out.why.push(cyc.why); out.why.push(liq.why);
+      out.why.push(plan.viabilityNote);
+      out.steps.push('انتظر سعراً أفضل: كلما اقترب الدخول من الوقف تحسّنت النسبة. أو اتركه — ليست كل نافذة صفقة.');
+      if (measuredNote) out.measured = measuredNote;
+      return out;
+    }
+
+    /* ⑤ كل الشروط مكتملة */
+    out.action = ACTION.READY;
+    out.title = measuredBlocks ? 'الشروط مكتملة — لكن القياس لا يدعمها على هذا السهم' : 'الشروط مكتملة';
+    out.action_ar = measuredBlocks
+      ? `مراقبة مشدّدة لا تنفيذ — الدخول المرجعي ${plan.entry} والوقف ${plan.stop}`
+      : `${sig.dirUp ? 'شراء' : 'بيع'} عند ${plan.entry} · وقف ${plan.stop} · هدف ${plan.target1} (1:${plan.rr1}) — بعد تحقّق شرط التأكيد`;
+    out.why.push(cyc.why); out.why.push(liq.why);
+    const extra = sig.gates.filter(g => g.pass && g.name !== 'cycle' && g.name !== 'liquidity');
+    if (extra.length) out.why.push(`وبوابات مؤيّدة إضافية: ${extra.map(g => g.name).join('، ')}.`);
+    out.steps.push(`شرط التأكيد الإلزامي: ${plan.confirmCondition || 'إغلاق جلسة في اتجاه الصفقة بحجم أعلى من الوسيط'}.`);
+    out.steps.push(`الوقف ${plan.stop} مصدره: ${plan.stopSource}. لا تدخل صفقة لا تحتمل هذا الوقف.`);
+    out.steps.push('احسب الكمية من «🧭 غرفة القرار» — الدخول بلا حجم مركز محسوب مخاطرة غير معلومة.');
+    if (measuredBlocks) out.steps.unshift('⚠️ لم تجتز أي تركيبة بوابات التصحيح الإحصائي على هذا السهم، فتعامل مع هذه الإشارة كمراقبة حتى تتحسّن العيّنة.');
+    if (measuredNote) out.measured = measuredNote;
+    return out;
   }
 
   /* ════════════════════════════════════════════════════════════════════
@@ -817,17 +997,27 @@
     const gateStats = GATE_NAMES.map(n => {
       const hit = rows.filter(r => r.flags[n]);
       const st = summarize(hit);
+      const readable = hit.length >= cfg.minSamples;
       return {
         gate: n,
         fired: hit.length,
         firedPct: r2(hit.length / rows.length * 100),
-        winRatePct: st ? st.winRatePct : null,
-        liftPts: st ? r2(st.winRatePct - baseline.winRatePct) : null,
-        /* السبب الصريح حين لا تكفي العيّنة أو لا تمرّ البوابة إطلاقاً */
+        /* 🛠️ الرقم يُحجب حين لا تكفي العيّنة، ولا يُعرض بجواره تحذيرٌ يُقرأ
+           بعده. نسخة أولى كانت تُخرج «إصابة 0٪ · رفع −20.69» من 12 صفقة ثم
+           تُلحقها بملاحظة «فلا يُقرأ رقمها» — والعين تقرأ الرقم الأحمر لا
+           الملاحظة. إن كان الرقم غير صالح للقراءة فمكانه null لا الشاشة. */
+        winRatePct: readable ? st.winRatePct : null,
+        liftPts: readable ? r2(st.winRatePct - baseline.winRatePct) : null,
+        winRateCI: readable ? st.winRateCI : null,
+        /* القيم الخام متاحة برمجياً لمن يريد تجميعها عبر عدة أسهم — حيث
+           تصبح العيّنات المجمّعة كافية — لكنها لا تُعرض صفاً مفرداً. */
+        winRatePctRaw: st ? st.winRatePct : null,
+        liftPtsRaw: st ? r2(st.winRatePct - baseline.winRatePct) : null,
+        readable,
         note: hit.length === 0
           ? 'لم تمرّ ولا مرّة واحدة على هذا السهم — لا شيء يُقاس، وليس هذا عطلاً'
-          : hit.length < cfg.minSamples
-            ? `مرّت ${hit.length} مرة فقط — دون الحد الأدنى ${cfg.minSamples}، فلا يُقرأ رقمها`
+          : !readable
+            ? `مرّت ${hit.length} مرة فقط — دون الحد الأدنى ${cfg.minSamples}، فالرقم محجوب لا مخفيّ`
             : null
       };
     });
@@ -916,6 +1106,6 @@
     volumeFlow,
 
     /* التركيب والقياس */
-    timingSignal, evaluateGates
+    timingSignal, actionPlan, ACTION, evaluateGates
   };
 });
