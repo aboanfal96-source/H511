@@ -787,7 +787,7 @@
 
       const flags = {};
       for (const n of GATE_NAMES) { const g = sig.gates.find(x => x.name === n); flags[n] = !!(g && g.pass); }
-      rows.push({ t, flags, win: trade.r > 0, r: trade.r, bars: trade.bars });
+      rows.push({ t, flags, dirUp: sig.dirUp !== false, win: trade.r > 0, r: trade.r, bars: trade.bars });
     }
 
     if (rows.length < cfg.minSamples)
@@ -807,6 +807,35 @@
     };
 
     const baseline = summarize(rows);
+
+    /* ══ إحصاء كل بوابة على حدة ══════════════════════════════════════
+       🛠️ بلا هذا القسم كان الجدول يعرض التركيبات التي بلغت الحد الأدنى
+       للعيّنة فقط، ويُسقط الباقي **بصمت**. النتيجة أن المستخدم يرى جدولاً
+       بصفّين ولا يعرف: هل بوابة الدورة لم تمرّ أبداً؟ أم مرّت مرّتين؟ أم
+       أن في الحساب عطلاً؟ الغياب الصامت هو بالضبط ما بُنيت هذه المنصة
+       لإزالته — فصار كل بوابة تُبلّغ عن عدد مرور صريح ولو كان صفراً. */
+    const gateStats = GATE_NAMES.map(n => {
+      const hit = rows.filter(r => r.flags[n]);
+      const st = summarize(hit);
+      return {
+        gate: n,
+        fired: hit.length,
+        firedPct: r2(hit.length / rows.length * 100),
+        winRatePct: st ? st.winRatePct : null,
+        liftPts: st ? r2(st.winRatePct - baseline.winRatePct) : null,
+        /* السبب الصريح حين لا تكفي العيّنة أو لا تمرّ البوابة إطلاقاً */
+        note: hit.length === 0
+          ? 'لم تمرّ ولا مرّة واحدة على هذا السهم — لا شيء يُقاس، وليس هذا عطلاً'
+          : hit.length < cfg.minSamples
+            ? `مرّت ${hit.length} مرة فقط — دون الحد الأدنى ${cfg.minSamples}، فلا يُقرأ رقمها`
+            : null
+      };
+    });
+
+    /* الاتجاه المفترض: حين لا توجد دورة دالة يُفترض الصعود، فتصير كل نقاط
+       القياس صفقات شراء. على سهم هابط يفسّر ذلك انخفاض خط الأساس وحده،
+       قبل أي كلام عن البوابات. */
+    const longCount = rows.filter(r => r.dirUp !== false).length;
 
     /* كل تركيبة غير فارغة من البوابات الخمس */
     const combos = [];
@@ -842,6 +871,14 @@
       ok: true,
       samples: rows.length,
       baseline,
+      gateStats,
+      direction: {
+        longPct: r2(longCount / rows.length * 100),
+        shortPct: r2((rows.length - longCount) / rows.length * 100),
+        note: longCount === rows.length
+          ? 'كل نقاط القياس صفقات شراء: لم تُكتشف دورة دالة تحدّد الاتجاه، فافتُرض الصعود. على سهم هابط يفسّر هذا وحده انخفاض خط الأساس — قبل أي حكم على البوابات.'
+          : `${r2(longCount / rows.length * 100)}٪ شراء و${r2((rows.length - longCount) / rows.length * 100)}٪ بيع، والاتجاه مستمدّ من طور الدورة عند كل نقطة.`
+      },
       combos: ranked,
       winners,
       testedCombos: combos.length,
@@ -849,7 +886,13 @@
       config: cfg,
       verdict: winners.length
         ? `${winners.length} تركيبة تفوّقت على خط الأساس بعد تصحيح Benjamini-Hochberg. أفضلها «${winners[0].label}»: نسبة إصابة ${winners[0].winRatePct}٪ (فاصل ${winners[0].winRateCI[0]}–${winners[0].winRateCI[1]}٪) مقابل ${baseline.winRatePct}٪ لخط الأساس، برفع ${winners[0].liftPts} نقطة — والثمن أن الإشارات تنخفض إلى ${winners[0].coveragePct}٪ من الفرص.`
-        : `لا تركيبة بوابات تتفوّق على خط الأساس بدلالة إحصائية على هذا السهم (${testable.length} تركيبة قابلة للاختبار من ${combos.length}). هذه نتيجة صحيحة لا عطل: المرشّحات لا تعمل على كل سهم، والامتناع أصدق من عرض رقم لم يجتز التصحيح.`,
+        : (() => {
+          const dead = gateStats.filter(g => g.fired === 0).map(g => g.gate);
+          const thin = gateStats.filter(g => g.fired > 0 && g.fired < cfg.minSamples).map(g => g.gate);
+          return `لا تركيبة بوابات تتفوّق على خط الأساس بدلالة إحصائية على هذا السهم (${testable.length} تركيبة قابلة للاختبار من ${combos.length}). هذه نتيجة صحيحة لا عطل: المرشّحات لا تعمل على كل سهم، والامتناع أصدق من عرض رقم لم يجتز التصحيح.`
+            + (dead.length ? ` ولم تمرّ هذه البوابات ولا مرّة واحدة: ${dead.join('، ')} — أي أن شرطها غير متحقّق على هذا السهم أصلاً.` : '')
+            + (thin.length ? ` ومرّت هذه بعيّنة أصغر من أن تُقرأ: ${thin.join('، ')}.` : '');
+        })(),
       caveat: 'سهم واحد وتاريخ واحد. نتيجة إيجابية هنا لا تُعمَّم على أسهم أخرى ولا على المستقبل، ولا تحسم العمولات ولا الانزلاق السعري.'
     };
   }

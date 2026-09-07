@@ -6029,6 +6029,35 @@ function runGateReport(symbol) {
       </div>
 
       <div style="${SEC}">
+        <div style="${HEAD}">🚦 كل بوابة على حدة — كم مرّت وبأي أثر</div>
+        <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:520px">
+          <thead><tr style="border-bottom:1px solid rgba(255,215,0,.25);color:#FFD700;font-size:11.5px">
+            <th style="padding:6px 8px;text-align:right">البوابة</th>
+            <th style="padding:6px 8px">مرّت</th><th style="padding:6px 8px">من الفرص</th>
+            <th style="padding:6px 8px">إصابة</th><th style="padding:6px 8px">رفع</th>
+            <th style="padding:6px 8px;text-align:right">ملاحظة</th>
+          </tr></thead>
+          <tbody>${r.gateStats.map(g => `
+            <tr style="border-bottom:1px solid rgba(255,255,255,.06)">
+              <td style="padding:6px 8px">${({cycle:'الدورة الطيفية',liquidity:'بنية السيولة',mtf:'الاتساق عبر الفواصل',flow:'تدفّق الأحجام',warp:'انتظام الزمن'})[g.gate] || g.gate}</td>
+              <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${g.fired === 0 ? '#f04458' : '#dde3f0'}">${g.fired}</td>
+              <td style="padding:6px 8px;text-align:center;font-family:monospace;color:#9aa4b8">${g.firedPct}٪</td>
+              <td style="padding:6px 8px;text-align:center;font-family:monospace;color:#FFD700">${g.winRatePct == null ? '—' : g.winRatePct + '٪'}</td>
+              <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${g.liftPts == null ? '#5a6a85' : g.liftPts > 0 ? '#0ecf7e' : '#f04458'}">${g.liftPts == null ? '—' : (g.liftPts > 0 ? '+' : '') + g.liftPts}</td>
+              <td style="padding:6px 8px;font-size:11px;color:#9aa4b8">${g.note || ''}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        <div style="margin-top:9px;padding:9px 11px;background:rgba(74,158,255,.06);border:1px solid rgba(74,158,255,.2);border-radius:6px;font-size:11.5px;color:#c8d0e0;line-height:1.85">
+          <b>لماذا هذا الجدول قبل الذي تحته؟</b> جدول التركيبات يعرض ما بلغ الحد الأدنى للعيّنة فقط، فبوابة لم تمرّ إطلاقاً — أو مرّت مرّتين — تختفي منه بلا أثر.
+          والغياب بلا تفسير لا يُفرّق بين «الشرط غير متحقّق على هذا السهم» و«يوجد عطل». هنا تُبلّغ كل بوابة عن نفسها ولو كان عددها صفراً.
+        </div>
+        <div style="margin-top:8px;padding:9px 11px;background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.2);border-radius:6px;font-size:11.5px;color:#c8d0e0;line-height:1.85">
+          <b>🧭 اتجاه الصفقات المقيسة:</b> ${r.direction.note}
+        </div>
+      </div>
+
+      <div style="${SEC}">
         <div style="${HEAD}">🚦 أثر كل تركيبة بوابات</div>
         <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:640px">
