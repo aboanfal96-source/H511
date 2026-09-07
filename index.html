@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.0/lightweight-charts.standalone.production.js"></script>
 <script>if(typeof LightweightCharts==='undefined'){document.write('<scr'+'ipt src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"><\/scr'+'ipt>')}</script>
 <script src="/engine/core.js"></script>
+<script src="/engine/timing.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--c0:#04060e;--c1:#080b16;--c2:#0c1020;--c3:#111628;--c4:#172030;--bd:rgba(255,255,255,.055);--bd2:rgba(255,255,255,.1);--t1:#dde3f0;--t2:#7a8ba8;--t3:#3d4a5e;--up:#0ecf7e;--dn:#f04458;--ubg:rgba(14,207,126,.08);--dbg:rgba(240,68,88,.08);--bl:#4a9eff;--bl2:rgba(74,158,255,.12);--gd:#f5c842;--pu:#a78bfa;--cy:#22d3ee;--or:#fb923c;--pk:#f472b6;--base-font:12px}
@@ -5959,6 +5960,107 @@ function runSpectralBacktestReport() {
 }
 window.runSpectralBacktestReport = runSpectralBacktestReport;
 
+/* ══════════════════════════════════════════════════════════════════════
+   📊 تقرير قياس أثر البوابات
+   ──────────────────────────────────────────────────────────────────────
+   هذا التقرير هو الجواب الوحيد المشروع على سؤال «كم نسبة صدق المنصة؟».
+   لا يوجد رقم صدق عام للمنصة: يوجد رقم لكل سهم، بحجم عيّنة وفاصل ثقة،
+   ومعه ثمنه — كم فرصة تسقط مقابل كل نقطة دقّة تُكتسب.
+   ══════════════════════════════════════════════════════════════════════ */
+function runGateReport(symbol) {
+  symbol = symbol || (G && G.sel);
+  if (!symbol) { alert('❌ اختر سهماً أولاً'); return; }
+  if (!window.KSATiming) { alert('⛔ وحدة البوابات (engine/timing.js) غير محمّلة.'); return; }
+  if (!requireRealData(symbol)) return;
+  const cs = G.cans[symbol];
+
+  const SEC = 'background:#151b2b;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;margin-bottom:14px;';
+  const HEAD = 'color:#FFD700;font-weight:800;font-size:13.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,215,0,.15);';
+
+  openTimeReport(`📊 قياس أثر البوابات — ${symbol}`,
+    `<div style="${SEC}"><div style="${HEAD}">⏳ جارٍ القياس</div>
+     <div style="color:#9aa4b8">يُعاد بناء البوابات عند كل نقطة قياس من البيانات المتاحة حتى تلك اللحظة فقط — قد يستغرق بضع ثوانٍ.</div></div>`);
+
+  /* الحساب ثقيل: نؤجّله دورة رسم كاملة حتى تظهر رسالة الانتظار فعلاً */
+  setTimeout(() => {
+    let r;
+    try { r = KSATiming.evaluateGates(cs, { step: 2, recompute: 3 }); }
+    catch (e) { openTimeReport(`📊 قياس أثر البوابات — ${symbol}`, `<div style="${SEC}"><div style="color:#f04458">❌ ${e.message}</div></div>`); return; }
+
+    if (!r.ok) {
+      openTimeReport(`📊 قياس أثر البوابات — ${symbol}`,
+        `<div style="${SEC}border-color:rgba(245,200,66,.35)">
+           <div style="${HEAD}">⚖️ لا يمكن إصدار قياس</div>
+           <div style="color:#f5c842">${r.reason}</div>
+           <div style="margin-top:8px;font-size:11.5px;color:#9aa4b8">وسّع النطاق الزمني من أزرار الفريم أعلى الشارت، فالقياس يتطلب تاريخاً أطول من التحليل.</div>
+         </div>`);
+      return;
+    }
+
+    const row = c => `
+      <tr style="border-bottom:1px solid rgba(255,255,255,.06)">
+        <td style="padding:6px 8px;font-size:12px">${c.significant ? '<span style="color:#0ecf7e">✅</span> ' : ''}${c.label}</td>
+        <td style="padding:6px 8px;text-align:center;font-family:monospace">${c.count}</td>
+        <td style="padding:6px 8px;text-align:center;font-family:monospace;color:#FFD700">${c.winRatePct}٪</td>
+        <td style="padding:6px 8px;text-align:center;font-size:11px;color:#9aa4b8">${c.winRateCI[0]}–${c.winRateCI[1]}٪</td>
+        <td style="padding:6px 8px;text-align:center;font-family:monospace">${c.coveragePct}٪</td>
+        <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${c.liftPts > 0 ? '#0ecf7e' : '#f04458'}">${c.liftPts > 0 ? '+' : ''}${c.liftPts}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:11px;color:#9aa4b8">${c.underpowered ? 'عيّنة صغيرة' : c.pValue}</td>
+      </tr>`;
+
+    const shown = r.combos.filter(c => !c.underpowered).slice(0, 14);
+    openTimeReport(`📊 قياس أثر البوابات — ${symbol}`, `
+      <div style="${SEC}">
+        <div style="${HEAD}">🔬 المنهج</div>
+        <div style="font-size:12px;color:#9aa4b8;line-height:1.85">
+          • عند كل نقطة قياس تُعاد البوابات من البيانات المتاحة حتى تلك اللحظة فقط — بلا تسرّب زمني.<br>
+          • خط الأساس: الدخول غير المشروط عند كل نقطة مؤهّلة، بنفس الوقف والهدف.<br>
+          • كل تركيبة بوابات تُقارن بخط الأساس، ويُطبَّق تصحيح Benjamini-Hochberg لأن فحص ${r.testableCombos} تركيبة على نفس البيانات يُنتج فائزاً بالصدفة وحدها.<br>
+          • الإعدادات: وقف ${r.config.atrStopMult}×ATR، هدف ${r.config.rewardRisk}R، أقصى مدة ${r.config.horizon} جلسة.
+        </div>
+      </div>
+
+      <div style="${SEC}">
+        <div style="${HEAD}">📉 خط الأساس (بلا أي بوابة)</div>
+        <div style="margin-bottom:5px">نسبة الإصابة: <b style="color:#FFD700">${r.baseline.winRatePct}٪</b>
+          <span style="color:#9aa4b8;font-size:11.5px">(فاصل 95٪: ${r.baseline.winRateCI[0]}–${r.baseline.winRateCI[1]}٪)</span>
+          على <b>${r.baseline.count}</b> نقطة قياس</div>
+        <div>التوقّع الرياضي: <b>${r.baseline.expectancyR} R</b> لكل صفقة · متوسط المدة ${r.baseline.avgBars} جلسة</div>
+      </div>
+
+      <div style="${SEC}">
+        <div style="${HEAD}">🚦 أثر كل تركيبة بوابات</div>
+        <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:640px">
+          <thead><tr style="border-bottom:1px solid rgba(255,215,0,.25);color:#FFD700;font-size:11.5px">
+            <th style="padding:6px 8px;text-align:right">التركيبة</th>
+            <th style="padding:6px 8px">إشارات</th><th style="padding:6px 8px">إصابة</th>
+            <th style="padding:6px 8px">فاصل 95٪</th><th style="padding:6px 8px">تغطية</th>
+            <th style="padding:6px 8px">رفع</th><th style="padding:6px 8px">p</th>
+          </tr></thead>
+          <tbody>${shown.map(row).join('')}</tbody>
+        </table></div>
+        <div style="margin-top:9px;font-size:11.5px;color:#9aa4b8;line-height:1.85">
+          <b>التغطية</b> هي الثمن: نسبة الفرص الباقية بعد التصفية. تركيبة بدقّة 70٪ وتغطية 4٪ تعني إشارات نادرة جداً —
+          وهذه مقايضة حقيقية لا عيب. <b>الرفع</b> بالنقاط المئوية فوق خط الأساس.
+        </div>
+      </div>
+
+      <div style="${SEC}border-color:${r.winners.length ? 'rgba(14,207,126,.35)' : 'rgba(154,164,184,.3)'}">
+        <div style="${HEAD}">⚖️ الحكم</div>
+        <div style="line-height:1.9">${r.verdict}</div>
+      </div>
+
+      <div style="${SEC}border-color:rgba(240,68,88,.25);background:rgba(240,68,88,.04);margin-bottom:0">
+        <div style="color:#f04458;font-weight:800;font-size:13px;margin-bottom:8px">⚠️ حدود هذا القياس</div>
+        <div style="margin-bottom:6px">• ${r.caveat}</div>
+        <div style="margin-bottom:6px">• لا يحسم العمولات ولا فرق السعر ولا الانزلاق عند التنفيذ.</div>
+        <div>• لا يوجد «نسبة صدق» واحدة للمنصة كلها. هذا الرقم يخصّ ${symbol} وهذا التاريخ وهذه الإعدادات، ويتغيّر بتغيّر أيٍّ منها.</div>
+      </div>`);
+  }, 60);
+}
+window.runGateReport = runGateReport;
+
 /* ══════════════════════════════════════════════════════════════
    🎯 تبويب "الإشارة الطيفية" — مسار بيانات مستقل تماماً عن
    renderResults/_advData الأساسي (حتى لا يبطّئ المسح الشامل الحالي).
@@ -6249,6 +6351,47 @@ async function smartTimingAnalysis() {
 
     const act = whenActiveLine({ spectral, candles, emp, conf, coh, windows });
 
+    /* ══ سلسلة بوابات التصفية (engine/timing.js) ══════════════════════
+       النافذة الزمنية وحدها ترشيح لا إشارة. البوابات تشترط تزامنها مع
+       بنية سيولة حيّة، واتساق عبر الفواصل، وتدفّق أحجام مؤيّد. */
+    let gateHtml = '';
+    try {
+      if (window.KSATiming) {
+        const gs = KSATiming.timingSignal(candles, { dirUp });
+        if (gs.ok) {
+          const row = g => `
+            <div style="padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.08)">
+              <div style="font-weight:700">${g.pass ? '<span style="color:#0ecf7e">✓</span>' : '<span style="color:#3d4a5e">✗</span>'}
+                ${({cycle:'الدورة الطيفية ونافذتها',liquidity:'بنية السيولة (FVG / كتلة أوامر)',mtf:'الاتساق عبر الفواصل',flow:'تدفّق الأحجام التقديري',warp:'انتظام الزمن (DTW)'})[g.name] || g.name}
+                <span style="font-size:10.5px;color:#5a6a85">وزن ${g.weight}</span></div>
+              <div style="font-size:12px;color:#9aa4b8;margin-top:3px">${g.why}</div>
+            </div>`;
+          const col = gs.fire ? '#0ecf7e' : '#f5c842';
+          gateHtml = `
+      <div style="${SEC}border-color:${col}55;background:${col}0a">
+        <div style="${HEAD}">🚦 بوابات التصفية — من نافذة مرشَّحة إلى إشارة مشروطة</div>
+        <div style="font-size:15px;font-weight:800;color:${col};margin-bottom:9px">
+          ${gs.fire ? '✅' : '⛔'} ${gs.summary}</div>
+        ${gs.gates.map(row).join('')}
+        <div style="margin-top:9px;padding:9px 11px;background:rgba(74,158,255,.06);border:1px solid rgba(74,158,255,.2);border-radius:6px;font-size:11.5px;color:#c8d0e0;line-height:1.85">
+          <b>كيف تُقرأ هذه اللوحة؟</b> النافذة الزمنية وحدها ترشيح لا إشارة: تقول «متى قد يتحرّك» ولا تقول «هل الآن مكان دخول».
+          البوابتان الإلزاميتان هما الدورة والسيولة؛ والباقي ترجيح.
+          <br>مجموع الأوزان <b>${gs.score}</b> <b>ليس نسبة نجاح ولا احتمالاً</b> — هو مجموع أوزان معلنة لبوابات مرّت.
+          الرقم الاحتمالي الوحيد يخرج من «قياس أثر البوابات» أدناه، على بيانات هذا السهم نفسه.
+        </div>
+        <div style="margin-top:8px;text-align:center">
+          <button onclick="runGateReport('${symbol}')" style="background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.4);color:#a78bfa;padding:7px 16px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700">
+            📊 قِس أثر هذه البوابات على ${symbol}
+          </button>
+        </div>
+      </div>`;
+        } else {
+          gateHtml = `<div style="${SEC}"><div style="${HEAD}">🚦 بوابات التصفية</div>
+            <div style="color:#9aa4b8">${gs.reason}</div></div>`;
+        }
+      }
+    } catch (e) { console.warn('gate chain failed', e); }
+
     const html = `
       <div style="${SEC}border-color:${act.color}66;background:${act.color}0f">
         <div style="${HEAD}">🕒 متى ينشط هذا السهم زمنياً؟</div>
@@ -6422,6 +6565,8 @@ async function smartTimingAnalysis() {
         <div style="${HEAD}">6️⃣ النوافذ الزمنية القادمة</div>
         ${windowsHtml}
       </div>
+
+      ${gateHtml}
 
       <div style="${SEC}border-color:rgba(255,215,0,.3);">
         <div style="${HEAD}">7️⃣ السيناريو التنفيذي وإدارة المخاطر</div>
