@@ -6043,7 +6043,7 @@ function runGateReport(symbol) {
               <td style="padding:6px 8px">${({cycle:'الدورة الطيفية',liquidity:'بنية السيولة',mtf:'الاتساق عبر الفواصل',flow:'تدفّق الأحجام',warp:'انتظام الزمن'})[g.gate] || g.gate}</td>
               <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${g.fired === 0 ? '#f04458' : '#dde3f0'}">${g.fired}</td>
               <td style="padding:6px 8px;text-align:center;font-family:monospace;color:#9aa4b8">${g.firedPct}٪</td>
-              <td style="padding:6px 8px;text-align:center;font-family:monospace;color:#FFD700">${g.winRatePct == null ? '—' : g.winRatePct + '٪'}</td>
+              <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${g.winRatePct == null ? '#5a6a85' : '#FFD700'}">${g.winRatePct == null ? '—' : g.winRatePct + '٪'}</td>
               <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${g.liftPts == null ? '#5a6a85' : g.liftPts > 0 ? '#0ecf7e' : '#f04458'}">${g.liftPts == null ? '—' : (g.liftPts > 0 ? '+' : '') + g.liftPts}</td>
               <td style="padding:6px 8px;font-size:11px;color:#9aa4b8">${g.note || ''}</td>
             </tr>`).join('')}</tbody>
@@ -6055,6 +6055,13 @@ function runGateReport(symbol) {
         <div style="margin-top:8px;padding:9px 11px;background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.2);border-radius:6px;font-size:11.5px;color:#c8d0e0;line-height:1.85">
           <b>🧭 اتجاه الصفقات المقيسة:</b> ${r.direction.note}
         </div>
+        ${r.samples < 120 ? `
+        <div style="margin-top:8px;padding:9px 11px;background:rgba(240,68,88,.07);border:1px solid rgba(240,68,88,.28);border-radius:6px;font-size:11.5px;color:#f7b3bc;line-height:1.85">
+          <b>⚠️ العيّنة الكلية صغيرة:</b> ${r.samples} نقطة قياس فقط، ولهذا يمتدّ فاصل الثقة لخط الأساس من
+          ${r.baseline.winRateCI[0]}٪ إلى ${r.baseline.winRateCI[1]}٪ — أي بعرض ${(r.baseline.winRateCI[1] - r.baseline.winRateCI[0]).toFixed(0)} نقطة.
+          فارق بهذا العرض لا يُبنى عليه قرار مهما بدا الرقم الأوسط مقنعاً.
+          <b>وسّع النطاق الزمني إلى سنتين</b> من أزرار الفريم أعلى الشارت ثم أعد القياس: عدد نقاط القياس يتضاعف، ويضيق الفاصل.
+        </div>` : ''}
       </div>
 
       <div style="${SEC}">

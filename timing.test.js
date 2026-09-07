@@ -420,10 +420,18 @@ test('كل بوابة تُبلّغ عن نفسها ولو لم تمرّ إطلا
     ok(T.GATE_NAMES.indexOf(g.gate) >= 0, 'بوابة مجهولة: ' + g.gate);
     ok(Number.isFinite(g.fired) && g.fired >= 0, 'عدّاد مرور غير صالح: ' + g.gate);
     ok(g.firedPct >= 0 && g.firedPct <= 100.01, 'نسبة مرور خارج المدى: ' + g.gate);
-    /* الصمت ممنوع: إمّا رقم يُقرأ وإمّا سبب صريح لعدم قراءته */
-    if (g.fired === 0 || g.fired < r.config.minSamples)
+    /* الصمت ممنوع، وعرض رقم لا يُقرأ ممنوع أيضاً: إمّا رقم صالح، وإمّا
+       null مع سبب صريح. عرض «−20.69» بجوار «لا يُقرأ رقمها» يجمع أسوأ
+       الاثنين — العين تقرأ الرقم الملوّن لا الملاحظة. */
+    if (g.fired < r.config.minSamples) {
       ok(typeof g.note === 'string' && g.note.length > 10, `بوابة ${g.gate} بعيّنة ${g.fired} بلا تفسير`);
-    else ok(g.winRatePct != null && g.liftPts != null, `بوابة ${g.gate} بعيّنة كافية بلا أرقام`);
+      ok(g.winRatePct === null && g.liftPts === null,
+        `بوابة ${g.gate} تعرض رقماً (${g.winRatePct}٪ / ${g.liftPts}) من عيّنة ${g.fired} دون الحد الأدنى`);
+      ok(g.readable === false, 'readable يجب أن تكون false');
+    } else {
+      ok(g.winRatePct != null && g.liftPts != null, `بوابة ${g.gate} بعيّنة كافية بلا أرقام`);
+      ok(g.readable === true && g.note === null, 'بوابة بعيّنة كافية لا تحتاج ملاحظة');
+    }
   }
   console.log('      ' + r.gateStats.map(g => `${g.gate}:${g.fired}`).join(' · '));
 });

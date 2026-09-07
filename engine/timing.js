@@ -817,17 +817,27 @@
     const gateStats = GATE_NAMES.map(n => {
       const hit = rows.filter(r => r.flags[n]);
       const st = summarize(hit);
+      const readable = hit.length >= cfg.minSamples;
       return {
         gate: n,
         fired: hit.length,
         firedPct: r2(hit.length / rows.length * 100),
-        winRatePct: st ? st.winRatePct : null,
-        liftPts: st ? r2(st.winRatePct - baseline.winRatePct) : null,
-        /* السبب الصريح حين لا تكفي العيّنة أو لا تمرّ البوابة إطلاقاً */
+        /* 🛠️ الرقم يُحجب حين لا تكفي العيّنة، ولا يُعرض بجواره تحذيرٌ يُقرأ
+           بعده. نسخة أولى كانت تُخرج «إصابة 0٪ · رفع −20.69» من 12 صفقة ثم
+           تُلحقها بملاحظة «فلا يُقرأ رقمها» — والعين تقرأ الرقم الأحمر لا
+           الملاحظة. إن كان الرقم غير صالح للقراءة فمكانه null لا الشاشة. */
+        winRatePct: readable ? st.winRatePct : null,
+        liftPts: readable ? r2(st.winRatePct - baseline.winRatePct) : null,
+        winRateCI: readable ? st.winRateCI : null,
+        /* القيم الخام متاحة برمجياً لمن يريد تجميعها عبر عدة أسهم — حيث
+           تصبح العيّنات المجمّعة كافية — لكنها لا تُعرض صفاً مفرداً. */
+        winRatePctRaw: st ? st.winRatePct : null,
+        liftPtsRaw: st ? r2(st.winRatePct - baseline.winRatePct) : null,
+        readable,
         note: hit.length === 0
           ? 'لم تمرّ ولا مرّة واحدة على هذا السهم — لا شيء يُقاس، وليس هذا عطلاً'
-          : hit.length < cfg.minSamples
-            ? `مرّت ${hit.length} مرة فقط — دون الحد الأدنى ${cfg.minSamples}، فلا يُقرأ رقمها`
+          : !readable
+            ? `مرّت ${hit.length} مرة فقط — دون الحد الأدنى ${cfg.minSamples}، فالرقم محجوب لا مخفيّ`
             : null
       };
     });
