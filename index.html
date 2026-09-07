@@ -5984,7 +5984,13 @@ function runGateReport(symbol) {
   /* الحساب ثقيل: نؤجّله دورة رسم كاملة حتى تظهر رسالة الانتظار فعلاً */
   setTimeout(() => {
     let r;
-    try { r = KSATiming.evaluateGates(cs, { step: 2, recompute: 3 }); }
+    try {
+      r = KSATiming.evaluateGates(cs, { step: 2, recompute: 3 });
+      /* يُخزَّن ليقرأه صندوق «ماذا أفعل الآن؟» في التقرير الزمني، فيرتقي
+         حكمه من قاعدة معلنة إلى قاعدة مقاسة على هذا السهم بالذات. */
+      window._gateEval = window._gateEval || {};
+      window._gateEval[symbol] = r;
+    }
     catch (e) { openTimeReport(`📊 قياس أثر البوابات — ${symbol}`, `<div style="${SEC}"><div style="color:#f04458">❌ ${e.message}</div></div>`); return; }
 
     if (!r.ok) {
@@ -6403,9 +6409,48 @@ async function smartTimingAnalysis() {
               <div style="font-size:12px;color:#9aa4b8;margin-top:3px">${g.why}</div>
             </div>`;
           const col = gs.fire ? '#0ecf7e' : '#f5c842';
-          gateHtml = `
+
+          /* ══ صندوق «ماذا أفعل الآن؟» ══════════════════════════════════
+             يسبق كل شيء عمداً: المستخدم كان يقرأ أربعة أقسام ليستنتج بنفسه
+             هل يشتري اليوم، وأغلب من يرى لوحة فيها أرقام خضراء يستنتج «نعم»
+             بلا مبرّر. هنا فعل واحد وسببه، من سُلّم قواعد معلن في المحرك. */
+          let actHtml = '';
+          try {
+            const ap = KSATiming.actionPlan(candles, {
+              signal: gs,
+              /* نتيجة القياس إن كان المستخدم قد شغّلها على هذا السهم */
+              measured: (window._gateEval || {})[symbol]
+            });
+            const STYLE = {
+              ready:    { c: '#0ecf7e', i: '✅', t: 'الشروط مكتملة' },
+              approach: { c: '#4a9eff', i: '📍', t: 'انتظار وصول السعر' },
+              watch:    { c: '#f5c842', i: '👁', t: 'مراقبة' },
+              no_trade: { c: '#f04458', i: '⛔', t: 'لا صفقة' }
+            }[ap.action] || { c: '#9aa4b8', i: 'ℹ️', t: '—' };
+            actHtml = `
+      <div style="${SEC}border:2px solid ${STYLE.c}66;background:${STYLE.c}12">
+        <div style="${HEAD}border-bottom-color:${STYLE.c}33">🧭 ماذا أفعل الآن؟</div>
+        <div style="font-size:13px;color:${STYLE.c};font-weight:700;margin-bottom:4px">${STYLE.i} ${ap.title}</div>
+        <div style="font-size:17px;font-weight:800;color:#e6ecf7;line-height:1.7;margin-bottom:10px">${ap.action_ar}</div>
+        ${ap.why.length ? `<div style="font-size:12px;color:#9aa4b8;line-height:1.9;margin-bottom:9px">
+          ${ap.why.map(w => `<div>• ${w}</div>`).join('')}</div>` : ''}
+        ${ap.steps.length ? `<div style="padding:10px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:7px">
+          <div style="font-weight:700;font-size:12px;margin-bottom:5px;color:#c8d0e0">الخطوات:</div>
+          <div style="font-size:12.5px;color:#c8d0e0;line-height:1.95">${ap.steps.map((x, i) => `<div>${i + 1}. ${x}</div>`).join('')}</div>
+        </div>` : ''}
+        ${ap.measured ? `<div style="margin-top:9px;padding:9px 11px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.28);border-radius:6px;font-size:11.5px;color:#c8d0e0;line-height:1.85">
+          📊 <b>الدليل المقاس:</b> ${ap.measured}</div>`
+              : `<div style="margin-top:9px;font-size:11.5px;color:#9aa4b8;line-height:1.8">
+          📊 لم تُقس البوابات على هذا السهم بعد. اضغط «قِس أثر هذه البوابات» أسفل اللوحة — القاعدة أعلاه معلنة، لكنها تبقى قاعدة حتى تُقاس على هذا السهم بالذات.</div>`}
+        <div style="margin-top:9px;font-size:11px;color:#5a6a85;line-height:1.75">
+          هذا ناتج قواعد صريحة مكتوبة في المحرك، لا توصية استثمارية ولا احتمال نجاح. القرار والمسؤولية لك.
+        </div>
+      </div>`;
+          } catch (e) { console.warn('actionPlan failed', e); }
+
+          gateHtml = actHtml + `
       <div style="${SEC}border-color:${col}55;background:${col}0a">
-        <div style="${HEAD}">🚦 بوابات التصفية — من نافذة مرشَّحة إلى إشارة مشروطة</div>
+        <div style="${HEAD}">🚦 بوابات التصفية — تفصيل الشروط</div>
         <div style="font-size:15px;font-weight:800;color:${col};margin-bottom:9px">
           ${gs.fire ? '✅' : '⛔'} ${gs.summary}</div>
         ${gs.gates.map(row).join('')}
