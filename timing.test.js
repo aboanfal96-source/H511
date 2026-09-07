@@ -408,6 +408,44 @@ test('التصفية تُنقص التغطية — المقايضة معروضة
   }
 });
 
+test('كل بوابة تُبلّغ عن نفسها ولو لم تمرّ إطلاقاً', () => {
+  /* 🛠️ جدول التركيبات يعرض ما بلغ الحد الأدنى للعيّنة فقط، فبوابة لم تمرّ
+     أبداً كانت تختفي بلا أثر — والمستخدم لا يفرّق حينها بين «الشرط غير
+     متحقّق» و«يوجد عطل». الغياب الصامت هو ما بُنيت المنصة لإزالته. */
+  const r = T.evaluateGates(candles(420, 37, { period: 21, amp: 0.05 }), { step: 3, recompute: 5 });
+  if (!r.ok) { console.log('      امتنع: ' + r.reason); return; }
+  ok(Array.isArray(r.gateStats), 'لا يوجد إحصاء للبوابات');
+  ok(r.gateStats.length === T.GATE_NAMES.length, `أُبلغ عن ${r.gateStats.length} بوابة من ${T.GATE_NAMES.length}`);
+  for (const g of r.gateStats) {
+    ok(T.GATE_NAMES.indexOf(g.gate) >= 0, 'بوابة مجهولة: ' + g.gate);
+    ok(Number.isFinite(g.fired) && g.fired >= 0, 'عدّاد مرور غير صالح: ' + g.gate);
+    ok(g.firedPct >= 0 && g.firedPct <= 100.01, 'نسبة مرور خارج المدى: ' + g.gate);
+    /* الصمت ممنوع: إمّا رقم يُقرأ وإمّا سبب صريح لعدم قراءته */
+    if (g.fired === 0 || g.fired < r.config.minSamples)
+      ok(typeof g.note === 'string' && g.note.length > 10, `بوابة ${g.gate} بعيّنة ${g.fired} بلا تفسير`);
+    else ok(g.winRatePct != null && g.liftPts != null, `بوابة ${g.gate} بعيّنة كافية بلا أرقام`);
+  }
+  console.log('      ' + r.gateStats.map(g => `${g.gate}:${g.fired}`).join(' · '));
+});
+
+test('يصرّح باتجاه الصفقات المقيسة', () => {
+  /* خط أساس منخفض على سهم هابط قد يكون أثر افتراض الشراء وحده لا أثر
+     البوابات — فيجب أن يُقال الاتجاه صراحةً قبل قراءة أي رقم. */
+  const r = T.evaluateGates(candles(420, 38, { period: 20, amp: 0.05 }), { step: 3, recompute: 5 });
+  if (!r.ok) return;
+  ok(r.direction && typeof r.direction.note === 'string', 'لا تصريح بالاتجاه');
+  near(r.direction.longPct + r.direction.shortPct, 100, 0.05, 'نسب الاتجاه لا تجمع إلى 100');
+});
+
+test('الحكم السلبي يسمّي البوابات التي لم تمرّ إطلاقاً', () => {
+  for (let s = 1; s <= 12; s++) {
+    const r = T.evaluateGates(candles(400, s * 211), { step: 3, recompute: 5 });
+    if (!r.ok || r.winners.length) continue;
+    const dead = r.gateStats.filter(g => g.fired === 0).map(g => g.gate);
+    if (dead.length) { ok(dead.every(n => r.verdict.indexOf(n) >= 0), 'الحكم لا يسمّي البوابات الميتة: ' + r.verdict); return; }
+  }
+});
+
 test('يصرّح بحدود النتيجة ولا يعمّمها', () => {
   const r = T.evaluateGates(candles(400, 36, { period: 21, amp: 0.05 }), { step: 3, recompute: 5 });
   if (!r.ok) return;
