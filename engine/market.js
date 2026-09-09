@@ -189,7 +189,9 @@
 
   const GATES = T.GATE_NAMES;
 
-  /** يجمع صفوف القياس لسهم واحد، موسومة برمزه — دون تلخيص. */
+  /** يجمع صفوف القياس لسهم واحد، موسومة برمزه — دون تلخيص.
+   *  `cfg.gate` يُمرَّر إلى timingSignal، فتصير إعدادات البوابات نفسها
+   *  قابلة للمعايرة بدل أن تكون أرقاماً مثبّتة اخترناها بلا قياس. */
   function _rowsFor(cs, cfg) {
     const atrA = E.atrSeries(cs, 14);
     const last = cs.length - 1 - cfg.horizon;
@@ -200,7 +202,7 @@
       if (!isNum(a) || a <= 0) continue;
       let sig;
       if (cached && t - cachedAt < cfg.recompute) sig = cached;
-      else { sig = T.timingSignal(cs, { idx: t }); cached = sig; cachedAt = t; }
+      else { sig = T.timingSignal(cs, Object.assign({ idx: t }, cfg.gate || {})); cached = sig; cachedAt = t; }
       if (!sig.ok) continue;
       const tr = E.simulateTrade(cs, t, sig.dirUp !== false, {
         atrStopMult: cfg.atrStopMult, rewardRisk: cfg.rewardRisk,
@@ -452,12 +454,179 @@
   }
 
   /* ════════════════════════════════════════════════════════════════════
+     3.5) المعايرة بفصل تدريب/اختبار — الرد المنهجي على «لا شيء يعمل»
+     ──────────────────────────────────────────────────────────────────
+     القياس المقطعي أعطى نتيجة سلبية واضحة على السوق الحقيقي، وكشف معها
+     ثلاثة أسباب بنيوية لا تُعالَج بتحسين المرشّحات:
+
+     ① **بوابات لا تُطلق أصلاً.** الدورة أطلقت على 1.6٪ من الفرص فقط،
+       والالتواء 0.5٪، والفواصل 0.8٪. بوابة بهذه الندرة لا يمكن التحقّق
+       منها ولو قِست على السوق كله عشر سنوات — لأنها لا تُنتج عيّنة.
+       والسبب إعداداتها: نافذة 3 جلسات حول الانعطاف شرط قاسٍ جداً.
+     ② **أرقام مثبّتة لم تُقس قط.** نافذة الانعطاف 3، وهامش السيولة
+       0.15×ATR، وعتبة المشاركة 0.8 — كلها اخترناها بالحدس. الاختيار
+       بالحدس ثم القياس عليه يقيس الحدس لا الفكرة.
+     ③ **ولا يجوز اختيار الإعدادات على نفس البيانات التي نحكم بها.** لو
+       جرّبنا عشرين إعداداً واخترنا أفضلها ثم أعلنّا نتيجته، لأعلنّا حظاً.
+
+     العلاج هو الطريقة القياسية الوحيدة الصحيحة: **تُقسَّم الأسهم** إلى
+     نصفين (لا الأزمنة — تقسيم زمني يجعل التدريب والاختبار في نظامَي سوق
+     مختلفين فيختلط أثر الإعداد بأثر النظام). تُجرَّب كل الإعدادات على نصف
+     التدريب، ويُختار **واحد**، ثم يُقاس ذلك الواحد وحده على نصف الاختبار
+     الذي لم يُمسّ. الفرق بين الرقمين هو مقدار ما كان وهماً.
+
+     ⚠️ والرقم الوحيد الذي يُعتدّ به هو رقم الاختبار. ورقم التدريب يُعرض
+     بجواره لسبب واحد: أن ترى بعينك كم يتضخّم الرقم حين يُختار على نفس
+     البيانات — وهو الدرس الأهم في هذا التقرير كله.
+     ════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * تقسيم حتمي بالرمز: نفس الأسهم في نفس النصف عبر كل التشغيلات.
+   *
+   * 🛠️ النسخة الأولى قارنت قيمة التجزئة بعتبة 0.5 مباشرةً، فأعطت على رموز
+   * متشابهة البنية (C0…C59) تقسيماً 10/50 — نصفٌ لا يكفي للقياس أصلاً.
+   * دالة تجزئة جيدة تُوزّع جيداً في المتوسط، لكن على 60 عنصراً قد ينحرف
+   * التوزيع كثيراً بالصدفة وحدها، ولا يصحّ ترك التوازن للصدفة.
+   * الصحيح: تُرتَّب الرموز بقيمة التجزئة ويُقصّ عند الوسيط — فيبقى
+   * التقسيم حتمياً ومستقلاً عن ترتيب الإدخال، ويكون متوازناً بالضبط.
+   */
+  function _splitSymbols(syms, frac) {
+    const hash = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) / 4294967296; };
+    const ordered = syms.slice().map(s => ({ s, h: hash(String(s)) })).sort((a, b) => a.h - b.h || (a.s < b.s ? -1 : 1));
+    const cut = Math.round(ordered.length * (frac == null ? 0.5 : frac));
+    return { train: ordered.slice(0, cut).map(x => x.s), test: ordered.slice(cut).map(x => x.s) };
+  }
+
+  /** الشبكة المفحوصة — معلنة لا مخفيّة، فيمكن مراجعتها وتوسيعها. */
+  const CALIB_GRID = [
+    { windowBars: 3, tolATR: 0.15 }, { windowBars: 3, tolATR: 0.40 },
+    { windowBars: 6, tolATR: 0.15 }, { windowBars: 6, tolATR: 0.40 },
+    { windowBars: 10, tolATR: 0.40 }, { windowBars: 10, tolATR: 0.80 },
+    { windowBars: 15, tolATR: 0.80 }
+  ];
+
+  async function calibrate(datasets, opt) {
+    opt = opt || {};
+    const cfg = {
+      warmup: opt.warmup == null ? 120 : opt.warmup,
+      step: opt.step == null ? 8 : opt.step,
+      recompute: opt.recompute == null ? 8 : opt.recompute,
+      horizon: opt.horizon == null ? 20 : opt.horizon,
+      atrStopMult: opt.atrStopMult == null ? 1.5 : opt.atrStopMult,
+      rewardRisk: opt.rewardRisk == null ? 2 : opt.rewardRisk,
+      minCoveragePct: opt.minCoveragePct == null ? 5 : opt.minCoveragePct,
+      minTrades: opt.minTrades == null ? 120 : opt.minTrades,
+      maxSymbols: opt.maxSymbols == null ? 120 : opt.maxSymbols,
+      grid: opt.grid || CALIB_GRID
+    };
+
+    let usable = (datasets || []).filter(d => d && d.cs && d.cs.length >= cfg.warmup + cfg.horizon + 30);
+    if (usable.length < 30) return { ok: false, reason: `${usable.length} سهم بتاريخ كافٍ — المعايرة تتطلب 30+ لتقسيمها نصفين ذوَي معنى.`, config: cfg };
+    if (usable.length > cfg.maxSymbols) usable = usable.slice(0, cfg.maxSymbols);
+
+    const split = _splitSymbols(usable.map(d => d.sym));
+    const trainSet = usable.filter(d => split.train.indexOf(d.sym) >= 0);
+    const testSet = usable.filter(d => split.test.indexOf(d.sym) >= 0);
+    if (trainSet.length < 12 || testSet.length < 12)
+      return { ok: false, reason: `التقسيم أعطى ${trainSet.length}/${testSet.length} — كل نصف يحتاج 12 سهماً على الأقل.`, config: cfg };
+
+    /* يقيس تركيبة واحدة بإعداد واحد على مجموعة أسهم */
+    const measure = async (sets, gate, label) => {
+      const bySym = {};
+      let i = 0;
+      for (const d of sets) {
+        try { const rows = _rowsFor(d.cs, Object.assign({}, cfg, { gate })); if (rows.length) bySym[d.sym] = rows; }
+        catch (e) { }
+        if (++i % 3 === 0) await new Promise(r => setTimeout(r, 0));
+        if (opt.onProgress) opt.onProgress(label, i, sets.length);
+      }
+      const all = [];
+      for (const k in bySym) for (const r of bySym[k]) all.push(r);
+      return { bySym, all };
+    };
+
+    const rate = rows => rows.length ? rows.filter(r => r.win).length / rows.length : null;
+
+    /* ── مرحلة التدريب: كل الإعدادات × كل التركيبات ── */
+    const trials = [];
+    for (const gate of cfg.grid) {
+      const { bySym, all } = await measure(trainSet, gate, 'تدريب');
+      if (all.length < cfg.minTrades) continue;
+      const base = rate(all);
+      for (let mask = 1; mask < (1 << GATES.length); mask++) {
+        const names = GATES.filter((_, i) => mask & (1 << i));
+        const pick = r => names.every(n => r.flags[n]);
+        const sub = all.filter(pick);
+        const cov = sub.length / all.length * 100;
+        if (cov < cfg.minCoveragePct || sub.length < 40) continue;
+        let better = 0, tested = 0;
+        for (const k in bySym) { const ss = bySym[k].filter(pick); if (ss.length < 5) continue; tested++; if (rate(ss) > rate(bySym[k])) better++; }
+        trials.push({
+          gate, gates: names, label: names.join(' + '),
+          winRatePct: r2(rate(sub) * 100), baselinePct: r2(base * 100),
+          liftPts: r2((rate(sub) - base) * 100),
+          trades: sub.length, coveragePct: r2(cov),
+          consistencyPct: tested ? r2(better / tested * 100) : null, symbolsTested: tested
+        });
+      }
+    }
+
+    if (!trials.length)
+      return { ok: false, reason: `لا إعداد أنتج تركيبة تتجاوز عتبة التغطية ${cfg.minCoveragePct}٪ على نصف التدريب. هذه نتيجة بذاتها: البوابات بإعداداتها الحالية نادرة الإطلاق إلى حدّ يمنع التحقّق منها أصلاً.`, config: cfg, trainSymbols: trainSet.length, testSymbols: testSet.length };
+
+    /* الاختيار: أعلى رفع، بشرط اتساق فوق النصف — لا الرفع وحده */
+    trials.sort((a, b) => (b.liftPts) - (a.liftPts));
+    const eligible = trials.filter(t => t.consistencyPct != null && t.consistencyPct > 50);
+    const chosen = eligible[0] || trials[0];
+
+    /* ── مرحلة الاختبار: الإعداد المختار وحده، على أسهم لم تُمسّ ── */
+    const { bySym: tSym, all: tAll } = await measure(testSet, chosen.gate, 'اختبار');
+    const testBase = rate(tAll);
+    const pick = r => chosen.gates.every(n => r.flags[n]);
+    const tSub = tAll.filter(pick);
+    let better = 0, tested = 0;
+    for (const k in tSym) { const ss = tSym[k].filter(pick); if (ss.length < 5) continue; tested++; if (rate(ss) > rate(tSym[k])) better++; }
+    const tCI = tSub.length ? _bootstrapCI(tSym, pick, 400, 777) : null;
+    const testLift = tSub.length ? r2((rate(tSub) - testBase) * 100) : null;
+
+    const shrink = (chosen.liftPts != null && testLift != null) ? r2(chosen.liftPts - testLift) : null;
+    const held = testLift != null && testLift > 0 && tCI && tCI.lo > testBase * 100;
+
+    return {
+      ok: true,
+      trainSymbols: trainSet.length, testSymbols: testSet.length,
+      trialsRun: trials.length, gridSize: cfg.grid.length,
+      chosen: {
+        gate: chosen.gate, label: chosen.label,
+        trainWinRatePct: chosen.winRatePct, trainLiftPts: chosen.liftPts,
+        trainCoveragePct: chosen.coveragePct, trainConsistencyPct: chosen.consistencyPct
+      },
+      test: {
+        baselinePct: r2(testBase * 100),
+        winRatePct: tSub.length ? r2(rate(tSub) * 100) : null,
+        winRateCI: tCI ? [tCI.lo, tCI.hi] : null,
+        liftPts: testLift, trades: tSub.length,
+        coveragePct: tAll.length ? r2(tSub.length / tAll.length * 100) : null,
+        consistencyPct: tested ? r2(better / tested * 100) : null, symbolsTested: tested
+      },
+      shrinkPts: shrink, held,
+      topTrials: trials.slice(0, 8),
+      verdict: held
+        ? `الإعداد المختار صمد خارج العيّنة: رفع ${testLift} نقطة على ${testSet.length} سهماً لم تدخل الاختيار (${tSub.length} صفقة)، وفاصله ${tCI.lo}–${tCI.hi}٪ فوق خط أساسها ${r2(testBase * 100)}٪. وانكمش الرفع ${shrink} نقطة عن رقم التدريب — وهذا الانكماش طبيعي ومتوقّع، والرقم الذي يُعتدّ به هو رقم الاختبار.`
+        : `الإعداد الذي بدا الأفضل على نصف التدريب (رفع ${chosen.liftPts} نقطة) لم يصمد على نصف الاختبار (${testLift == null ? 'لم يُنتج صفقات كافية' : 'رفع ' + testLift + ' نقطة'}). أي أن تفوّقه كان اختياراً على الضجيج لا أفضلية حقيقية. `
+          + `هذه هي الفائدة الكاملة من فصل التدريب عن الاختبار: بدونه كنت ستقرأ «رفع ${chosen.liftPts} نقطة» وتبني عليه قراراً.`,
+      method: 'الأسهم تُقسَّم نصفين بدالة تجزئة حتمية (لا الأزمنة — التقسيم الزمني يخلط أثر الإعداد بأثر نظام السوق). تُجرَّب كل الإعدادات على نصف التدريب ويُختار واحد بأعلى رفع بشرط اتساق فوق 50٪، ثم يُقاس ذلك الواحد وحده على نصف الاختبار. تقييم إعداد واحد على الاختبار يعني ألّا تضخّم اختبارات متعددة رقمَه.',
+      caveat: 'نصف اختبار واحد وفترة واحدة. والانكماش بين التدريب والاختبار يقيس مقدار الاختيار على الضجيج، وهو موجود دائماً — والسؤال حجمه لا وجوده.'
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
      4) الواجهة المصدَّرة
      ════════════════════════════════════════════════════════════════════ */
   return {
     VERSION, version: VERSION,
     marketBreadth, relativeStrength,
-    poolEvaluate, watchlist,
+    poolEvaluate, watchlist, calibrate, CALIB_GRID,
     STATE_RANK
   };
 });

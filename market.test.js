@@ -192,6 +192,73 @@ group('القياس المقطعي المجمّع');
   });
 
   /* ══════════════════════════════════════════════════════════════════ */
+  group('المعايرة بفصل تدريب/اختبار');
+
+  await atest('التقسيم متوازن وحتمي مهما كان نمط الرموز', async () => {
+    /* 🛠️ النسخة الأولى قارنت التجزئة بعتبة 0.5 مباشرةً فأعطت 10/50 على
+       رموز متشابهة البنية — نصفٌ لا يكفي للقياس أصلاً. */
+    for (const [name, n, pre] of [['C', 60, 'C'], ['S', 100, 'S'], ['أرقام', 40, '10']]) {
+      const ds = [];
+      for (let i = 0; i < n; i++) ds.push({ sym: pre + i, cs: synthMarket(1, 200, 100 + i)[0].cs });
+      const r = await M.calibrate(ds, { step: 20, recompute: 20, maxSymbols: n, warmup: 120 });
+      if (!r.ok && /التقسيم أعطى/.test(r.reason)) throw new Error(`${name}: تقسيم غير متوازن — ${r.reason}`);
+      if (r.ok) {
+        const ratio = r.trainSymbols / (r.trainSymbols + r.testSymbols);
+        ok(ratio > 0.35 && ratio < 0.65, `${name}: نسبة ${ratio.toFixed(2)} غير متوازنة`);
+      }
+    }
+  });
+
+  await atest('لا يعلن صموداً على سوق بلا أفضلية حقيقية', async () => {
+    const r = await M.calibrate(synthMarket(60, 400, 7), { step: 12, recompute: 12, maxSymbols: 60 });
+    if (!r.ok) { console.log('      امتنع: ' + r.reason.slice(0, 70)); return; }
+    console.log(`      «${r.chosen.label}» تدريب ${r.chosen.trainLiftPts} → اختبار ${r.test.liftPts} (انكماش ${r.shrinkPts})`);
+    ok(r.held === false, `أعلن صموداً على سوق بُني بلا أفضلية — رفع اختبار ${r.test.liftPts}`);
+    ok(/لم يصمد|لم يُنتج/.test(r.verdict), 'الحكم لا يوضّح عدم الصمود');
+  });
+
+  await atest('يرصد الأفضلية الحقيقية ولا يكتفي بالرفض', async () => {
+    /* أداة تقول «لا» دائماً عديمة الفائدة. هنا دورة نقية قوية بالبناء. */
+    const cyc = [];
+    for (let k = 0; k < 60; k++) {
+      const r = rng(31 + k * 131), P = 18 + (k % 14);
+      let t = Math.floor(Date.UTC(2022, 0, 2) / 1000), prev = 50; const cs = [];
+      for (let i = 0; i < 400; i++) {
+        let d = new Date(t * 1000);
+        while (d.getUTCDay() === 5 || d.getUTCDay() === 6) { t += 86400; d = new Date(t * 1000); }
+        const p = 50 * Math.exp(0.0003 * i + 0.075 * Math.cos(2 * Math.PI * i / P) + 0.004 * gauss(r));
+        const w = p * 0.008 * (0.4 + r());
+        cs.push({ time: t, open: +prev.toFixed(2), high: +Math.max(prev, p, p + w).toFixed(2), low: +Math.min(prev, p, p - w).toFixed(2), close: +p.toFixed(2), volume: 300000 });
+        prev = p; t += 86400;
+      }
+      cyc.push({ sym: 'C' + k, cs });
+    }
+    const r = await M.calibrate(cyc, { step: 12, recompute: 12, maxSymbols: 60 });
+    ok(r.ok, r.reason);
+    console.log(`      «${r.chosen.label}» تدريب ${r.chosen.trainLiftPts} → اختبار ${r.test.liftPts} (انكماش ${r.shrinkPts})`);
+    ok(r.held === true, `لم يرصد أفضلية مزروعة بالبناء — رفع اختبار ${r.test.liftPts}`);
+    ok(r.test.liftPts > 10, 'الرفع خارج العيّنة ضئيل رغم دورة نقية');
+  });
+
+  await atest('يقيس إعداداً واحداً فقط على الاختبار', async () => {
+    const r = await M.calibrate(synthMarket(50, 400, 23), { step: 14, recompute: 14, maxSymbols: 50 });
+    if (!r.ok) return;
+    ok(r.chosen && r.chosen.gate, 'لا إعداد مختار');
+    ok(r.trialsRun > 1, 'لم تُجرَّب إعدادات متعددة على التدريب');
+    /* الاختبار يحمل رقماً واحداً لا جدول محاولات — وهذا شرط سلامته */
+    ok(!Array.isArray(r.test), 'الاختبار أعاد عدة نتائج — يُبطل الحماية من الاختبارات المتعددة');
+    ok(typeof r.test.liftPts === 'number' || r.test.liftPts === null, 'شكل نتيجة الاختبار غير متوقع');
+  });
+
+  await atest('يعرض الانكماش صراحةً — وهو الدرس لا الرقم', async () => {
+    const r = await M.calibrate(synthMarket(50, 400, 29), { step: 14, recompute: 14, maxSymbols: 50 });
+    if (!r.ok) return;
+    ok('shrinkPts' in r, 'لا مقياس للانكماش');
+    ok(/تفرض عتبة|التدريب|الاختبار/.test(r.method), 'لا شرح للطريقة');
+    ok(/نصف اختبار واحد/.test(r.caveat || ''), 'لا تصريح بحدود القياس');
+  });
+
+  /* ══════════════════════════════════════════════════════════════════ */
   group('القائمة الاستباقية');
 
   await atest('ترتّب بحسب القرب من الجاهزية', async () => {

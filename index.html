@@ -362,6 +362,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <button onclick="ddBook()" class="scan-btn" style="background:rgba(74,158,255,.12);border:1px solid rgba(74,158,255,.35);color:#4a9eff;flex-shrink:0">📓 مراكزي</button>
       <button onclick="runWatchReport()" class="scan-btn" style="background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.4);color:#22d3ee;flex-shrink:0" title="أي الأسهم على وشك أن تصير جاهزة، ومتى">🔭 القائمة الاستباقية</button>
       <button onclick="runMarketReport()" class="scan-btn" style="background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.4);color:#a78bfa;flex-shrink:0" title="قياس البوابات على السوق كله بدل سهم واحد">🌐 قياس السوق</button>
+      <button onclick="runCalibrateReport()" class="scan-btn" style="background:rgba(240,68,88,.1);border:1px solid rgba(240,68,88,.35);color:#f04458;flex-shrink:0" title="يختار الإعدادات على نصف الأسهم ويختبرها على النصف الآخر">🔬 معايرة خارج العيّنة</button>
       <span style="font-size:10px;color:var(--t3)">رأس المال:</span>
       <input id="dd-cap" value="100000" style="width:82px;background:var(--c3);border:1px solid var(--bd2);color:var(--t1);border-radius:4px;padding:3px 6px;font-size:10px;font-family:'IBM Plex Mono',monospace">
       <span style="font-size:10px;color:var(--t3)">المخاطرة٪:</span>
@@ -6285,6 +6286,107 @@ function runWatchReport() {
   }, 60);
 }
 window.runWatchReport = runWatchReport;
+
+/* ══════════════════════════════════════════════════════════════════════
+   🔬 المعايرة بفصل تدريب/اختبار
+   ──────────────────────────────────────────────────────────────────────
+   القياس المقطعي يقول «هل تعمل الإعدادات الحالية؟». وهذا يقول ما هو أبعد:
+   «أي إعداد هو الأفضل، وهل يصمد على أسهم لم تُستعمل في اختياره؟».
+   والفرق بين الرقمين — الانكماش — هو الدرس الأهم في التقرير كله.
+   ══════════════════════════════════════════════════════════════════════ */
+async function runCalibrateReport() {
+  if (!window.KSAMarket) { alert('⛔ الطبقة المقطعية غير محمّلة.'); return; }
+  const sets = _loadedSets();
+  const SEC = 'background:#151b2b;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;margin-bottom:14px;';
+  const HEAD = 'color:#FFD700;font-weight:800;font-size:13.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,215,0,.15);';
+  if (sets.length < 30) { alert(`❌ ${sets.length} سهم فقط.\n\nالمعايرة تحتاج 30+ سهماً لتقسيمها نصفين ذوَي معنى.\nاضغط «مسح شامل» ووسّع النطاق إلى سنتين.`); return; }
+
+  openTimeReport('🔬 المعايرة خارج العيّنة',
+    `<div style="${SEC}"><div style="${HEAD}">⏳ جارٍ</div><div id="cal-prog" style="color:#9aa4b8">التحضير…</div>
+     <div style="margin-top:8px;font-size:11.5px;color:#5a6a85">تُجرَّب عدّة إعدادات على نصف الأسهم، ثم يُقاس الإعداد الفائز وحده على النصف الآخر. تستغرق دقائق.</div></div>`);
+
+  let r;
+  try {
+    r = await KSAMarket.calibrate(sets, {
+      onProgress: (phase, i, t) => { const e = document.getElementById('cal-prog'); if (e) e.textContent = `${phase} — ${i}/${t}`; }
+    });
+  } catch (e) { openTimeReport('🔬 المعايرة', `<div style="${SEC}"><div style="color:#f04458">❌ ${e.message}</div></div>`); return; }
+
+  if (!r.ok) {
+    openTimeReport('🔬 المعايرة خارج العيّنة',
+      `<div style="${SEC}border-color:rgba(245,200,66,.35)"><div style="${HEAD}">⚖️ تعذّرت المعايرة</div>
+       <div style="color:#f5c842;line-height:1.9">${r.reason}</div></div>`);
+    return;
+  }
+
+  const col = r.held ? '#0ecf7e' : '#f5c842';
+  openTimeReport('🔬 المعايرة خارج العيّنة', `
+    <div style="${SEC}border:2px solid ${col}55;background:${col}0d">
+      <div style="${HEAD}border-bottom-color:${col}33">${r.held ? '✅ صمد خارج العيّنة' : '⚠️ لم يصمد خارج العيّنة'}</div>
+      <div style="font-size:13px;line-height:2;color:#e6ecf7">${r.verdict}</div>
+    </div>
+
+    <div style="${SEC}">
+      <div style="${HEAD}">📐 التقسيم والإعداد المختار</div>
+      <div style="line-height:2;font-size:13px">
+        تدريب <b style="color:#FFD700">${r.trainSymbols}</b> سهماً · اختبار <b style="color:#0ecf7e">${r.testSymbols}</b> سهماً — لم تدخل الاختيار إطلاقاً<br>
+        جُرِّب <b>${r.trialsRun}</b> تركيبة×إعداد على <b>${r.gridSize}</b> إعدادات<br>
+        المختار: <b style="color:#a78bfa">${r.chosen.label}</b> · نافذة الانعطاف <b>${r.chosen.gate.windowBars}</b> جلسة · هامش السيولة <b>${r.chosen.gate.tolATR}</b>×ATR
+      </div>
+    </div>
+
+    <div style="${SEC}">
+      <div style="${HEAD}">🔻 الانكماش — الدرس الأهم</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr style="border-bottom:1px solid rgba(255,255,255,.08)">
+          <td style="padding:8px">على نصف <b>التدريب</b> (حيث اختير)</td>
+          <td style="padding:8px;text-align:center;font-family:monospace;color:#f5c842;font-size:16px">+${r.chosen.trainLiftPts}</td>
+          <td style="padding:8px;font-size:11.5px;color:#9aa4b8">تغطية ${r.chosen.trainCoveragePct}٪</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,.08)">
+          <td style="padding:8px">على نصف <b>الاختبار</b> (لم يُمسّ)</td>
+          <td style="padding:8px;text-align:center;font-family:monospace;color:${(r.test.liftPts || 0) > 0 ? '#0ecf7e' : '#f04458'};font-size:16px">${r.test.liftPts == null ? '—' : (r.test.liftPts > 0 ? '+' : '') + r.test.liftPts}</td>
+          <td style="padding:8px;font-size:11.5px;color:#9aa4b8">${r.test.trades} صفقة · تغطية ${r.test.coveragePct}٪${r.test.winRateCI ? ` · فاصل ${r.test.winRateCI[0]}–${r.test.winRateCI[1]}٪` : ''}</td></tr>
+        <tr><td style="padding:8px"><b>الانكماش</b></td>
+          <td style="padding:8px;text-align:center;font-family:monospace;color:#f04458;font-size:16px">−${r.shrinkPts}</td>
+          <td style="padding:8px;font-size:11.5px;color:#9aa4b8">مقدار ما كان اختياراً على الضجيج</td></tr>
+      </table></div>
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(240,68,88,.06);border:1px solid rgba(240,68,88,.25);border-radius:7px;font-size:12px;color:#c8d0e0;line-height:1.9">
+        <b>اقرأ رقم الاختبار وحده.</b> رقم التدريب معروض لسبب واحد: أن ترى بعينك كم يتضخّم أي رقم حين يُختار على نفس البيانات التي يُحكم بها.
+        كل منصّة تعرض «نسبة نجاح» بلا هذا الفصل تعرض عليك رقم العمود الأول.
+      </div>
+    </div>
+
+    <div style="${SEC}">
+      <div style="${HEAD}">🧪 أفضل المحاولات على التدريب</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:520px">
+        <thead><tr style="border-bottom:1px solid rgba(255,215,0,.25);color:#FFD700;font-size:11.5px">
+          <th style="padding:6px 8px;text-align:right">التركيبة</th><th style="padding:6px 8px">نافذة</th>
+          <th style="padding:6px 8px">هامش</th><th style="padding:6px 8px">رفع</th>
+          <th style="padding:6px 8px">تغطية</th><th style="padding:6px 8px">اتساق</th></tr></thead>
+        <tbody>${r.topTrials.map(t => `<tr style="border-bottom:1px solid rgba(255,255,255,.06)">
+          <td style="padding:6px 8px">${t.label}</td>
+          <td style="padding:6px 8px;text-align:center;font-family:monospace">${t.gate.windowBars}</td>
+          <td style="padding:6px 8px;text-align:center;font-family:monospace">${t.gate.tolATR}</td>
+          <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${t.liftPts > 0 ? '#0ecf7e' : '#f04458'}">${t.liftPts > 0 ? '+' : ''}${t.liftPts}</td>
+          <td style="padding:6px 8px;text-align:center;font-family:monospace">${t.coveragePct}٪</td>
+          <td style="padding:6px 8px;text-align:center;font-family:monospace">${t.consistencyPct == null ? '—' : t.consistencyPct + '٪'}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <div style="margin-top:8px;font-size:11.5px;color:#9aa4b8;line-height:1.85">
+        هذه أرقام <b>التدريب</b> — كلها متضخّمة بحكم أنها هي التي اختير منها. لا تُبنى عليها قرارات.
+      </div>
+    </div>
+
+    <div style="${SEC}border-color:rgba(74,158,255,.25);background:rgba(74,158,255,.04)">
+      <div style="${HEAD}">🔍 الطريقة</div>
+      <div style="font-size:12px;color:#c8d0e0;line-height:1.95">${r.method}</div>
+    </div>
+
+    <div style="${SEC}border-color:rgba(240,68,88,.25);background:rgba(240,68,88,.04);margin-bottom:0">
+      <div style="color:#f04458;font-weight:800;font-size:13px;margin-bottom:8px">⚠️ حدود</div>
+      <div>• ${r.caveat}</div>
+    </div>`);
+}
+window.runCalibrateReport = runCalibrateReport;
 
 /* ══════════════════════════════════════════════════════════════
    🎯 تبويب "الإشارة الطيفية" — مسار بيانات مستقل تماماً عن
