@@ -431,6 +431,8 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
         <button class="tf" onclick="setTF('6mo','1d',this)">6 أشهر</button>
         <button class="tf" onclick="setTF('1y','1d',this)">سنة</button>
         <button class="tf" onclick="setTF('2y','1d',this)">سنتين</button>
+        <button class="tf" onclick="setTF('5y','1d',this)" title="أطول تاريخ يفيد القياس الإحصائي">5 سنوات</button>
+        <button class="tf" onclick="setTF('max','1d',this)" title="كل التاريخ المتاح بشمعة يومية — قد يبطئ المسح الشامل">الأقصى</button>
       </div>
       <div class="tfs" style="margin-right:0;border-right:1px solid var(--bd);padding-right:8px">
         <span style="font-size:9px;color:var(--t3);align-self:center;padding:0 4px">الفريم:</span>
@@ -8580,11 +8582,29 @@ window.calcTradePlan = function(sym){
    ولهذا كانت أعمدة «الجاهزية» و«الطيف» و«النافذة» فارغة دائماً. */
 var _origScan = window.runFullScan;
 if(typeof _origScan==='function'){
+  /* ══════════════════════════════════════════════════════════════════
+     🛠️ إصلاح قيد خانق: كان هذا الغلاف يفرض `G.tf='1y'` **قسراً** عند كل
+     مسح شامل. غرضه الأصلي مشروع — نطاق 3 أشهر ≈ 65 جلسة لا يكفي للطيف
+     (60) ولا للجاهزية (80)، فكانت الأعمدة تخرج فارغة. لكنه كُتب سقفاً
+     لا أرضية، فصار يُنزل السنتين والخمس سنوات إلى سنة أيضاً.
+
+     الأثر لم يكن تجميلياً: القياس المقطعي والمعايرة يعملان على ما حمّله
+     المسح، فكانا يركضان دائماً على سنة واحدة مهما اختار المستخدم. وهذا
+     هو السبب المباشر لأن المعايرة أعطت 516 صفقة فقط وخرجت بحكم «العيّنة
+     أصغر من أن تحسم» — قيدٌ في الواجهة ظهر كأنه حدّ في البيانات.
+
+     الآن: أرضية. أقصر من سنة يُرفع إلى سنة، وما هو أطول يبقى كما هو. */
+  var _TF_ORDER = ['1d','5d','1mo','3mo','6mo','1y','2y','5y','10y','max'];
   window.runFullScan = function(){
-    try{ G.tf='1y'; G.tfi='1d';
-      document.querySelectorAll('.tfs .tf').forEach(function(b){
-        b.classList.toggle('on', (b.getAttribute('onclick')||'').indexOf("'1y','1d'")>=0);
-      });
+    try{
+      var cur = _TF_ORDER.indexOf(G.tf);
+      var floor = _TF_ORDER.indexOf('1y');
+      if(cur < floor){                     /* أقصر من الأرضية ⇒ ارفعه */
+        G.tf='1y'; G.tfi='1d';
+        document.querySelectorAll('.tfs .tf').forEach(function(b){
+          b.classList.toggle('on', (b.getAttribute('onclick')||'').indexOf("'1y','1d'")>=0);
+        });
+      }
     }catch(e){}
     return _origScan.apply(this,arguments);
   };

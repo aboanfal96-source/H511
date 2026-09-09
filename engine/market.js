@@ -189,6 +189,29 @@
 
   const GATES = T.GATE_NAMES;
 
+  /* ══════════════════════════════════════════════════════════════════
+     خطوة تكيّفية — لماذا العرض أفضل من العمق
+     ────────────────────────────────────────────────────────────────
+     مع تاريخ أطول يرتفع الحساب بسرعة: القياس على 5 سنوات بالخطوة نفسها
+     يستغرق نحو 24 دقيقة، وعلى «الأقصى» أكثر من ثلاث ساعات — أي تجميد
+     المتصفح لا ميزة.
+
+     والحلّ ليس تقليص التاريخ (فالطيف نفسه يتحسّن بطوله)، بل تباعد نقاط
+     القياس داخل كل سهم. والسبب إحصائي لا حسابي فقط: نقاط القياس داخل
+     السهم الواحد **مترابطة** — فتراتها متداخلة بحكم أفق الاحتفاظ — بينما
+     الأسهم المختلفة أقرب للاستقلال. ولهذا نُمهّد بسحب الأسهم لا الصفقات
+     أصلاً. فمضاعفة عدد الأسهم تزيد المعلومة الفعلية أكثر بكثير من
+     مضاعفة النقاط داخل السهم نفسه.
+
+     القاعدة: التاريخ الأطول يُستعمل كاملاً في كل حساب طيفي (وهنا فائدته
+     الحقيقية)، والنقاط تتباعد لتبقى قرابة `targetPoints` لكل سهم. */
+  function _adaptiveStep(n, cfg) {
+    const span = n - cfg.warmup - cfg.horizon;
+    if (span <= 0) return cfg.step;
+    const target = cfg.targetPoints || 60;
+    return Math.max(cfg.step, Math.ceil(span / target));
+  }
+
   /** يجمع صفوف القياس لسهم واحد، موسومة برمزه — دون تلخيص.
    *  `cfg.gate` يُمرَّر إلى timingSignal، فتصير إعدادات البوابات نفسها
    *  قابلة للمعايرة بدل أن تكون أرقاماً مثبّتة اخترناها بلا قياس. */
@@ -196,8 +219,9 @@
     const atrA = E.atrSeries(cs, 14);
     const last = cs.length - 1 - cfg.horizon;
     const rows = [];
+    const step = _adaptiveStep(cs.length, cfg);
     let cached = null, cachedAt = -1;
-    for (let t = cfg.warmup; t <= last; t += cfg.step) {
+    for (let t = cfg.warmup; t <= last; t += step) {
       const a = atrA[t];
       if (!isNum(a) || a <= 0) continue;
       let sig;
@@ -259,6 +283,8 @@
       rewardRisk: opt.rewardRisk == null ? 2 : opt.rewardRisk,
       minSymbols: opt.minSymbols == null ? 15 : opt.minSymbols,
       minTrades: opt.minTrades == null ? 200 : opt.minTrades,
+      /* عدد نقاط القياس المستهدف لكل سهم — يحكم الخطوة التكيّفية */
+      targetPoints: opt.targetPoints == null ? 60 : opt.targetPoints,
       bootstrap: opt.bootstrap == null ? 400 : opt.bootstrap,
       fdr: opt.fdr == null ? 0.10 : opt.fdr
     };
@@ -345,9 +371,15 @@
     const robust = combos.filter(c => c.robust).sort((a, b) => b.liftPts - a.liftPts);
     const ranked = combos.slice().sort((a, b) => b.liftPts - a.liftPts);
 
+    const histLens = usable.map(d => d.cs.length);
     return {
       ok: true,
       symbols: syms.length, trades: all.length,
+      history: {
+        medianBars: Math.round(S.median(histLens)),
+        effectiveStep: _adaptiveStep(Math.round(S.median(histLens)), cfg),
+        note: `التاريخ الوسيط ${Math.round(S.median(histLens))} جلسة، والخطوة الفعلية ${_adaptiveStep(Math.round(S.median(histLens)), cfg)} جلسة بين نقاط القياس. التاريخ كامل يدخل كل حساب طيفي؛ والتباعد يخصّ نقاط القياس وحدها حتى لا يتجمّد المتصفح.`
+      },
       baseline: {
         winRatePct: r2(baseRate * 100), wins: baseWins, count: all.length,
         expectancyR: r3(S.mean(all.map(r => r.r)))
@@ -516,7 +548,10 @@
       rewardRisk: opt.rewardRisk == null ? 2 : opt.rewardRisk,
       minCoveragePct: opt.minCoveragePct == null ? 5 : opt.minCoveragePct,
       minTrades: opt.minTrades == null ? 120 : opt.minTrades,
-      maxSymbols: opt.maxSymbols == null ? 120 : opt.maxSymbols,
+      /* العرض أفضل من العمق: مزيد من الأسهم يزيد المعلومة المستقلة أكثر
+         من مزيد من النقاط داخل السهم الواحد. */
+      maxSymbols: opt.maxSymbols == null ? 260 : opt.maxSymbols,
+      targetPoints: opt.targetPoints == null ? 40 : opt.targetPoints,
       grid: opt.grid || CALIB_GRID
     };
 
