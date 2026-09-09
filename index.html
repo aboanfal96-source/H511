@@ -9,6 +9,7 @@
 <script>if(typeof LightweightCharts==='undefined'){document.write('<scr'+'ipt src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"><\/scr'+'ipt>')}</script>
 <script src="/engine/core.js"></script>
 <script src="/engine/timing.js"></script>
+<script src="/engine/market.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--c0:#04060e;--c1:#080b16;--c2:#0c1020;--c3:#111628;--c4:#172030;--bd:rgba(255,255,255,.055);--bd2:rgba(255,255,255,.1);--t1:#dde3f0;--t2:#7a8ba8;--t3:#3d4a5e;--up:#0ecf7e;--dn:#f04458;--ubg:rgba(14,207,126,.08);--dbg:rgba(240,68,88,.08);--bl:#4a9eff;--bl2:rgba(74,158,255,.12);--gd:#f5c842;--pu:#a78bfa;--cy:#22d3ee;--or:#fb923c;--pk:#f472b6;--base-font:12px}
@@ -359,6 +360,8 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       </div>
       <button onclick="ddBrief()" class="scan-btn" style="background:rgba(255,215,0,.12);border:1px solid rgba(255,215,0,.35);color:#FFD700;flex-shrink:0">📋 الملخص التنفيذي</button>
       <button onclick="ddBook()" class="scan-btn" style="background:rgba(74,158,255,.12);border:1px solid rgba(74,158,255,.35);color:#4a9eff;flex-shrink:0">📓 مراكزي</button>
+      <button onclick="runWatchReport()" class="scan-btn" style="background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.4);color:#22d3ee;flex-shrink:0" title="أي الأسهم على وشك أن تصير جاهزة، ومتى">🔭 القائمة الاستباقية</button>
+      <button onclick="runMarketReport()" class="scan-btn" style="background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.4);color:#a78bfa;flex-shrink:0" title="قياس البوابات على السوق كله بدل سهم واحد">🌐 قياس السوق</button>
       <span style="font-size:10px;color:var(--t3)">رأس المال:</span>
       <input id="dd-cap" value="100000" style="width:82px;background:var(--c3);border:1px solid var(--bd2);color:var(--t1);border-radius:4px;padding:3px 6px;font-size:10px;font-family:'IBM Plex Mono',monospace">
       <span style="font-size:10px;color:var(--t3)">المخاطرة٪:</span>
@@ -6102,6 +6105,186 @@ function runGateReport(symbol) {
   }, 60);
 }
 window.runGateReport = runGateReport;
+
+/* ══════════════════════════════════════════════════════════════════════
+   🌐 القياس المقطعي — الجواب على «كم نسبة صدق المنصة؟»
+   ──────────────────────────────────────────────────────────────────────
+   كل قياس على سهم واحد فشل لسبب واحد: 58 نقطة قياس. هذا التقرير يقيس على
+   السوق كله دفعةً واحدة، فتصير العيّنة عشرات الآلاف ويضيق الفاصل لأول مرة.
+   ══════════════════════════════════════════════════════════════════════ */
+function _loadedSets(minBars) {
+  minBars = minBars || 170;
+  return STKS.map(s => ({ sym: s.sym, name: s.name, sec: s.sec, cs: G.cans[s.sym] }))
+    .filter(d => d.cs && d.cs.length >= minBars && !G.demo.has(d.sym));
+}
+
+async function runMarketReport() {
+  if (!window.KSAMarket) { alert('⛔ الطبقة المقطعية (engine/market.js) غير محمّلة.'); return; }
+  const sets = _loadedSets();
+  const SEC = 'background:#151b2b;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;margin-bottom:14px;';
+  const HEAD = 'color:#FFD700;font-weight:800;font-size:13.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,215,0,.15);';
+
+  if (sets.length < 15) {
+    alert(`❌ ${sets.length} سهم فقط بتاريخ كافٍ.\n\nالقياس المقطعي يتطلب 15+ سهماً بـ170 جلسة على الأقل.\nاضغط «مسح شامل» أولاً ووسّع النطاق الزمني إلى سنتين.`);
+    return;
+  }
+
+  const reg = KSAMarket.marketBreadth(sets);
+  openTimeReport('🌐 القياس المقطعي — السوق كله',
+    `<div style="${SEC}"><div style="${HEAD}">⏳ جارٍ القياس على ${sets.length} سهماً</div>
+     <div id="mkt-prog" style="color:#9aa4b8">التحضير…</div>
+     <div style="margin-top:8px;font-size:11.5px;color:#5a6a85">يُعاد بناء البوابات عند كل نقطة من البيانات المتاحة حتى تلك اللحظة فقط، لكل سهم على حدة. قد يستغرق دقيقة.</div></div>`);
+
+  const prog = () => document.getElementById('mkt-prog');
+  let r;
+  try {
+    r = await KSAMarket.poolEvaluate(sets, {
+      step: 5, recompute: 5,
+      onProgress: (d, t, sym) => { const e = prog(); if (e) e.textContent = `${d}/${t} — ${sym}`; }
+    });
+  } catch (e) {
+    openTimeReport('🌐 القياس المقطعي', `<div style="${SEC}"><div style="color:#f04458">❌ ${e.message}</div></div>`);
+    return;
+  }
+
+  const regBox = reg.ok ? `
+    <div style="${SEC}border-color:${reg.regime === 'risk_on' ? 'rgba(14,207,126,.35)' : reg.regime === 'risk_off' ? 'rgba(240,68,88,.35)' : 'rgba(245,200,66,.3)'}">
+      <div style="${HEAD}">🌡️ نظام السوق الآن</div>
+      <div style="font-size:15px;font-weight:800;margin-bottom:7px;color:${reg.regime === 'risk_on' ? '#0ecf7e' : reg.regime === 'risk_off' ? '#f04458' : '#f5c842'}">
+        ${{ risk_on: '🟢 صاعد متّسع', risk_off: '🔴 هابط متّسع', transition: '🟡 تحوّل محتمل', neutral: '⚪ بلا اتجاه' }[reg.regime]}
+        <span style="font-size:12px;color:#9aa4b8;font-weight:600">— حجم المخاطرة المقترح ×${reg.sizeMultiplier}</span></div>
+      <div style="font-size:12.5px;color:#c8d0e0;line-height:1.9">${reg.note}</div>
+      <div style="margin-top:7px;font-size:11.5px;color:#9aa4b8">${reg.caveat}</div>
+    </div>` : '';
+
+  if (!r.ok) {
+    openTimeReport('🌐 القياس المقطعي — السوق كله', regBox +
+      `<div style="${SEC}border-color:rgba(245,200,66,.35)">
+         <div style="${HEAD}">⚖️ لا يمكن إصدار قياس</div>
+         <div style="color:#f5c842">${r.reason}</div></div>`);
+    return;
+  }
+
+  const row = c => `
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06)">
+      <td style="padding:6px 8px;font-size:12px">${c.robust ? '<span style="color:#0ecf7e">✅</span> ' : ''}${c.label}</td>
+      <td style="padding:6px 8px;text-align:center;font-family:monospace">${c.trades}</td>
+      <td style="padding:6px 8px;text-align:center;font-family:monospace;color:#FFD700">${c.winRatePct}٪</td>
+      <td style="padding:6px 8px;text-align:center;font-size:11px;color:#9aa4b8">${c.winRateCI ? c.winRateCI[0] + '–' + c.winRateCI[1] + '٪' : '—'}</td>
+      <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${c.consistencyPct > 50 ? '#0ecf7e' : '#9aa4b8'}">${c.consistencyPct == null ? '—' : c.symbolsBetter + '/' + c.symbolsTested}</td>
+      <td style="padding:6px 8px;text-align:center;font-family:monospace">${c.coveragePct}٪</td>
+      <td style="padding:6px 8px;text-align:center;font-family:monospace;color:${c.liftPts > 0 ? '#0ecf7e' : '#f04458'}">${c.liftPts > 0 ? '+' : ''}${c.liftPts}</td>
+    </tr>`;
+
+  openTimeReport('🌐 القياس المقطعي — السوق كله', regBox + `
+    <div style="${SEC}">
+      <div style="${HEAD}">📊 حجم العيّنة — الفرق الجوهري</div>
+      <div style="font-size:13px;line-height:2">
+        <b style="color:#0ecf7e">${r.symbols}</b> سهماً · <b style="color:#0ecf7e">${r.trades}</b> صفقة · خط الأساس <b style="color:#FFD700">${r.baseline.winRatePct}٪</b>
+      </div>
+      <div style="margin-top:8px;padding:9px 11px;background:rgba(14,207,126,.06);border:1px solid rgba(14,207,126,.22);border-radius:6px;font-size:11.5px;color:#c8d0e0;line-height:1.9">
+        قياس السهم الواحد كان يعطي نحو 50–200 نقطة، وفاصل ثقة بعرض 20 نقطة مئوية — لا يُبنى عليه قرار.
+        هنا العيّنة أكبر بمرّات، ولهذا وحده صار الحكم ممكناً. <b>المرشّحات لم تتغيّر — تغيّر ما نقيسه به.</b>
+      </div>
+    </div>
+
+    <div style="${SEC}">
+      <div style="${HEAD}">🚦 أثر التركيبات على مستوى السوق</div>
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:660px">
+        <thead><tr style="border-bottom:1px solid rgba(255,215,0,.25);color:#FFD700;font-size:11.5px">
+          <th style="padding:6px 8px;text-align:right">التركيبة</th><th style="padding:6px 8px">صفقات</th>
+          <th style="padding:6px 8px">إصابة</th><th style="padding:6px 8px">فاصل التمهيد</th>
+          <th style="padding:6px 8px">اتساق الأسهم</th><th style="padding:6px 8px">تغطية</th><th style="padding:6px 8px">رفع</th>
+        </tr></thead>
+        <tbody>${r.combos.slice(0, 14).map(row).join('')}</tbody>
+      </table></div>
+      <div style="margin-top:9px;font-size:11.5px;color:#9aa4b8;line-height:1.9">
+        <b>اتساق الأسهم</b> هو العمود الأهم: في كم سهماً تفوّقت التركيبة على خط أساس ذلك السهم نفسه.
+        رفع مجمّع كبير ناتج عن ثلاثة أسهم شاذّة ليس أفضلية — والاتساق يكشف ذلك.
+        <br><b>فاصل التمهيد</b> محسوب بسحب <u>الأسهم</u> بالإعادة لا الصفقات، فيتّسع بقدر الترابط الفعلي بينها.
+      </div>
+    </div>
+
+    <div style="${SEC}border-color:${r.robust.length ? 'rgba(14,207,126,.35)' : 'rgba(154,164,184,.3)'}">
+      <div style="${HEAD}">⚖️ الحكم</div>
+      <div style="line-height:2;font-size:13px">${r.verdict}</div>
+      <div style="margin-top:9px;padding:9px 11px;background:rgba(74,158,255,.06);border:1px solid rgba(74,158,255,.2);border-radius:6px;font-size:11.5px;color:#c8d0e0;line-height:1.9">
+        <b>الطريقة:</b> ${r.method}
+      </div>
+    </div>
+
+    <div style="${SEC}border-color:rgba(240,68,88,.25);background:rgba(240,68,88,.04);margin-bottom:0">
+      <div style="color:#f04458;font-weight:800;font-size:13px;margin-bottom:8px">⚠️ حدود</div>
+      <div>• ${r.caveat}</div>
+    </div>`);
+}
+window.runMarketReport = runMarketReport;
+
+/* ══════════════════════════════════════════════════════════════════════
+   🔭 القائمة الاستباقية — أي الأسهم على وشك أن تصير جاهزة
+   ──────────────────────────────────────────────────────────────────────
+   المنصة كلها كانت تجيب عن «ما حال هذا السهم الآن؟». هذا يجيب عن السؤال
+   الاستباقي: أي الأسهم يقترب من اكتمال شروطه، وبعد كم جلسة.
+   ══════════════════════════════════════════════════════════════════════ */
+function runWatchReport() {
+  if (!window.KSAMarket) { alert('⛔ الطبقة المقطعية (engine/market.js) غير محمّلة.'); return; }
+  const sets = _loadedSets(80);
+  const SEC = 'background:#151b2b;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;margin-bottom:14px;';
+  const HEAD = 'color:#FFD700;font-weight:800;font-size:13.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,215,0,.15);';
+  if (sets.length < 5) { alert('❌ لا توجد أسهم كافية بتاريخ حقيقي. اضغط «مسح شامل» أولاً.'); return; }
+
+  openTimeReport('🔭 القائمة الاستباقية', `<div style="${SEC}"><div style="${HEAD}">⏳ جارٍ الفحص</div><div style="color:#9aa4b8">${sets.length} سهماً…</div></div>`);
+
+  setTimeout(() => {
+    let prevSnap = null;
+    try { prevSnap = JSON.parse(localStorage.getItem('ksa_watch_snapshot') || 'null'); } catch (e) { }
+    const reg = KSAMarket.marketBreadth(sets);
+    const w = KSAMarket.watchlist(sets, {
+      previous: prevSnap, regime: reg.ok ? reg : null, measured: window._gateEval || {}
+    });
+    /* اللقطة تُحفظ لتُقارن غداً — بلا مقارنة تقرأ نفس القائمة كل يوم */
+    try { localStorage.setItem('ksa_watch_snapshot', JSON.stringify(w.snapshot)); } catch (e) { }
+
+    const COL = { ready: '#0ecf7e', approach: '#4a9eff', watch: '#f5c842', no_trade: '#f04458' };
+    const LBL = { ready: '✅ مكتمل', approach: '📍 ينتظر السعر', watch: '👁 نافذة قريبة', no_trade: '⛔' };
+
+    const row = r => `
+      <tr style="border-bottom:1px solid rgba(255,255,255,.06);${r.improving ? 'background:rgba(14,207,126,.05)' : ''}">
+        <td style="padding:7px 8px">
+          <a href="#" onclick="closeTimeReport();selectStock('${r.sym}');return false" style="color:#a78bfa;font-family:monospace;font-weight:700;text-decoration:none">${r.sym}</a>
+          <div style="font-size:10.5px;color:#9aa4b8">${r.name}</div></td>
+        <td style="padding:7px 8px;text-align:center;color:${COL[r.action]};font-size:11.5px;white-space:nowrap">${LBL[r.action]}
+          ${r.improving ? '<div style="font-size:10px;color:#0ecf7e">▲ تحسّن اليوم</div>' : r.changed ? `<div style="font-size:10px;color:#f5c842">تغيّر عن ${LBL[r.previousAction] || '—'}</div>` : ''}</td>
+        <td style="padding:7px 8px;text-align:center;font-family:monospace;white-space:nowrap">${r.barsAhead == null ? '—' : r.barsAhead + (r.sdBars != null ? '±' + r.sdBars : '')}
+          ${r.windowDate ? `<div style="font-size:10px;color:#9aa4b8">${new Date(r.windowDate).toLocaleDateString('ar-SA')}</div>` : ''}</td>
+        <td style="padding:7px 8px;text-align:center;font-family:monospace;font-size:11.5px">${r.plan ? `${r.plan.entry}<div style="font-size:10px;color:#f04458">وقف ${r.plan.stop}</div>` : '—'}</td>
+        <td style="padding:7px 8px;font-size:11px;color:#9aa4b8">${r.actionText}</td>
+      </tr>`;
+
+    openTimeReport('🔭 القائمة الاستباقية', `
+      ${reg.ok ? `<div style="${SEC}"><div style="${HEAD}">🌡️ نظام السوق</div>
+        <div style="font-size:12.5px;line-height:1.9;color:#c8d0e0">${reg.note}</div></div>` : ''}
+      <div style="${SEC}">
+        <div style="${HEAD}">📋 ${w.total} سهماً · ${w.transitions} تحوّلاً منذ آخر فحص</div>
+        <div style="font-size:12.5px;color:#c8d0e0;line-height:1.9;margin-bottom:9px">${w.note}</div>
+        ${w.rows.length ? `<div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:640px">
+          <thead><tr style="border-bottom:1px solid rgba(255,215,0,.25);color:#FFD700;font-size:11.5px">
+            <th style="padding:6px 8px;text-align:right">السهم</th><th style="padding:6px 8px">الحالة</th>
+            <th style="padding:6px 8px">النافذة</th><th style="padding:6px 8px">الدخول</th>
+            <th style="padding:6px 8px;text-align:right">الفعل</th>
+          </tr></thead><tbody>${w.rows.slice(0, 40).map(row).join('')}</tbody>
+        </table></div>` : ''}
+      </div>
+      <div style="${SEC}border-color:rgba(240,68,88,.25);background:rgba(240,68,88,.04);margin-bottom:0">
+        <div style="color:#f04458;font-weight:800;font-size:13px;margin-bottom:8px">⚠️ حدود</div>
+        <div style="margin-bottom:6px">• ${w.caveat}</div>
+        <div>• الصفوف المميّزة بـ▲ تحسّنت حالتها منذ آخر مرة فتحتَ فيها هذه القائمة — وهي وحدها الخبر الجديد.</div>
+      </div>`);
+  }, 60);
+}
+window.runWatchReport = runWatchReport;
 
 /* ══════════════════════════════════════════════════════════════
    🎯 تبويب "الإشارة الطيفية" — مسار بيانات مستقل تماماً عن
