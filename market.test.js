@@ -250,6 +250,56 @@ group('القياس المقطعي المجمّع');
     ok(typeof r.test.liftPts === 'number' || r.test.liftPts === null, 'شكل نتيجة الاختبار غير متوقع');
   });
 
+  await atest('يفرّق بين الانكماش وضعف القوة الإحصائية', async () => {
+    /* 🛠️ نسخة أولى أعلنت «لم يصمد ⇒ اختيار على الضجيج» لكل حالة غير
+       مؤكَّدة. والقياس الفعلي على السوق أعطى تدريب +2.08 واختبار +2.49 —
+       أي أن الأثر زاد ولم ينكمش — ومع ذلك كُتب «اختيار على الضجيج» بجوار
+       رقمين يقولان العكس. السببان مختلفان وعلاجهما معاكس. */
+    let sawUnderpowered = false, sawShrank = false;
+    for (const seed of [7, 23, 29, 43, 51, 67]) {
+      const r = await M.calibrate(synthMarket(50, 400, seed), { step: 14, recompute: 14, maxSymbols: 50 });
+      if (!r.ok) continue;
+      ok(['confirmed', 'shrank', 'underpowered'].indexOf(r.outcome) >= 0, 'نتيجة مجهولة: ' + r.outcome);
+      /* الاتساق الداخلي: الحكم يجب أن يطابق الأرقام */
+      if (r.outcome === 'shrank' && r.test.liftPts != null && r.chosen.trainLiftPts > 0)
+        ok(r.test.liftPts <= 0 || r.test.liftPts < r.chosen.trainLiftPts * 0.4,
+          `أُعلن انكماشاً بينما اختبار ${r.test.liftPts} قريب من تدريب ${r.chosen.trainLiftPts}`);
+      if (r.outcome === 'underpowered') {
+        sawUnderpowered = true;
+        ok(r.test.liftPts > 0, 'ضعف قوة برفع غير موجب');
+        ok(/عيّنة أكبر لا إعداد أفضل/.test(r.verdict), 'لا يوجّه إلى العلاج الصحيح');
+        ok(!/على الضجيج/.test(r.verdict), 'ما زال ينسبه للضجيج رغم صمود الاتجاه');
+      }
+      if (r.outcome === 'shrank') { sawShrank = true; ok(/على الضجيج/.test(r.verdict), 'انكماش بلا تفسيره'); }
+    }
+    console.log(`      رُصدت حالة ضعف القوة: ${sawUnderpowered} · حالة انكماش: ${sawShrank}`);
+    ok(sawUnderpowered || sawShrank, 'لم تُرصد أي حالة غير مؤكَّدة للفحص');
+  });
+
+  await atest('يقدّر حجم العيّنة اللازم حين يكون الأثر أصغر من أن يُحسم', async () => {
+    for (const seed of [7, 23, 29, 43]) {
+      const r = await M.calibrate(synthMarket(50, 400, seed), { step: 14, recompute: 14, maxSymbols: 50 });
+      if (!r.ok || r.outcome !== 'underpowered') continue;
+      ok(Number.isFinite(r.requiredTradesPerGroup) && r.requiredTradesPerGroup > 0, 'لا تقدير لحجم العيّنة اللازم');
+      ok(r.requiredTradesPerGroup > r.test.trades, 'العيّنة اللازمة ليست أكبر من المتاحة رغم إعلان ضعف القوة');
+      console.log(`      يلزم ≈${r.requiredTradesPerGroup.toLocaleString('en-US')} صفقة · المتاح ${r.test.trades}`);
+      return;
+    }
+  });
+
+  await atest('يصرّح حين يقع الاختيار على البديل بمعيار أضعف', async () => {
+    for (const seed of [7, 23, 29, 43, 51]) {
+      const r = await M.calibrate(synthMarket(50, 400, seed), { step: 14, recompute: 14, maxSymbols: 50 });
+      if (!r.ok) continue;
+      ok(typeof r.fallbackChoice === 'boolean', 'لا تصريح بنوع الاختيار');
+      if (r.fallbackChoice) {
+        ok(r.chosen.trainConsistencyPct == null || r.chosen.trainConsistencyPct <= 50,
+          'أُعلن بديلاً رغم اجتياز شرط الاتساق');
+        return;
+      }
+    }
+  });
+
   await atest('يعرض الانكماش صراحةً — وهو الدرس لا الرقم', async () => {
     const r = await M.calibrate(synthMarket(50, 400, 29), { step: 14, recompute: 14, maxSymbols: 50 });
     if (!r.ok) return;

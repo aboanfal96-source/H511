@@ -6319,11 +6319,28 @@ async function runCalibrateReport() {
     return;
   }
 
-  const col = r.held ? '#0ecf7e' : '#f5c842';
+  /* ثلاث نتائج لا اثنتان: مؤكَّد · انكماش · ضعف قوة إحصائية.
+     الأخيرة تعني «الاتجاه صمد والعيّنة صغيرة»، وعلاجها معاكس للانكماش. */
+  const OUT = {
+    confirmed: { c: '#0ecf7e', t: '✅ صمد خارج العيّنة' },
+    shrank: { c: '#f04458', t: '❌ انكمش — اختيار على الضجيج' },
+    underpowered: { c: '#f5c842', t: '⚠️ الاتجاه صمد — والعيّنة أصغر من أن تحسم' }
+  }[r.outcome] || { c: '#9aa4b8', t: '—' };
+  const col = OUT.c;
   openTimeReport('🔬 المعايرة خارج العيّنة', `
     <div style="${SEC}border:2px solid ${col}55;background:${col}0d">
-      <div style="${HEAD}border-bottom-color:${col}33">${r.held ? '✅ صمد خارج العيّنة' : '⚠️ لم يصمد خارج العيّنة'}</div>
-      <div style="font-size:13px;line-height:2;color:#e6ecf7">${r.verdict}</div>
+      <div style="${HEAD}border-bottom-color:${col}33">${OUT.t}</div>
+      <div style="font-size:13px;line-height:2;color:#e6ecf7">${r.verdict.replace(/\*\*(.+?)\*\*/g, '<b style="color:' + col + '">$1</b>')}</div>
+      ${r.outcome === 'underpowered' ? `
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(74,158,255,.08);border:1px solid rgba(74,158,255,.3);border-radius:7px;font-size:12.5px;color:#c8d0e0;line-height:1.95">
+        <b>ماذا تفعل بهذه النتيجة تحديداً؟</b> لا تغيّر الإعدادات — فذلك علاج مشكلة أخرى.
+        الأثر موجود واتجاهه ثابت، والناقص حجم العيّنة. وسّع النطاق الزمني إلى أقصى ما يتيحه المصدر،
+        وأعد المسح الشامل قبل المعايرة. وإن بقي الأثر بهذا الصغر بعد ذلك فهو أصغر من أن يُبنى عليه قرار عملياً — وذلك جواب أيضاً.
+      </div>` : ''}
+      ${r.fallbackChoice ? `
+      <div style="margin-top:9px;padding:9px 11px;background:rgba(245,200,66,.07);border:1px solid rgba(245,200,66,.28);border-radius:6px;font-size:11.5px;color:#f7e3a1;line-height:1.85">
+        ⚠️ <b>تنبيه على الاختيار:</b> لم يجتز أي إعداد شرط الاتساق (تفوّق في أكثر من نصف الأسهم)، فوقع الاختيار على أعلى رفع كبديل بمعيار أضعف. هذا يُضعف الثقة بالإعداد المختار حتى قبل النظر إلى نتيجة الاختبار.
+      </div>` : ''}
     </div>
 
     <div style="${SEC}">
