@@ -811,6 +811,39 @@ test('تقرير التحليل الزمني يجد حقول conf و coh و emp'
   else ok('reason' in emp, 'emp.reason مفقود');
 });
 
+
+/* ═════════ سقف العيّنة الطيفية ═════════ */
+group('سقف العيّنة الطيفية');
+
+test('الطيف لا يتغيّر بإضافة تاريخ أقدم من السقف', () => {
+  /* هذا هو الضمان الذي يجعل مخرجات المنصة حتمية: مهما طال التاريخ
+     المحمّل، الطيف يُقاس على آخر 750 جلسة نفسها. */
+  const long = plantedCycle(1400, 60, 0.06, 0.012, 5150);
+  const a = E.spectralPro(long);
+  const b = E.spectralPro(long.slice(long.length - 750));
+  ok(a.ok && b.ok, 'أحد التحليلين لم يُنفَّذ');
+  ok(a.period === b.period, `الدورة اختلفت: ${a.period} ≠ ${b.period}`);
+  ok(a.pValueText === b.pValueText, `قيمة الاحتمال اختلفت: ${a.pValueText} ≠ ${b.pValueText}`);
+  ok(a.cyclePosPct === b.cyclePosPct, 'الموقع داخل الدورة اختلف');
+});
+
+test('السقف قابل للتجاوز صراحةً حين يُطلب', () => {
+  const long = plantedCycle(1400, 60, 0.06, 0.012, 5151);
+  const capped = E.spectralPro(long);
+  const full = E.spectralPro(long, { maxBars: 0 });
+  ok(full.ok, full.reason || 'لم يُنفَّذ');
+  ok(full.N > capped.N || full.period !== capped.period,
+    'تعطيل السقف لم يغيّر شيئاً — فالسقف غير مطبَّق أصلاً');
+});
+
+test('النطاق المفحوص يبقى داخل حدود العيّنة المسقوفة', () => {
+  const long = plantedCycle(1400, 40, 0.05, 0.012, 5152);
+  const r = E.spectralPro(long);
+  ok(r.ok, r.reason || '');
+  /* أطول دورة قابلة للفحص = ثلث العيّنة المسقوفة، لا ثلث التاريخ كله */
+  ok(r.period <= 750 / 3 + 1, `دورة ${r.period} جلسة تتجاوز ثلث العيّنة المسقوفة`);
+});
+
 /* ══════════════════════════════════════════════════════════════════════ */
 console.log(`\n${'═'.repeat(60)}`);
 console.log(`نجح ${passed} · فشل ${failed}`);

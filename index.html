@@ -3650,6 +3650,15 @@ function _timeEntry(sym){
   /* ① المصدر المقاس: دورة طيفية اجتازت اختبار الدلالة على هذا السهم */
   let tm=null;
   try{ tm=ddTiming(sym); }catch(e){}
+  /* 🛠️ دورة دالة لكنها تتغيّر بتغيّر طول التاريخ ⇒ حالة مستقلّة معروضة،
+     لا سقوط صامت إلى نافذة غان. السقوط الصامت كان سيستبدل تاريخاً كاذباً
+     بتاريخ كاذب آخر، والفرق أن الثاني لا يقول للمستخدم ما الذي حدث. */
+  if(tm&&tm.ok&&tm.unstable){
+    return{state:'unstable',tier:'cycle',period:tm.period,p:tm.pText,
+      spreadPct:tm.stability?tm.stability.spreadPct:null,
+      periods:tm.stability?tm.stability.periods:null,
+      why:tm.reason||'الدورة تتغيّر بتغيّر النافذة المحمّلة — لا يُشتقّ منها تاريخ'};
+  }
   if(tm&&tm.ok&&tm.significant&&tm.turns&&tm.turns.length){
     const t=tm.turns[0];
     const v=tm.turns.find(x=>x.type==='valley');
@@ -3714,6 +3723,7 @@ function timeCell(sym){
     :'<span style="color:var(--t3)" title="اضغط «مسح شامل» ثم انتظر بناء الخريطة">—</span>';
   if(e.state==='na')return `<span style="color:var(--t3)" title="${e.why}">—</span>`;
   if(e.state==='none')return `<span style="color:var(--t3)" title="${e.why}">لا دورة</span>`;
+  if(e.state==='unstable')return `<span style="color:#f5c842" title="${e.why}">⟲ دورة غير ثابتة${e.periods?` (${e.periods.map(x=>Math.round(x)).join('·')} جلسة عبر النوافذ)`:''}</span>`;
 
   const when=e.bars<=0?'اليوم':e.bars===1?'الجلسة القادمة':`${e.bars}ج`;
   let dt='';
@@ -6766,6 +6776,19 @@ function whenActiveLine(opts){
     catch(e){ return '—'; }
   };
 
+  /* ①-أ فحص ثبات الدورة قبل أي تاريخ — نفس الشرط المطبّق في ddTiming
+     وسلسلة البوابات. لولا تكراره هنا لبقي هذا القسم وحده ينشر تاريخاً
+     تنفيه بقية المنصة، والمستخدم يرى تناقضاً بين قسمين في التقرير نفسه. */
+  var _stab=null;
+  try{ if(window.KSATiming && candles) _stab=KSATiming.cycleStability(candles); }catch(e){}
+  if(spectral && spectral.isSignificant && _stab && _stab.ok && _stab.stable===false){
+    return {ok:false,color:'#f5c842',
+      txt:'الدورة الطيفية دالة إحصائياً (p = '+spectral.pValueText+') <b>لكنها تتغيّر بتغيّر طول التاريخ المحمّل</b>: '
+        +_stab.periods.map(function(x){return Math.round(x);}).join(' · ')+' جلسة عبر '+_stab.significantWindows+' نوافذ متداخلة (تشتّت '+_stab.spreadPct+'٪).'
+        +'<br><span style="font-size:11.5px;color:#9aa4b8">لذلك لا يُنشر موعد: التاريخ كان سيخصّ طول التاريخ المحمّل لا السهم — وهذا سبب اختلاف الموعد بين فريم وفريم. '
+        +'اختبار فيشر لا يكشفه لأنه يسأل «هل تفسّرها الصدفة داخل هذه النافذة؟» لا «هل هي نفسها في نافذة أخرى؟». تعامل مع السهم بالبنية السعرية وحدها.</span>'};
+  }
+
   /* ① الدورة الطيفية — المصدر الوحيد الذي يعطي نافذة بعدم يقين معلن */
   if(spectral && spectral.isSignificant && candles){
     var tt=[];
@@ -6866,7 +6889,10 @@ async function smartTimingAnalysis() {
        (1) تماسك الدورة خارج العيّنة — هل كانت الدورة ستصيب موعد انعطاف لم تره؟
        (2) دورات الارتكاز التجريبية — هل لهذا السهم فعلاً ميل لانعطافات عند
            هذه المسافات، بدل افتراض أن أرقام غان/فيبوناتشي تعمل على كل سهم؟ */
-    let coh = null, emp = null;
+    let coh = null, emp = null, stab = null;
+    /* ثبات الدورة عبر نوافذ متداخلة — الشرط الذي يفصل «دورة السهم» عن
+       «دورة النافذة المحمّلة». يُحسب مرة هنا ويُستعمل في القسمين 1 و4. */
+    try { if (window.KSATiming) stab = KSATiming.cycleStability(candles); } catch (e) { }
     try { if (KSAEngine.cycleCoherence) coh = KSAEngine.cycleCoherence(candles); } catch (e) { }
     try { if (KSAEngine.empiricalPivotCycles) emp = KSAEngine.empiricalPivotCycles(candles, { permutations: 300 }); } catch (e) { }
     const dc = KSAEngine.dominantPivotCycle(candles, 3);
@@ -7122,7 +7148,23 @@ async function smartTimingAnalysis() {
         <div style="${ROW}">قيمة الاحتمال: <b style="color:#0ecf7e">p = ${spectral.pValueText}</b> · نسبة الإشارة إلى الضجيج: <b>${spectral.snr}</b> · دورات متراكبة دالة: <b>${spectral.nCycles}</b></div>
         <div style="${ROW}">الموقع الحالي داخل الدورة: <b>${spectral.cyclePosPct}٪</b> <span style="color:#9aa4b8;font-size:11.5px">(0٪ = قمة · 50٪ = قاع · 50→100 مرحلة صاعدة)</span></div>
         ${spectral.gridErrorPct != null ? `<div style="${ROW}"><span style="font-size:11.5px;color:#9aa4b8">🛠️ التردد منقّى خارج شبكة فورييه — صُحّح انحراف ${spectral.gridErrorPct}٪. بلا هذه التنقية ينجرف الطور تراكمياً، وعند الدورات الطويلة يبلغ الانجراف نصف دورة (القمة المتوقعة تقع عند القاع الحقيقي).</span></div>` : ''}
-        ${(() => { const tt = projectSpectralTurningPoints(spectral, candles.length - 1, 90); return tt.length ? `<div style="margin-top:9px;padding:10px 12px;background:rgba(34,211,238,.07);border:1px solid rgba(34,211,238,.25);border-radius:8px">
+        ${stab && stab.ok ? `<div style="margin-top:9px;padding:10px 12px;border-radius:8px;
+             background:${stab.stable ? 'rgba(14,207,126,.07)' : 'rgba(245,200,66,.08)'};
+             border:1px solid ${stab.stable ? 'rgba(14,207,126,.28)' : 'rgba(245,200,66,.35)'}">
+          <div style="font-weight:700;margin-bottom:6px;color:${stab.stable ? '#0ecf7e' : '#f5c842'}">
+            ${stab.stable ? '✓ ثبات الدورة عبر النوافذ' : '⟲ الدورة تتغيّر بتغيّر طول التاريخ'}</div>
+          <table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c8d0e0">
+            <tr style="color:#5a6a85"><td>طول التاريخ</td>${stab.windows.map(w => `<td style="text-align:center">${w.bars}</td>`).join('')}</tr>
+            <tr><td style="color:#5a6a85">الدورة المهيمنة</td>${stab.windows.map(w => `<td style="text-align:center;color:${w.period == null ? '#5a6a85' : '#e6ecf7'}">${w.period == null ? 'لا دالة' : Math.round(w.period)}</td>`).join('')}</tr>
+          </table>
+          <div style="margin-top:6px;font-size:11.5px;color:#9aa4b8">
+            ${stab.spreadPct != null ? `تشتّت ${stab.spreadPct}٪ مقابل الحدّ ${stab.tolPct}٪. ` : ''}
+            نفس السلسلة تُقاس على نوافذ متداخلة تنتهي كلها اليوم. إن اختلفت الدورة بينها فهي خاصية للنافذة لا للسهم،
+            ولا يُشتقّ منها تاريخ — وهذا بعينه سبب اختلاف الموعد حين تبدّل الفريم.
+            اختبار فيشر أعلاه لا يكشف هذا لأنه يسأل «هل تفسّرها الصدفة داخل هذه النافذة؟» لا «هل هي نفسها في نافذة أخرى؟».
+          </div>
+        </div>` : ''}
+        ${(stab && stab.ok && stab.stable === false) ? `<div style="margin-top:9px;${ROW};color:#f5c842">⛔ لم تُعرض الانعطافات المتوقعة: الدورة غير ثابتة، والتاريخ المشتقّ منها يخصّ النافذة لا السهم.</div>` : (() => { const tt = projectSpectralTurningPoints(spectral, candles.length - 1, 90); return tt.length ? `<div style="margin-top:9px;padding:10px 12px;background:rgba(34,211,238,.07);border:1px solid rgba(34,211,238,.25);border-radius:8px">
           <div style="font-weight:700;margin-bottom:6px">📅 الانعطافات المتوقعة — بعدم يقين معلن</div>
           ${tt.slice(0, 5).map(x => { const dt = KSAEngine.SaudiMarket.addTradingDays(new Date(), x.candlesAhead); return `<div style="${ROW}">${x.type === 'valley' ? '🟢 قاع' : '🔴 قمة'} بعد <b>${x.candlesAhead}</b> جلسة${x.sdBars != null ? ` <span style="color:#9aa4b8">± ${x.sdBars}</span> → النافذة <b>[${x.loBars} – ${x.hiBars}]</b>` : ''} <span style="font-size:11px;color:#9aa4b8">(${dt.toLocaleDateString('ar-SA')})</span> ${x.usable ? '<span style="color:#0ecf7e">✓</span>' : '<span style="color:#f5c842">⚠ أوسع من ربع دورة</span>'}</div>`; }).join('')}
           <div style="margin-top:6px;font-size:11.5px;color:#9aa4b8">النطاق محسوب من حدّ كرامر-راو على سعة الدورة وتشتّت البواقي، ويتّسع كلما بَعُد الأفق — لأنه كذلك فعلاً.</div>
@@ -8123,6 +8165,35 @@ function ddTiming(sym) {
     else if (!sp.significant) {
       out = { ok: true, significant: false, p: sp.pValue, pText: sp.pValueText, score: 0 };
     } else {
+      /* ══ شرط ثبات الدورة عبر النوافذ ═══════════════════════════════
+         🛠️ هذه الدالة هي المصدر الأعلى لكل تاريخ زمني في المنصة: عمود
+         «🕒 موعد الحركة» في كل الجداول، والرادار، وغرفة القرار، وبطاقة
+         النشر — كلها تقرأ منها. وكانت تنشر التاريخ بمجرّد اجتياز الدورة
+         اختبار فيشر.
+
+         واختبار فيشر يجيب عن سؤال واحد: «هل تفسّر الصدفة هذه القمة
+         الطيفية *داخل هذه النافذة*؟» ولا يجيب عن: «هل هي نفسها لو
+         غيّرتُ طول التاريخ؟». والقياس على 526 سلسلة مشي عشوائي: 30
+         اجتازت فيشر، و28 منها كانت تُنتج تاريخ انعطاف — وبعد اشتراط
+         الثبات صارت 3.
+
+         فوضع الشرط هنا يُصلح كل المستهلكين دفعة واحدة، لا في سلسلة
+         البوابات وحدها. */
+      let stab = null;
+      /* الطيف أعلاه محسوب على آخر 750 جلسة (سقف core.js) — نمرّره كي لا
+         يُعاد حسابه داخل فحص الثبات. */
+      try { if (window.KSATiming) stab = KSATiming.cycleStability(cs, { spectral: sp, spectralBars: Math.min(cs.length, 750) }); } catch (e) { }
+      if (stab && stab.ok && stab.stable === false) {
+        out = {
+          ok: true, significant: true, unstable: true, stability: stab,
+          period: sp.period, cyclePos: sp.cyclePosPct, p: sp.pValue, pText: sp.pValueText,
+          snr: sp.snr, turns: [], nextTurn: null, nextValley: null,
+          risingPhase: false, coherent: false, score: 0, reason: stab.note
+        };
+        _ddTimeCache[key] = out;
+        return out;
+      }
+
       const turns = KSAEngine.projectTurnsPro(sp, 90) || [];
       const nextValley = turns.find(t => t.type === 'valley');
       const nextTurn = turns[0] || null;
@@ -8144,7 +8215,7 @@ function ddTiming(sym) {
         ok: true, significant: true,
         period: sp.period, cyclePos: pos, p: sp.pValue, pText: sp.pValueText,
         snr: sp.snr, nCycles: sp.nCycles, gridErrorPct: sp.gridErrorPct,
-        turns, nextTurn, nextValley, risingPhase,
+        turns, nextTurn, nextValley, risingPhase, stability: stab, unstable: false,
         coherent, coh, score: Math.min(15, score)
       };
     }
@@ -9331,7 +9402,12 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
 
     /* ── التوقيت: نافذة، لا تاريخ قاطع ── */
     let tRow=null;try{tRow=_timeEntry(sym);}catch(e){}
-    let timing=null;
+    let timing=null,timingBlocked=null;
+    /* 🛠️ دورة دالة لكنها غير ثابتة عبر النوافذ: البطاقة تُنشر للناس، ونشر
+       موعد يخصّ طول التاريخ المحمّل لا السهم أسوأ من عدم نشر موعد. يُذكر
+       السبب بدل السكوت، فيعرف القارئ لماذا لا يوجد تاريخ. */
+    if(tRow&&tRow.state==='unstable')
+      timingBlocked=`دورة ${tRow.period} جلسة اجتازت اختبار الدلالة لكنها تتغيّر بتغيّر طول التاريخ (${(tRow.periods||[]).map(x=>Math.round(x)).join(' · ')} جلسة عبر النوافذ) — لا يُنشر موعد`;
     if(tRow&&tRow.state==='ok'){
       const isValley=tRow.type==='valley';
       const b=isValley?tRow.bars:(tRow.valleyBars!=null?tRow.valleyBars:tRow.bars);
@@ -9356,7 +9432,8 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     if(timing&&timing.measured&&timing.hi!=null){
       const wdt=Math.max(2,Math.round((timing.period||12)/4));
       act=`${rng(timing.hi,timing.hi+wdt)} (بعد القاع المتوقّع)`;
-    }else act='٣–٧ جلسات — تقدير عام غير مقاس على السهم';
+    }else if(timingBlocked)act='لا نافذة زمنية — الدورة غير ثابتة';
+    else act='٣–٧ جلسات — تقدير عام غير مقاس على السهم';
 
     /* ── النماذج ── */
     ensurePatternData(sym);
@@ -9367,7 +9444,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     if(fr&&fr.ok&&fr.target1)tags.push(`🎯 قمة فراكتالية ${f2(fr.target1)}`);
 
     return{sym,name:stkName(sym),price,pct,entry,stop,target,target2,rr,risk,upPct,
-      entryLo,entryHi,zoneSrc,tShort,t2Kind,
+      entryLo,entryHi,zoneSrc,tShort,t2Kind,timingBlocked,
       label,labelColor:labelColor||C.gd,src,timing,act,tags,cs,betterEntry,
       demo:false};
   }
@@ -9560,7 +9637,8 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
   function texts(d){
     const t=d.timing;
     const when=t?(t.lo!=null?`${t.kind} متوقّع خلال ${rng(t.lo,t.hi)}`
-      :`${t.kind} متوقّع خلال ~${t.bars} ${jal(t.bars)}`):'لا توقيت مقاس على هذا السهم';
+      :`${t.kind} متوقّع خلال ~${t.bars} ${jal(t.bars)}`)
+      :(d.timingBlocked?'لا موعد يُنشر — الدورة تتغيّر بتغيّر طول التاريخ':'لا توقيت مقاس على هذا السهم');
     const tweet=
 `#${d.sym} ${d.name}
 دخول ${(d.entryLo!=null&&d.entryHi!=null)?`${f2(d.entryLo)}–${f2(d.entryHi)}`:f2(d.entry)} · وقف ${f2(d.stop)}
@@ -9585,7 +9663,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
 
 ⏱ *التوقيت*
 ${when}${t&&t.date?` (حول ${t.date})`:''}
-المصدر: ${t?t.src:'—'}
+المصدر: ${t?t.src:(d.timingBlocked?d.timingBlocked:'—')}
 ${t&&!t.measured?'⚠️ رقم كلاسيكي مفروض من خارج السهم — للمراقبة لا للتنفيذ':''}
 🚀 نافذة النشاط: ${d.act}
 ${d.tags.length?'\n📐 '+d.tags.join(' · '):''}

@@ -490,10 +490,14 @@
      التاريخ، والبقية موزّعة هندسياً بينهما. الثبات المقاس على نوافذ ثابتة
      كان يعجز عن العمل على تاريخ قصير فيصمت — وصمت الفحص أسوأ من رسوبه. */
   function _autoWindows(n) {
-    const minW = 200, k = 4;
-    if (n < minW + 50) return [];
+    /* السقف الأعلى 750 جلسة مطابقاً لسقف العيّنة الطيفية في core.js: بلا
+       هذا التطابق تُقتطع كل النوافذ الأطول إلى الطول نفسه فتتساوى نتائجها
+       بالتعريف، ويصبح فحص الثبات يقارن الشيء بنفسه. */
+    const minW = 200, k = 4, maxW = 750;
+    const top = Math.min(n, maxW);
+    if (top < minW + 50) return [];
     const out = [];
-    for (let j = 0; j < k; j++) out.push(Math.round(minW * Math.pow(n / minW, j / (k - 1))));
+    for (let j = 0; j < k; j++) out.push(Math.round(minW * Math.pow(top / minW, j / (k - 1))));
     return out.filter((v, i, a) => a.indexOf(v) === i);
   }
 
@@ -513,16 +517,22 @@
     for (const n of sizes) {
       if (cs.length < n) continue;
       let sp;
-      try { sp = E.spectralPro(cs.slice(-n).map(c => c.close), { alpha: 0.05 }); } catch (e) { continue; }
+      /* النافذة الكبرى غالباً محسوبة سلفاً عند المستدعي (ddTiming يحسب
+         الطيف قبل أن يسأل عن الثبات) — تمريرها يوفّر استدعاءً كاملاً. */
+      if (opt.spectral && opt.spectralBars === n) sp = opt.spectral;
+      else { try { sp = E.spectralPro(cs.slice(-n).map(c => c.close), { alpha: 0.05, maxBars: n }); } catch (e) { continue; } }
       if (!sp.ok) continue;
       rows.push({ bars: n, period: sp.significant ? sp.period : null, significant: !!sp.significant, pValue: sp.pValueText });
-    }
-    /* دائماً نضيف التاريخ الكامل إن لم يوافق آخر مقاس */
-    if (!rows.length || rows[rows.length - 1].bars !== cs.length) {
-      try {
-        const sp = E.spectralPro(cs.map(c => c.close), { alpha: 0.05 });
-        if (sp.ok) rows.push({ bars: cs.length, period: sp.significant ? sp.period : null, significant: !!sp.significant, pValue: sp.pValueText });
-      } catch (e) { }
+
+      /* خروج مبكر: إن تجاوز التشتّت الحدّ بين نافذتين دالّتين فلا تُصلحه
+         نافذة ثالثة — الحكم «غير ثابتة» نهائي، وبقية الحساب هدر. وهذه هي
+         الحالة الأغلب، فالتوفير يقع حيث يقع العبء. */
+      const sofar = rows.filter(r => r.period != null).map(r => r.period);
+      if (sofar.length >= 2) {
+        const md = S.median(sofar);
+        const sp2 = md > 0 ? Math.max.apply(null, sofar.map(v => Math.abs(v - md))) / md * 100 : 999;
+        if (sp2 > tolPct && sofar.length >= minWindows) break;
+      }
     }
 
     const sig = rows.filter(r => r.period != null);

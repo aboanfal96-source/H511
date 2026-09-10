@@ -275,5 +275,67 @@ else {
   if (!broken) ok(`مستويات الصفقة سليمة على ${built} سهماً (${twoTargets} منها بهدفين فأكثر · ${declined} رُفضت)`);
 }
 
+/* ── 9) شرط ثبات الدورة مطبَّق على كل مسار ينشر تاريخاً ─────────────
+   المنصة تنشر تواريخ من أربعة مسارات: ddTiming (عمود «موعد الحركة»
+   والرادار وغرفة القرار والبطاقة)، وسلسلة البوابات، وقسم «متى ينشط»،
+   والقسم الطيفي في التقرير. لو طُبّق الشرط على واحد فقط لظهر السهم نفسه
+   بموعد في تبويب وبلا موعد في آخر — وهو تناقض يهدم الثقة أكثر من الخطأ
+   الأصلي. هذا الفحص يتأكّد أن المسار الأعلى (ddTiming) لا يُخرج انعطافاً
+   لدورة أعلنها فحص الثبات غير ثابتة. */
+{
+  let checked = 0, unstable = 0, leaked = 0, dated = 0;
+  for (let s = 0; s < 40; s++) {
+    const sym = 'SMOKE_ST_' + s;
+    G.cans[sym] = gen(520, 900 + s * 29, 30 + s * 3, 0.014, s % 5 === 0 ? 26 : 0);
+    G.pr[sym] = G.cans[sym][G.cans[sym].length - 1].close;
+    G.demo.delete(sym);
+    try { ctx.calcInd(sym); } catch (e) { }
+    let tm = null;
+    try { tm = ctx.ddTiming(sym); } catch (e) { bad(`ddTiming رمى استثناءً: ${e.message}`); break; }
+    if (!tm || !tm.ok || !tm.significant) continue;
+    checked++;
+    const st = ctx.KSATiming.cycleStability(G.cans[sym]);
+    if (st.ok && st.stable === false) {
+      unstable++;
+      if (tm.turns && tm.turns.length) { leaked++; bad(`[${sym}] ddTiming أخرج انعطافاً لدورة غير ثابتة`); }
+      if (!tm.unstable) { leaked++; bad(`[${sym}] الحالة غير موسومة unstable — المستهلكون لن يعرفوا السبب`); }
+      /* والمسار الذي يقرأ منه العمود والبطاقة */
+      const e2 = ctx._timeEntry(sym);
+      if (e2.state !== 'unstable') { leaked++; bad(`[${sym}] _timeEntry أعاد ${e2.state} بدل unstable`); }
+    } else if (tm.turns && tm.turns.length) dated++;
+  }
+  if (!leaked) ok(`شرط الثبات مطبَّق على كل مسار: ${checked} دورة دالة · ${unstable} منها غير ثابتة (لا تاريخ) · ${dated} ثابتة نُشر تاريخها`);
+
+  /* الفرع السلبي أعلاه قد لا يتحقّق طبيعياً على بيانات اصطناعية، وفحص لا
+     يمرّ بفرعه السلبي يمرّ أيضاً لو حُذف الحارس. لذلك نُجبره: نستبدل
+     cycleStability بواحدة تعلن عدم الثبات دائماً، ونتحقّق أن التاريخ
+     اختفى فعلاً من المسارين. */
+  const realStab = ctx.KSATiming.cycleStability;
+  ctx.KSATiming.cycleStability = () => ({
+    ok: true, stable: false, windows: [{ bars: 250, period: 40 }, { bars: 500, period: 95 }],
+    periods: [40, 95], significantWindows: 2, medianPeriod: 67.5, spreadPct: 40.7, tolPct: 25,
+    note: 'اختبار: الدورة تتغيّر بتغيّر النافذة'
+  });
+  let forced = 0, forcedLeak = 0;
+  for (let s = 0; s < 40; s++) {
+    const sym = 'SMOKE_FORCE_' + s;
+    G.cans[sym] = gen(520, 4400 + s * 17, 25 + s * 2, 0.013, s % 3 === 0 ? 28 : 0);
+    G.pr[sym] = G.cans[sym][G.cans[sym].length - 1].close;
+    G.demo.delete(sym);
+    try { ctx.calcInd(sym); } catch (e) { }
+    const tm = ctx.ddTiming(sym);
+    if (!tm || !tm.ok || !tm.significant) continue;
+    forced++;
+    if (tm.turns && tm.turns.length) { forcedLeak++; bad(`[${sym}] تاريخ نُشر رغم إعلان عدم الثبات`); }
+    if (ctx._timeEntry(sym).state !== 'unstable') { forcedLeak++; bad(`[${sym}] _timeEntry لم يعلن unstable`); }
+    const card = ctx.cardData ? ctx.cardData(sym) : null;
+    if (card && !card.err && card.timing) { forcedLeak++; bad(`[${sym}] بطاقة النشر ما زالت تحمل توقيتاً`); }
+    if (card && !card.err && !card.timingBlocked) { forcedLeak++; bad(`[${sym}] البطاقة لا تذكر سبب غياب الموعد`); }
+  }
+  ctx.KSATiming.cycleStability = realStab;
+  if (forced < 5) bad(`الفرع السلبي لم يُختبر إلا على ${forced} سهماً`);
+  else if (!forcedLeak) ok(`الفرع السلبي مُختبَر فعلاً: ${forced} دورة دالة أُعلنت غير ثابتة ⇒ لا تاريخ في أي مسار ولا في البطاقة`);
+}
+
 console.log(`\n${failures ? `✗ ${failures} مشكلة` : '✓ اختبار الدخان نجح بالكامل'}\n`);
 process.exit(failures ? 1 : 0);
