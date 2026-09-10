@@ -540,6 +540,108 @@ test('يصرّح بحدود النتيجة ولا يعمّمها', () => {
   ok(typeof r.verdict === 'string' && r.verdict.length > 40, 'حكم بلا شرح');
 });
 
+
+/* ═════════ ثبات الدورة عبر النوافذ ═════════ */
+group('ثبات الدورة عبر النوافذ');
+
+test('يمتنع عن الحكم على تاريخ لا يكفي لأربع نوافذ', () => {
+  const r = T.cycleStability(candles(150, 4001, { period: 30, amp: 0.06 }));
+  ok(r.ok === false, 'حكم على 150 جلسة');
+  ok(/200|نوافذ/.test(r.reason || ''), 'سبب الامتناع غير مذكور');
+  ok(r.stable === false, 'stable ليست false عند الامتناع');
+});
+
+test('دورة حقيقية مزروعة تُعلَن ثابتة', () => {
+  let stable = 0, tried = 0;
+  for (const seed of [11, 22, 33, 44, 55, 66]) {
+    const r = T.cycleStability(candles(600, seed, { period: 55, amp: 0.07, noise: 0.010 }));
+    if (!r.ok) continue;
+    tried++; if (r.stable) stable++;
+  }
+  ok(tried >= 4, `لم تُقس إلا ${tried} سلاسل`);
+  ok(stable / tried >= 0.75, `الدورة المزروعة أُعلنت ثابتة في ${stable}/${tried} فقط`);
+});
+
+/* مشي عشوائي هندسي — النموذج الصفري الصحيح للأسعار. مولّد `candles`
+   أعلاه يبني ضجيجاً حول *مستوى ثابت*، وهو نموذج غير واقعي للأسعار:
+   فرق سلسلة بيضاء يعطي عوائد ذات ارتباط ذاتي سالب، واختبار فيشر يفترض
+   عوائد بيضاء، فترتفع نسبة رفضه إلى 50–76٪ على ذلك المولّد وحده. القياس
+   المرفق (scratch) أظهر أن النسبة على مشي عشوائي حقيقي 3–5٪ أي عند
+   المستوى الاسمي تماماً — فالخلل كان في المولّد لا في المحرك. */
+function walkCandles(n, seed) {
+  const r = rng(seed); const out = [];
+  let t = Math.floor(Date.UTC(2023, 0, 1) / 1000), p = 50, prev = 50;
+  for (let i = 0; i < n; i++) {
+    let d = new Date(t * 1000);
+    while (d.getUTCDay() === 5 || d.getUTCDay() === 6) { t += 86400; d = new Date(t * 1000); }
+    p *= Math.exp(0.013 * gauss(r));
+    const w = p * 0.01 * (0.4 + r());
+    out.push({
+      time: t, open: +prev.toFixed(2),
+      high: +Math.max(prev, p, p + w).toFixed(2),
+      low: +Math.min(prev, p, p - w).toFixed(2),
+      close: +p.toFixed(2), volume: Math.round(1e5 * (0.5 + r()))
+    });
+    prev = p; t += 86400;
+  }
+  return out;
+}
+
+test('الضجيج الذي يجتاز فيشر لا يُعلَن ثابتاً غالباً', () => {
+  /* هذه هي النقطة كلها: فيشر يسأل «هل تفسّرها الصدفة داخل هذه النافذة؟»
+     ولا يسأل «هل هي نفسها في نافذة أخرى؟». فحص الثبات هو السؤال الثاني. */
+  let scanned = 0, sig = 0, unstable = 0, dated = 0, datedAfter = 0;
+  for (let s = 1; s <= 700 && sig < 30; s++) {
+    const cs = walkCandles(500, s * 977);
+    const sp = E.spectralPro(cs.map(c => c.close), { alpha: 0.05 });
+    scanned++;
+    if (!sp.ok || !sp.significant) continue;
+    sig++;
+    const turns = E.projectTurnsPro(sp, 30) || [];
+    if (turns.find(x => x.usable) || turns[0]) dated++;
+    const r = T.cycleStability(cs);
+    if (r.ok && !r.stable) unstable++;
+    else if (turns.find(x => x.usable) || turns[0]) datedAfter++;
+  }
+  ok(sig >= 10, `لم يجتز فيشر إلا ${sig} من ${scanned} سلسلة — العيّنة أصغر من أن يُحكم بها`);
+  console.log(`      مشي عشوائي: ${scanned} سلسلة · اجتاز فيشر ${sig} (${(sig / scanned * 100).toFixed(1)}٪)`);
+  console.log(`      تواريخ كانت تُنشر ${dated} ← بعد فحص الثبات ${datedAfter}`);
+  ok(unstable / sig >= 0.6, `فحص الثبات لم يوقف إلا ${unstable}/${sig} من الإيجابيات الكاذبة`);
+});
+
+test('النوافذ المُبلَّغة كلها تنتهي عند اليوم نفسه وتتصاعد طولاً', () => {
+  const r = T.cycleStability(candles(700, 909, { period: 60, amp: 0.07 }));
+  ok(r.ok, r.reason || 'لم يُنفَّذ الفحص');
+  ok(Array.isArray(r.windows) && r.windows.length >= 3, 'أقل من ثلاث نوافذ');
+  for (let i = 1; i < r.windows.length; i++)
+    ok(r.windows[i].bars > r.windows[i - 1].bars, 'النوافذ ليست متصاعدة');
+  ok(r.windows[r.windows.length - 1].bars <= 700, 'نافذة أطول من التاريخ المتاح');
+});
+
+test('بوابة الدورة لا تمرّ بلا إثبات ثبات', () => {
+  const cs = candles(600, 1234, { period: 55, amp: 0.07 });
+  const withStab = T.timingSignal(cs, { stability: { ok: true, stable: false, note: 'اختبار' } });
+  const g = withStab.gates.find(x => x.name === 'cycle');
+  ok(g && g.pass === false, 'مرّت بوابة الدورة رغم عدم الثبات');
+  ok(withStab.nextTurn == null, 'تاريخ انعطاف نُشر رغم عدم ثبات الدورة');
+});
+
+test('عدم الثبات يُنتج فعلاً مستقلاً لا «انتظر»', () => {
+  const cs = candles(600, 1234, { period: 55, amp: 0.07 });
+  const sig = T.timingSignal(cs, { stability: { ok: true, stable: false, note: 'الدورة تتغيّر بتغيّر النافذة (اختبار)' } });
+  const ap = T.actionPlan(cs, { signal: sig });
+  if (!sig.spectral || !sig.spectral.significant) return;   /* لا ينطبق */
+  ok(ap.action === T.ACTION.NONE, `الفعل ${ap.action} بدل no_trade`);
+  ok(/النافذة/.test(ap.title), 'العنوان لا يسمّي سبب الرفض');
+  ok(!ap.window, 'نافذة زمنية نُشرت رغم عدم الثبات');
+});
+
+test('حتمي — نفس التاريخ نفس حكم الثبات', () => {
+  const cs = candles(600, 77, { period: 44, amp: 0.06 });
+  const a = T.cycleStability(cs), b = T.cycleStability(cs);
+  ok(a.stable === b.stable && a.spreadPct === b.spreadPct, 'نتيجة غير حتمية');
+});
+
 /* ══════════════════════════════════════════════════════════════════════ */
 console.log(`\n${'═'.repeat(60)}`);
 console.log(`نجح ${passed} · فشل ${failed}`);

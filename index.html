@@ -452,6 +452,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
     </div>
     <div class="pat-info" id="pat-info"></div>
     <div class="draw-ctrl">
+      <button class="draw-btn on" id="btn-tl" onclick="toggleTradeLevels()" title="إظهار/إخفاء منطقة الدخول والوقف والأهداف على الشارت">🎯 مستويات الصفقة</button>
       <button class="draw-btn" id="draw-trend" onclick="setDrawMode('trend')" title="خط اتجاه: انقر نقطتين">📈 اتجاه</button>
       <button class="draw-btn" id="draw-hline" onclick="setDrawMode('hline')" title="خط أفقي: انقر مرة">➖ أفقي</button>
       <button class="draw-btn" id="draw-free" onclick="setDrawMode('free')" title="رسم حر: اسحب بالماوس">✏️ حر</button>
@@ -1125,7 +1126,7 @@ const fK=n=>n>=1e9?(n/1e9).toFixed(1)+'B':n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(
 const Tm=()=>{const d=new Date();return`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`};
 
 /* ══ STATE ══ */
-const G={sel:'2222',tf:'3mo',tfi:'1d',pr:{},op:{},hi:{},lo:{},vo:{},ch:{},pc:{},cans:{},ind:{},sc:{},ld:new Set(),ldg:new Set(),demo:new Set(),failed:new Map(),lwChart:null,cSeries:null,vSeries:null,series:{}};
+const G={sel:'2222',tf:'3mo',tfi:'1d',pr:{},op:{},hi:{},lo:{},vo:{},ch:{},pc:{},cans:{},ind:{},sc:{},ld:new Set(),ldg:new Set(),demo:new Set(),failed:new Map(),lwChart:null,cSeries:null,vSeries:null,series:{},view:{}};
 let _filter='all',_buyOnly=false,_sellOnly=false,_alertOnly=false,_sortCol='master',_sortDir=-1,_showBearish=false;
 let _visibleSyms=[],_focusedIdx=-1,_pinnedSym=null;
 const TAB_ORDER=['decision','all','vz','ma','rs','sq','ab','fg','hidden','pregap','fvgr','elliott','harmonic','hunter','time','sniper','whale','fib618','falsebreak','master','macd','instvol','revcandle'];
@@ -1179,11 +1180,42 @@ function applyY(sym,d){G.demo.delete(sym);G.failed.delete(sym);G.cans[sym]=d.cs;
    (2) لا ضمان توفّر ولا اتفاقية خدمة — تسقط بلا إنذار فتبقى المنصة على
    بيانات عشوائية، (3) على Vercel تعمل /api/stock من جهة الخادم أصلاً بلا
    قيد CORS، فوجود الوسطاء كان تعويضاً عن مشكلة غير موجودة في الإنتاج. */
+/* ══ فصل تاريخ التحليل عن نطاق العرض ═════════════════════════════════
+   🛠️ إصلاح جذري لعطل أبلغ عنه المستخدم: «إذا وضعت الشارت سنة يظهر قاع
+   غداً، وإذا وضعته سنتين يختفي — وتتغيّر معه الأهداف ومناطق الدخول».
+
+   السبب لم يكن عشوائية: أزرار الفريم كانت تُعيد جلب البيانات وتستبدل
+   G.cans[sym] كلياً، وكل التحليل — الطيف، الارتكازات، الأهداف الفراكتلية,
+   مستويات البنية، بطاقة النشر — يقرأ من G.cans. فكان زرّ العرض يغيّر
+   *مدخلات التحليل* لا شكل الرسم فقط. مستوى مقاومة مشتقّ من قمة عمرها 18
+   شهراً يختفي حرفياً حين تحمّل سنة واحدة، فتتغيّر الأهداف؛ والدورة
+   الطيفية تُحسب على عيّنة أخرى، فيتغيّر التاريخ.
+
+   الإصلاح: على الفاصل اليومي يُجلب تاريخ ثابت طويل (5 سنوات) دائماً مهما
+   كان الزرّ المضغوط، ويُخزَّن كاملاً في G.cans، فيرى كل تحليل نفس
+   البيانات في كل مرة. وزرّ الفريم يصبح ما يجب أن يكونه: **نافذة عرض على
+   الشارت** (setVisibleRange) لا مُدخَلاً للتحليل. النتيجة: مخرجات
+   التحليل حتمية — نفس السهم يعطي نفس التاريخ ونفس الأهداف مهما بدّلت
+   الزرّ — والمستخدم يبقى قادراً على تكبير المدى المعروض كما يشاء.
+
+   الفواصل داخل اليوم (5د/15د/ساعة) مستثناة: مصدر البيانات لا يوفّر لها
+   خمس سنوات أصلاً، وهي فواصل عرض لا تحليل. */
+const ANALYSIS_RANGE='5y';
+const _RANGE_RANK={'1d':0,'5d':1,'1mo':2,'3mo':3,'ytd':4,'6mo':4,'1y':5,'2y':6,'5y':7,'10y':8,'max':9};
+/** النطاق الذي يُجلب فعلاً من المصدر: أطول من المعروض على الفاصل اليومي. */
+function fetchRangeFor(range,interval){
+  if(interval!=='1d')return range;
+  return (_RANGE_RANK[range]==null||_RANGE_RANK[range]<_RANGE_RANK[ANALYSIS_RANGE])?ANALYSIS_RANGE:range;
+}
+/** عدد الأشهر التي يعرضها زرّ الفريم على الشارت (null = كل التاريخ). */
+const _VIEW_MONTHS={'1mo':1,'3mo':3,'6mo':6,'ytd':null,'1y':12,'2y':24,'5y':60,'10y':120,'max':null};
+
 async function loadStock(sym,range,interval){
   if(G.ldg.has(sym))return;G.ldg.add(sym);
-  const r=range||G.tf,i=interval||G.tfi;let ok=false,reason='';
+  const r=range||G.tf,i=interval||G.tfi;const fr=fetchRangeFor(r,i);let ok=false,reason='';
+  G.view[sym]={range:r,interval:i,fetched:fr};
   try{
-    const rsp=await fetch(`/api/stock?symbol=${encodeURIComponent(sym)}&range=${encodeURIComponent(r)}&interval=${encodeURIComponent(i)}`,{signal:AbortSignal.timeout(12000),cache:'no-store'});
+    const rsp=await fetch(`/api/stock?symbol=${encodeURIComponent(sym)}&range=${encodeURIComponent(fr)}&interval=${encodeURIComponent(i)}`,{signal:AbortSignal.timeout(12000),cache:'no-store'});
     if(rsp.ok){
       const d=await rsp.json();
       const res=d?.chart?.result?.[0];
@@ -1720,29 +1752,29 @@ function _ewValidate(pv){
   const r2=Math.abs(p2.p-p1.p)/w1;
   if(r2>=1)return null;                    /* قاعدة ①: الموجة ② لا تبتلع ① */
   if(r2<0.14)return null;                  /* تصحيح ضحل جداً ليكون موجة ② */
-  const o={up,w1,r2,pen:0,p0,p1,p2};
-  if(r2<0.382||r2>0.786)o.pen+=8;
+  const o={up,w1,r2,pen:0,notes:[],p0,p1,p2};
+  if(r2<0.382||r2>0.786){o.pen+=8;o.notes.push(`تصحيح الموجة ② ${(r2*100).toFixed(0)}٪ خارج النطاق المعتاد 38–79٪`);}
   if(pv.length>=4){
     const p3=pv[3];
     if(up?p3.p<=p1.p:p3.p>=p1.p)return null;  /* الموجة ③ لازم تتجاوز نهاية ① */
     o.w3=Math.abs(p3.p-p2.p);o.p3=p3;
-    if(o.w3<w1*0.618)o.pen+=12;
-    if(o.w3<w1)o.pen+=6;
+    if(o.w3<w1*0.618){o.pen+=12;o.notes.push('الموجة ③ أقصر من 0.618× الموجة ① — دافعة ضعيفة البنية');}
+    else if(o.w3<w1){o.pen+=6;o.notes.push('الموجة ③ أقصر من الموجة ① — خلاف المعتاد في الدافعات');}
   }
   if(pv.length>=5){
     const p4=pv[4];
     if(up?p4.p<=p1.p:p4.p>=p1.p)return null;  /* قاعدة ③: لا تداخل مع أرض ① */
     const r4=Math.abs(p4.p-o.p3.p)/o.w3;
     if(r4>=1)return null;
-    if(r4<0.14||r4>0.618)o.pen+=8;
-    if(Math.abs(r4-o.r2)<0.10)o.pen+=5;      /* إرشاد التناوب */
+    if(r4<0.14||r4>0.618){o.pen+=8;o.notes.push(`تصحيح الموجة ④ ${(r4*100).toFixed(0)}٪ خارج النطاق المعتاد 14–62٪`);}
+    if(Math.abs(r4-o.r2)<0.10){o.pen+=5;o.notes.push('② و④ صحّحتا بنفس العمق تقريباً — إرشاد التناوب غير محقّق');}
     o.p4=p4;o.r4=r4;
   }
   if(pv.length>=6){
     const p5=pv[5];
     o.w5=Math.abs(p5.p-o.p4.p);o.p5=p5;
     if(o.w3<o.w1&&o.w3<o.w5)return null;      /* قاعدة ②: ③ ليست الأقصر */
-    if(up?p5.p<=o.p3.p:p5.p>=o.p3.p)o.pen+=14;/* موجة خامسة مبتورة */
+    if(up?p5.p<=o.p3.p:p5.p>=o.p3.p){o.pen+=14;o.notes.push('الموجة ⑤ لم تتجاوز قمة ③ — دافعة مبتورة');}
   }
   return o;
 }
@@ -1769,9 +1801,19 @@ function _ewScan(cs,zz){
       const span=Math.abs(win[len-1].p-win[0].p)/win[0].p*100;
       if(span<5||v.w1/win[0].p*100<1.5)continue;
       if(!_ewLiveOk(len,v,win,liveP))continue;
+      /* 🛠️ عطل مقاس: بلا هذا الشرط كان 47٪ من العدّات المعروضة آخرُ محور
+         مؤكَّد فيها أقدم من 80 جلسة (وسيط 76، وأقصى 488 جلسة)، وتُعرض
+         مع ذلك بعبارة «الموجة ③ الجارية». عدّ عمره سنتان لا يصف الحاضر.
+         بعد الشرط: الوسيط 15 جلسة، والأقصى 53، ولا عدّ فوق 80 إطلاقاً.
+         الحدّ مشتقّ من إيقاع العدّ نفسه لا رقماً ثابتاً: الموجة الجارية
+         لا يصحّ أن تكون قد استغرقت أكثر من ضعفَي ونصف متوسط زمن موجات
+         العدّ، وإلا فهي شيء آخر لا امتداد لها. */
+      const age=n-1-win[len-1].i;
+      const avgBars=(win[len-1].i-win[0].i)/Math.max(1,len-1);
+      if(age>Math.max(15,Math.round(2.5*avgBars)))continue;
       const recency=win[len-1].i/(n-1);
       const sc=len*12+recency*45-v.pen;
-      if(!best||sc>best.sc)best={win,len,v,sc};
+      if(!best||sc>best.sc)best={win,len,v,sc,age,avgBars};
     }
   }
   return best;
@@ -1846,8 +1888,22 @@ function detectElliott(cs){
     why=`عدّ صالح ومكتمل: الموجات ①→⑤ كلها مؤكدة كمحاور — الدورة الدافعة انتهت عند ${win[5].p.toFixed(2)}، والمتوقّع تصحيح A-B-C. القواعد الثلاث محقّقة (② لا تبتلع ①، ③ ليست الأقصر، ④ لا تدخل أرض ①).`;
   }
 
-  const conf=Math.max(10,Math.min(95,Math.round(92-v.pen*2.2-(len<5?8:0))));
-  return{sig,wave,desc,why:why+` · ثقة العدّ ${conf}٪`,points,target,target2,stop,projection,bullBias:up,fresh,conf,
+  /* 🛠️ حُذف «ثقة العدّ ٪». كان يُحسب 92 − العقوبات×2.2 ويُعرض نسبةً
+     مئوية تصل إلى 92٪. الرقم لم يكن مشتقّاً من أي قياس، والأخطر أنه
+     يوحي بندرة غير موجودة: القياس على 200 سلسلة مشي عشوائي أعطى عدّاً
+     إليوتياً «صالحاً» في 200 منها — أي أن قواعد إليوت الثلاث تتحقّق
+     بالصدفة على كل سلسلة تقريباً. فما يميّز عدّاً عن عدّ ليس نسبة مخترعة
+     بل: هل خالف إرشادات النسب؟ وكم عمر آخر محور فيه؟ وكلاهما معروض
+     صراحةً الآن. */
+  const grade=v.pen===0?{t:'عدّ نظيف — لم يُخالف أي إرشاد نسب',c:'clean'}
+    :v.pen<=12?{t:'عدّ مقبول مع تحفّظات',c:'ok'}
+    :{t:'عدّ ضعيف — يخالف عدة إرشادات',c:'weak'};
+  const ageTxt=best.age<=1?'آخر محور مؤكَّد في الجلسة الأخيرة'
+    :`آخر محور مؤكَّد قبل ${best.age} جلسة (متوسط زمن الموجة ${Math.round(best.avgBars)} جلسة)`;
+  const caveat='⚠️ قواعد إليوت الثلاث تتحقّق بالصدفة كثيراً: قياسنا على 200 سلسلة مشي عشوائي أعطى عدّاً «صالحاً» في 107 منها (54٪)، منها 47 بدرجة «نظيف» (24٪). فوجود عدّ ليس دليلاً بذاته — استعمله وصفاً للبنية لا سبباً للدخول، والسبب يبقى من الدعوم والمقاومات والسيولة.';
+  return{sig,wave,desc,points,target,target2,stop,projection,bullBias:up,fresh,
+    grade:grade.c,gradeText:grade.t,age:best.age,notes:v.notes||[],
+    why:`${why} · ${grade.t}${(v.notes&&v.notes.length)?` (${v.notes.join('؛ ')})`:''} · ${ageTxt}. ${caveat}`,
     count:{len,r2:+v.r2.toFixed(3),r4:v.r4!=null?+v.r4.toFixed(3):null}};
 }
 
@@ -2945,6 +3001,103 @@ function calcTradePlan(sym){
     rrFirst:targetsFinal[0]?.rr??null};
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   🎯 مستويات الصفقة — مصدر واحد للشارت وللوحة وللبطاقة
+   ──────────────────────────────────────────────────────────────────────
+   طلب المستخدم: «احتاج منطقة دخول واضحة ووقف واضح وهدفين على الشارت أقل
+   شيء». وكان النقص الفعلي أعمق من الرسم: كل مستهلك يحسب مستوياته بنفسه —
+   لوحة الخطة من calcTradePlan، وبطاقة النشر من غرفة القرار أحياناً ومن
+   calcTradePlan أحياناً، والشارت لا يرسم شيئاً. فتظهر ثلاثة أرقام مختلفة
+   للصفقة نفسها. هذه الدالة هي المصدر الوحيد لكل من الثلاثة.
+
+   ثلاث قواعد تحكمها:
+   ① منطقة الدخول منطقة لا نقطة. مصدرها الأول بنية سيولة حيّة (فجوة قيمة
+     عادلة أو كتلة أوامر) من KSATiming، لأن ذلك نطاق مرصود في السوق لا
+     هامش مخترع. وإن لم توجد، يُشتقّ نطاق من ATR ويُصرَّح بمصدره.
+   ② لا هدف مخترع. الهدفان من مستويات بنيوية (calcTradePlan)، وإن نقص
+     الثاني يُكمَّل من قمة فراكتالية حيّة **موسومة صراحةً** بأنها ليست
+     مستوى بنيوياً. وإن لم يوجد أيٌّ منهما يبقى الهدف ناقصاً ويُقال ذلك،
+     لأن ملء الفراغ بمضاعف ثابت يعيد كتابة النسبة التي يُفترض أن تُقاس.
+   ③ منطقة الدخول لا تلامس الوقف: حدّها الأدنى فوق الوقف بهامش، وإلا
+     صارت الصفقة بلا مسافة مخاطرة.
+   ══════════════════════════════════════════════════════════════════════ */
+function tradeLevels(sym){
+  sym=sym||G.sel;
+  const cs=G.cans[sym];
+  if(!cs||cs.length<20)return null;
+  const tp=(typeof window.calcTradePlan==='function')?window.calcTradePlan(sym):null;
+  if(!tp)return null;
+  const ind=G.ind[sym]||{};
+  const cur=G.pr[sym]||cs[cs.length-1].close;
+  const atr=(ind.atr>0)?ind.atr:cur*0.015;
+  const f2=n=>(n==null||!isFinite(n))?null:+(+n).toFixed(2);
+
+  /* ── ① منطقة الدخول ───────────────────────────────────────────────── */
+  let lo=null,hi=null,zoneSrc='',zoneKind='atr';
+  if(tp.planType==='breakout'){
+    lo=tp.entry;hi=f2(tp.entry+0.3*atr);
+    zoneSrc='نطاق تأكيد الاختراق — من سعر الكسر إلى +0.3×ATR فوقه';
+    zoneKind='breakout';
+  }else{
+    try{
+      if(window.KSATiming){
+        const lq=KSATiming.liquidityGate(cs,{dirUp:true});
+        const zs=(lq.zones||[]).filter(z=>z.top<=cur*1.02&&z.top>tp.stop)
+          .sort((a,b)=>Math.abs(cur-b.top)-Math.abs(cur-a.top));
+        const z=(lq.pass&&lq.zone)?lq.zone:zs[0];
+        if(z&&z.top>tp.stop){lo=f2(z.bot);hi=f2(z.top);
+          zoneSrc=`${z.kind==='FVG'?'فجوة قيمة عادلة':'كتلة أوامر'} صاعدة حيّة عمرها ${z.barsSince} جلسة`;
+          zoneKind=z.kind;}
+      }
+    }catch(e){}
+    if(lo==null){
+      lo=f2(Math.max(tp.stop+0.25*atr,cur-0.5*atr));
+      hi=f2(cur+0.15*atr);
+      zoneSrc='لا فجوة قيمة عادلة ولا كتلة أوامر حيّة قرب السعر — النطاق مشتقّ من ATR وليس بنية مرصودة';
+    }
+  }
+  if(!(hi>lo)){const t=lo;lo=Math.min(t,hi);hi=Math.max(t,hi);}
+  if(lo<=tp.stop){lo=f2(tp.stop+0.2*atr); if(hi<=lo)hi=f2(lo+0.2*atr);}
+  const entryRef=f2((lo+hi)/2);
+  const risk=f2(entryRef-tp.stop);
+
+  /* ── ② الأهداف: بنيوية أولاً، ثم فراكتالية موسومة ─────────────────── */
+  const MIN_RR=tp.minRR||1.5;
+  const targets=(tp.targets||[]).map(t=>({price:t.price,source:t.source,kind:'structural',
+    rr:risk>0?+((t.price-entryRef)/risk).toFixed(2):null}));
+  let filled=false;
+  if(targets.length<2&&window.KSAEngine){
+    try{
+      const fr=KSAEngine.fractalTargets(cs);
+      if(fr&&fr.ok){
+        for(const cand of [fr.target1,fr.target2,fr.measuredMove]){
+          if(targets.length>=2)break;
+          if(cand==null)continue;
+          if(!(risk>0)||cand<entryRef+risk*MIN_RR)continue;
+          if(targets.some(t=>Math.abs(t.price-cand)<0.25*atr))continue;
+          targets.push({price:f2(cand),source:'قمة فراكتالية حيّة (ليست مستوى بنيوياً)',
+            kind:'fractal',rr:+((cand-entryRef)/risk).toFixed(2)});
+          filled=true;
+        }
+      }
+    }catch(e){}
+  }
+  targets.sort((a,b)=>a.price-b.price);
+
+  const shortNote = targets.length>=2 ? null
+    : (targets.length===1
+       ? `هدف واحد فقط: لا يوجد مستوى ثانٍ فوق ${targets[0].price} يستحق المخاطرة (1:${MIN_RR}) ضمن التاريخ المحمّل. لم يُختلق هدف ثانٍ بمضاعف ثابت.`
+       : (tp.viabilityNote||'لا يوجد هدف يستحق المخاطرة — الصفقة غير مجدية بالنسبة الحالية.'));
+
+  return{sym,dirUp:true,planType:tp.planType,
+    entryLo:lo,entryHi:hi,entryRef,zoneSrc,zoneKind,
+    stop:tp.stop,stopSource:tp.stopSource,risk,
+    targets:targets.slice(0,3),targetsFilled:filled,shortNote,
+    viable:tp.viable&&targets.length>0,minRR:MIN_RR,
+    rr1:targets[0]?targets[0].rr:null,rr2:targets[1]?targets[1].rr:null};
+}
+window.tradeLevels=tradeLevels;
+
 /* ══════════════════════════════════════════════════════════════
    🧠 ENTRY VERDICT — الرأي الفني: هل الدخول مناسب الآن؟ وما الأفضل؟
    A rule-based technical read (consistent with the rest of the engine —
@@ -3842,6 +3995,74 @@ function initChart(){
   window.addEventListener('mouseup',onChartDrawMouseUp);
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   🎯 رسم مستويات الصفقة على الشارت
+   ──────────────────────────────────────────────────────────────────────
+   منطقة الدخول تُرسم شريطاً (حدّان + تظليل بينهما)، والوقف خطاً أحمر
+   متصلاً، والأهداف خطوطاً زرقاء متقطّعة تحمل نسبة العائد/المخاطرة على
+   محور السعر. الهدف المُكمَّل من قمة فراكتالية يُرسم بلون مختلف ووسم
+   صريح، فلا يختلط بمستوى بنيوي.
+
+   التظليل يُنفَّذ بسلسلة منطقة (Area) بين حدّي النطاق لا بخط واحد، لأن
+   «منطقة دخول» تعني مدى سعرياً يُتفاوض داخله لا رقماً واحداً.
+   ══════════════════════════════════════════════════════════════════════ */
+let _tlObjs=[],_tlOn=(()=>{try{return localStorage.getItem('ksaTL')!=='0';}catch(e){return true;}})();
+function clearTradeLevels(){
+  _tlObjs.forEach(o=>{try{o.kind==='series'?G.lwChart.removeSeries(o.obj):G.cSeries.removePriceLine(o.obj);}catch(e){}});
+  _tlObjs=[];
+}
+function drawTradeLevels(sym){
+  clearTradeLevels();
+  const _b=document.getElementById('btn-tl');if(_b)_b.classList.toggle('on',_tlOn);
+  if(!_tlOn||!G.lwChart||!G.cSeries)return null;
+  let L=null;try{L=tradeLevels(sym);}catch(e){return null;}
+  if(!L)return null;
+  const cs=G.cans[sym];if(!cs||!cs.length)return L;
+  const t0=cs[Math.max(0,cs.length-1-60)].time,t1=cs[cs.length-1].time;
+  const pl=(price,color,title,style,width)=>{
+    if(price==null||!isFinite(price))return;
+    try{_tlObjs.push({kind:'priceline',obj:G.cSeries.createPriceLine({
+      price:price,color:color,lineWidth:width||1,lineStyle:style==null?2:style,
+      axisLabelVisible:true,title:title})});}catch(e){}
+  };
+  /* شريط منطقة الدخول */
+  try{
+    const band=G.lwChart.addAreaSeries({topColor:'rgba(14,207,126,.18)',bottomColor:'rgba(14,207,126,.18)',
+      lineColor:'rgba(14,207,126,0)',lineWidth:1,priceLineVisible:false,lastValueVisible:false,
+      crosshairMarkerVisible:false,baseLineVisible:false});
+    band.setData([{time:t0,value:L.entryHi},{time:t1,value:L.entryHi}]);
+    _tlObjs.push({kind:'series',obj:band});
+  }catch(e){}
+  pl(L.entryHi,'#0ecf7e',`دخول ▲ ${L.entryHi}`,0,1);
+  pl(L.entryLo,'#0ecf7e',`دخول ▼ ${L.entryLo}`,0,1);
+  pl(L.stop,'#f04458',`وقف ${L.stop}`,0,2);
+  const tc=['#4a9eff','#a78bfa','#22d3ee'];
+  L.targets.forEach((t,i)=>pl(t.price,t.kind==='fractal'?'#f5c842':tc[i]||'#4a9eff',
+    `هدف ${i+1} ${t.price}${t.rr!=null?` · 1:${t.rr}`:''}${t.kind==='fractal'?' (فراكتالي)':''}`,2,2));
+  return L;
+}
+/** زرّ إظهار/إخفاء المستويات — الحالة محفوظة بين الجلسات. */
+function toggleTradeLevels(){
+  _tlOn=!_tlOn;
+  try{localStorage.setItem('ksaTL',_tlOn?'1':'0');}catch(e){}
+  const b=document.getElementById('btn-tl');if(b)b.classList.toggle('on',_tlOn);
+  if(_tlOn)drawTradeLevels(G.sel);else clearTradeLevels();
+}
+window.drawTradeLevels=drawTradeLevels;window.toggleTradeLevels=toggleTradeLevels;
+
+/** يضبط النافذة المرئية على الشارت حسب زرّ الفريم، بلا مساس بالبيانات. */
+function applyChartView(sym,cs){
+  try{
+    const ts=G.lwChart.timeScale();
+    const v=G.view[sym]||{range:G.tf,interval:G.tfi};
+    const months=(v.interval==='1d')?_VIEW_MONTHS[v.range]:undefined;
+    if(months==null||!cs.length){ts.fitContent();return;}
+    const to=cs[cs.length-1].time;
+    const from=to-Math.round(months*30.44*86400);
+    if(from<=cs[0].time){ts.fitContent();return;}
+    ts.setVisibleRange({from:from,to:to});
+  }catch(e){try{G.lwChart.timeScale().fitContent();}catch(_){}}
+}
 function updateChart(sym){
   if(!G.lwChart||!G.cSeries||!G.cans[sym])return;
   const cs=G.cans[sym],ind=G.ind[sym];
@@ -3849,7 +4070,12 @@ function updateChart(sym){
   G.vSeries.setData(cs.map(c=>({time:c.time,value:c.volume,color:c.close>=c.open?'rgba(14,207,126,.12)':'rgba(240,68,88,.12)'})));
   if(ind?.sma20)G.series.s20.setData(cs.map((c,i)=>ind.sma20[i]!=null?{time:c.time,value:ind.sma20[i]}:null).filter(Boolean));
   if(ind?.sma50)G.series.s50.setData(cs.map((c,i)=>ind.sma50[i]!=null?{time:c.time,value:ind.sma50[i]}:null).filter(Boolean));
-  G.lwChart.timeScale().fitContent();
+  /* 🛠️ السلسلة تحمل كل التاريخ المحمّل دائماً؛ زرّ الفريم يحرّك النافذة
+     المرئية فقط. فائدتان: (1) مخرجات التحليل لا تتغيّر بتغيّر الزرّ لأن
+     البيانات لم تتغيّر، (2) يمكن للمستخدم السحب لليسار لرؤية ما قبل النافذة
+     بدل أن يكون التاريخ الأقدم محذوفاً من الذاكرة أصلاً. */
+  applyChartView(sym,cs);
+  drawTradeLevels(sym);
   refreshPatternButtons(sym);
   /* Re-draw whichever overlay was active when switching stocks/timeframes */
   if(_patMode)drawPattern(_patMode,true);
@@ -4328,7 +4554,17 @@ function selectStock(sym){
 function setTF(range,interval,el){
   G.tf=range;G.tfi=interval;document.querySelectorAll('.tf').forEach(b=>b.classList.remove('on'));el.classList.add('on');
   document.querySelectorAll('.tf-interval').forEach(b=>b.classList.toggle('on',b.dataset.itv===interval));
-  const sym=G.sel;delete G.cans[sym];G.ld.delete(sym);G.ldg.delete(sym);
+  const sym=G.sel;
+  /* 🛠️ لم يعد تبديل الفريم يمسح البيانات ويعيد الجلب. إن كان النطاق
+     المجلوب فعلاً هو نفسه (وهو الحال بين كل الفريمات اليومية بعد تثبيت
+     تاريخ التحليل على 5 سنوات) فالتبديل تغيير نافذة عرض فقط: لا طلب
+     شبكة، ولا إعادة حساب، وبالتالي **لا تغيّر في أي مخرَج تحليلي**. */
+  const cur=G.view[sym], want=fetchRangeFor(range,interval);
+  if(cur&&cur.fetched===want&&cur.interval===interval&&G.cans[sym]&&G.cans[sym].length){
+    G.view[sym]={range:range,interval:interval,fetched:want};
+    updateChart(sym);return;
+  }
+  delete G.cans[sym];G.ld.delete(sym);G.ldg.delete(sym);
   if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];if(G.fracCache)delete G.fracCache[sym];
   loadStock(sym,range,interval).then(()=>{calcInd(sym);updateHeader(sym);updateChart(sym);updateTradePlan(sym);});
 }
@@ -4383,6 +4619,9 @@ function updateTradePlan(sym){
   </div>`;
 
   const ev=calcEntryVerdict(sym,tp);
+  /* 🛠️ منطقة الدخول والأهداف من tradeLevels — نفس المصدر الذي يرسم على
+     الشارت ويبني بطاقة النشر، فلا تتناقض ثلاث لوحات على السهم نفسه. */
+  let TL=null;try{TL=window.tradeLevels?window.tradeLevels(sym):null;}catch(e){}
 
   const verdictHtml=ev?`
     <div class="tp-verdict-box">
@@ -4403,9 +4642,9 @@ function updateTradePlan(sym){
     </div>
     <div class="tp-grid">
       <div class="tp-box">
-        <div class="tp-box-title">✅ نقطة الدخول</div>
-        <div class="tp-box-val" style="color:var(--up)">${tp.entry}</div>
-        <div class="tp-box-sub">${tp.planType==='breakout'?'دخول عند كسر المقاومة وتأكيده':'دخول عند السعر الحالي'}</div>
+        <div class="tp-box-title">✅ منطقة الدخول</div>
+        <div class="tp-box-val" style="color:var(--up)">${TL?`${TL.entryLo} – ${TL.entryHi}`:tp.entry}</div>
+        <div class="tp-box-sub">${TL?TL.zoneSrc:(tp.planType==='breakout'?'دخول عند كسر المقاومة وتأكيده':'دخول عند السعر الحالي')}</div>
       </div>
       <div class="tp-box">
         <div class="tp-box-title">🛑 وقف الخسارة</div>
@@ -4419,9 +4658,9 @@ function updateTradePlan(sym){
       ${tp.supports.length?tp.supports.map(s=>levelRow(s,'sup')).join(''):'<div class="tp-note">لا يوجد دعم هيكلي واضح قريب</div>'}
       <div class="tp-box-title" style="padding:6px 0 2px">🔴 المقاومات (الأقرب أولاً)</div>
       ${tp.resistances.length?tp.resistances.map(r=>levelRow(r,'res')).join(''):'<div class="tp-note">لا توجد مقاومة هيكلية واضحة قريبة</div>'}
-      <div class="tp-box-title" style="padding:6px 0 2px">🎯 الأهداف</div>
-      ${tp.targets.length
-        ? tp.targets.map((t,i)=>targetRow(t,i)).join('')
+      <div class="tp-box-title" style="padding:6px 0 2px">🎯 الأهداف${TL&&TL.targetsFilled?' <span style="font-size:9px;color:#f5c842">(الثاني قمة فراكتالية لا مستوى بنيوي)</span>':''}</div>
+      ${(TL&&TL.targets.length?TL.targets:tp.targets).length
+        ? (TL&&TL.targets.length?TL.targets:tp.targets).map((t,i)=>targetRow(t,i)).join('')
         : `<div class="tp-note" style="border-color:rgba(240,68,88,.35);background:rgba(240,68,88,.06);color:#f7b3bc">
              ⛔ <b>لا هدف يستحق هذه المخاطرة</b> — ${tp.viabilityNote}
            </div>`}
@@ -6711,6 +6950,17 @@ async function smartTimingAnalysis() {
                 ${({cycle:'الدورة الطيفية ونافذتها',liquidity:'بنية السيولة (FVG / كتلة أوامر)',mtf:'الاتساق عبر الفواصل',flow:'تدفّق الأحجام التقديري',warp:'انتظام الزمن (DTW)'})[g.name] || g.name}
                 <span style="font-size:10.5px;color:#5a6a85">وزن ${g.weight}</span></div>
               <div style="font-size:12px;color:#9aa4b8;margin-top:3px">${g.why}</div>
+              ${g.name==='cycle'&&g.stability&&g.stability.ok&&g.stability.windows?`
+              <div style="margin-top:6px;padding:7px 9px;border-radius:6px;font-size:11.5px;line-height:1.8;
+                   background:${g.stability.stable?'rgba(14,207,126,.06)':'rgba(245,200,66,.07)'};
+                   border:1px solid ${g.stability.stable?'rgba(14,207,126,.24)':'rgba(245,200,66,.3)'}">
+                <b style="color:${g.stability.stable?'#0ecf7e':'#f5c842'}">${g.stability.stable?'✓ الدورة نفسها مهما غيّرت طول التاريخ':'⚠ الدورة تتغيّر بتغيّر طول التاريخ'}</b>
+                <table style="width:100%;margin-top:5px;border-collapse:collapse;color:#c8d0e0;font-family:'IBM Plex Mono',monospace;font-size:11px">
+                  <tr style="color:#5a6a85"><td>نافذة</td>${g.stability.windows.map(w=>`<td style="text-align:center">${w.bars} جلسة</td>`).join('')}</tr>
+                  <tr><td style="color:#5a6a85">الدورة</td>${g.stability.windows.map(w=>`<td style="text-align:center;color:${w.period==null?'#5a6a85':'#e6ecf7'}">${w.period==null?'لا دالة':Math.round(w.period)}</td>`).join('')}</tr>
+                </table>
+                ${g.stability.spreadPct!=null?`<div style="margin-top:4px;color:#9aa4b8">تشتّت ${g.stability.spreadPct}٪ مقابل الحدّ ${g.stability.tolPct}٪ — وهذا بالضبط سبب اختلاف الموعد بين فريم وفريم.</div>`:''}
+              </div>`:''}
             </div>`;
           const col = gs.fire ? '#0ecf7e' : '#f5c842';
 
@@ -8593,14 +8843,18 @@ if(typeof _origScan==='function'){
      هو السبب المباشر لأن المعايرة أعطت 516 صفقة فقط وخرجت بحكم «العيّنة
      أصغر من أن تحسم» — قيدٌ في الواجهة ظهر كأنه حدّ في البيانات.
 
-     الآن: أرضية. أقصر من سنة يُرفع إلى سنة، وما هو أطول يبقى كما هو. */
-  var _TF_ORDER = ['1d','5d','1mo','3mo','6mo','1y','2y','5y','10y','max'];
+     ثم زال سبب القيد أصلاً: تاريخ التحليل صار مثبّتاً على 5 سنوات لكل
+     الفواصل اليومية (fetchRangeFor)، فأيّ زرّ يومي يُحمّل نفس التاريخ.
+     الباقي هو الاستثناء الوحيد: الفواصل داخل اليوم (5د/15د/ساعة) تُحمّل
+     عشرات الشموع لا مئاتها، والمسح الشامل عليها يخرج فارغاً. فيبقى هذا
+     الغلاف لهذه الحالة وحدها. */
   window.runFullScan = function(){
     try{
-      var cur = _TF_ORDER.indexOf(G.tf);
-      var floor = _TF_ORDER.indexOf('1y');
-      if(cur < floor){                     /* أقصر من الأرضية ⇒ ارفعه */
+      if(G.tfi!=='1d'){                    /* فاصل داخل اليوم ⇒ حوّله ليومي */
         G.tf='1y'; G.tfi='1d';
+        document.querySelectorAll('.tf-interval').forEach(function(b){
+          b.classList.toggle('on', b.dataset && b.dataset.itv==='1d');
+        });
         document.querySelectorAll('.tfs .tf').forEach(function(b){
           b.classList.toggle('on', (b.getAttribute('onclick')||'').indexOf("'1y','1d'")>=0);
         });
@@ -9043,6 +9297,10 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
 
     const price=G.pr[sym]||cs[cs.length-1].close, pct=G.pc[sym]||0;
     let entry,stop,target,target2,rr,label,labelColor,src,betterEntry=null;
+    /* 🛠️ منطقة الدخول والأهداف تأتيان من tradeLevels — نفس المصدر الذي
+       يرسم على الشارت. قبل ذلك كانت البطاقة تحسب أرقامها بنفسها، فتختلف
+       عمّا يراه المستخدم على الشارت لنفس السهم في اللحظة نفسها. */
+    let entryLo=null,entryHi=null,zoneSrc=null,tShort=null,t2Kind=null;
 
     const dd=(typeof DD!=='undefined'&&DD.results)?DD.results.find(r=>r.sym===sym):null;
     if(dd){
@@ -9050,10 +9308,18 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
       target2=dd.tp.targets[1]?.price;rr=dd.rr;label=dd.label;labelColor=dd.color;
       src='غرفة القرار';
     }else{
-      const tp=calcTradePlan(sym);
+      const tp=(typeof window.calcTradePlan==='function')?window.calcTradePlan(sym):null;
       if(!tp)return{err:'تعذّر بناء خطة دخول/وقف/هدف لهذا السهم'};
-      entry=tp.entry;stop=tp.stop;target=tp.targets[0]?.price;target2=tp.targets[1]?.price;
-      rr=tp.rrFirst;src='خطة الشارت';
+      let L=null;try{L=window.tradeLevels?window.tradeLevels(sym):null;}catch(e){}
+      if(L){
+        entry=L.entryRef;entryLo=L.entryLo;entryHi=L.entryHi;zoneSrc=L.zoneSrc;
+        stop=L.stop;target=L.targets[0]?.price;target2=L.targets[1]?.price;
+        t2Kind=L.targets[1]?.kind||null;rr=L.rr1;tShort=L.shortNote;
+        src='مستويات الشارت';
+      }else{
+        entry=tp.entry;stop=tp.stop;target=tp.targets[0]?.price;target2=tp.targets[1]?.price;
+        rr=tp.rrFirst;src='خطة الشارت';
+      }
       const v=calcEntryVerdict(sym,tp);
       label=v?.verdict||(tp.planType==='breakout'?'اختراق':'ارتداد');
       labelColor=v?.vColor||C.gd;
@@ -9101,6 +9367,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     if(fr&&fr.ok&&fr.target1)tags.push(`🎯 قمة فراكتالية ${f2(fr.target1)}`);
 
     return{sym,name:stkName(sym),price,pct,entry,stop,target,target2,rr,risk,upPct,
+      entryLo,entryHi,zoneSrc,tShort,t2Kind,
       label,labelColor:labelColor||C.gd,src,timing,act,tags,cs,betterEntry,
       demo:false};
   }
@@ -9122,7 +9389,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     const bars=Math.min(70,d.cs.length),cs=d.cs.slice(-bars);
     const axW=104,plotW=w-axW,plotX=x;
     let lo=Math.min(...cs.map(c=>c.low)),hi=Math.max(...cs.map(c=>c.high));
-    [d.entry,d.stop,d.target].forEach(v=>{if(v!=null&&isFinite(v)){lo=Math.min(lo,v);hi=Math.max(hi,v);}});
+    [d.entry,d.stop,d.target,d.target2,d.entryLo,d.entryHi].forEach(v=>{if(v!=null&&isFinite(v)){lo=Math.min(lo,v);hi=Math.max(hi,v);}});
     const pad=(hi-lo)*0.08||1;lo-=pad;hi+=pad;
     const Y=p=>y+h-((p-lo)/(hi-lo))*h;
     const cw=plotW/bars, bw=Math.max(3,cw*0.62);
@@ -9147,8 +9414,18 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
       const oy=Y(c.open),cy2=Y(c.close);
       ctx.fillRect(cx-bw/2,Math.min(oy,cy2),bw,Math.max(2,Math.abs(cy2-oy)));
     });
+    /* شريط منطقة الدخول — منطقة لا خط، كما تُرسم على الشارت تماماً */
+    if(d.entryLo!=null&&d.entryHi!=null&&isFinite(d.entryLo)&&isFinite(d.entryHi)){
+      const yA=Y(d.entryHi),yB=Y(d.entryLo);
+      ctx.save();ctx.fillStyle='rgba(14,207,126,.13)';
+      ctx.fillRect(x,Math.min(yA,yB),plotW,Math.max(2,Math.abs(yB-yA)));ctx.restore();
+    }
     /* خطوط الخطة */
-    const lines=[[d.target,C.up,'هدف '+f2(d.target)],[d.entry,C.gd,'دخول '+f2(d.entry)],[d.stop,C.dn,'وقف '+f2(d.stop)]];
+    const lines=[];
+    if(d.target2!=null)lines.push([d.target2,d.t2Kind==='fractal'?C.gd:C.up,'هدف ٢ '+f2(d.target2)]);
+    lines.push([d.target,C.up,'هدف ١ '+f2(d.target)],
+               [d.entry,C.gd,'دخول '+f2(d.entry)],
+               [d.stop,C.dn,'وقف '+f2(d.stop)]);
     lines.forEach(([v,col,lab])=>{
       if(v==null||!isFinite(v))return;
       const gy=Y(v);dash(ctx,x,gy,x+plotW,col,2.2);
@@ -9208,7 +9485,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     const cells=[
       ['الهدف',f2(d.target),C.up,d.upPct!=null?`+${d.upPct}٪`:''],
       ['وقف الخسارة',f2(d.stop),C.dn,`مخاطرة ${f2(d.risk)}`],
-      ['سعر الدخول',f2(d.entry),C.gd,d.src],
+      ['منطقة الدخول',f2(d.entry),C.gd,(d.entryLo!=null&&d.entryHi!=null)?`${f2(d.entryLo)} – ${f2(d.entryHi)}`:d.src],
       ['عائد/مخاطرة',d.rr?`1:${d.rr}`:'—',C.bl,'']
     ];
     const cwid=gw/4;
@@ -9286,7 +9563,8 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
       :`${t.kind} متوقّع خلال ~${t.bars} ${jal(t.bars)}`):'لا توقيت مقاس على هذا السهم';
     const tweet=
 `#${d.sym} ${d.name}
-دخول ${f2(d.entry)} · وقف ${f2(d.stop)} · هدف ${f2(d.target)}${d.upPct!=null?` (+${d.upPct}٪)`:''}
+دخول ${(d.entryLo!=null&&d.entryHi!=null)?`${f2(d.entryLo)}–${f2(d.entryHi)}`:f2(d.entry)} · وقف ${f2(d.stop)}
+هدف ${f2(d.target)}${d.target2?` ثم ${f2(d.target2)}`:''}${d.upPct!=null?` (+${d.upPct}٪)`:''}
 عائد/مخاطرة ${d.rr?'1:'+d.rr:'—'}
 ⏱ ${when}
 🚀 نافذة النشاط ${d.act}
@@ -9299,9 +9577,9 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
 الحالة: ${d.label}
 
 🎯 *الخطة*
-دخول: \`${f2(d.entry)}\`
+منطقة الدخول: \`${(d.entryLo!=null&&d.entryHi!=null)?`${f2(d.entryLo)} – ${f2(d.entryHi)}`:f2(d.entry)}\`${d.zoneSrc?`\n_${d.zoneSrc}_`:''}
 وقف: \`${f2(d.stop)}\` (مخاطرة ${f2(d.risk)} للسهم)
-هدف أول: \`${f2(d.target)}\`${d.upPct!=null?` (+${d.upPct}٪)`:''}${d.target2?`\nهدف ثانٍ: \`${f2(d.target2)}\``:''}
+هدف أول: \`${f2(d.target)}\`${d.upPct!=null?` (+${d.upPct}٪)`:''}${d.target2?`\nهدف ثانٍ: \`${f2(d.target2)}\`${d.t2Kind==='fractal'?' (قمة فراكتالية لا مستوى بنيوي)':''}`:(d.tShort?`\n⚠️ ${d.tShort}`:'')}
 عائد/مخاطرة: ${d.rr?'1:'+d.rr:'—'}
 مصدر الأرقام: ${d.src}${d.betterEntry?`\n↩️ دخول أفضل عند \`${f2(d.betterEntry.p)}\` — ${d.betterEntry.why}`:''}
 

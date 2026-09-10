@@ -74,6 +74,11 @@ const bad = (m) => { console.log('  ✗ ' + m); failures++; };
 vm.runInContext(engineSrc, ctx, { filename: 'engine/core.js' });
 if (!ctx.KSAEngine) { bad('KSAEngine لم يُسجَّل على window'); process.exit(1); }
 ok(`تحميل المحرك (v${ctx.KSAEngine.version})`);
+/* وحدة التوقيت تُحمَّل أيضاً: مستويات الصفقة تسأل عن بنية السيولة منها،
+   وتشغيل الدخان بدونها يترك المسار الأهم غير مفحوص. */
+vm.runInContext(fs.readFileSync(path.join(ROOT, 'engine', 'timing.js'), 'utf8'), ctx, { filename: 'engine/timing.js' });
+if (!ctx.KSATiming) { bad('KSATiming لم يُسجَّل على window'); process.exit(1); }
+ok(`تحميل وحدة التوقيت (v${ctx.KSATiming.version})`);
 
 try {
   vm.runInContext(appSrc + '\n;globalThis.G=G;globalThis.STKS=STKS;', ctx, { filename: 'index.html:script' });
@@ -219,6 +224,56 @@ G.pr['SMOKE_DET'] = 60; G.demo.delete('SMOKE_DET');
 const runs = new Set(Array.from({ length: 4 }, () => JSON.stringify(ctx.backtestSpectralSignal('SMOKE_DET'))));
 runs.size === 1 ? ok('الاختبار التاريخي حتمي عبر طبقة التطبيق')
                 : bad(`أربع تشغيلات أعطت ${runs.size} نتائج مختلفة`);
+
+/* ── 7) فصل تاريخ التحليل عن نطاق العرض ────────────────────────────
+   العطل المُبلَّغ: «قاع غداً» يختفي عند تبديل الشارت من سنة إلى سنتين،
+   والأهداف ومناطق الدخول تتغيّر معه. السبب أن زرّ الفريم كان يستبدل
+   G.cans، وكل التحليل يقرأ منها. الفحص هنا: هل صار كل زرّ يومي يجلب
+   نفس النطاق فعلاً؟ */
+if (typeof ctx.fetchRangeFor !== 'function') bad('fetchRangeFor غير موجودة — لم يُفصل التحليل عن العرض');
+else {
+  const daily = ['1mo', '3mo', '6mo', '1y', '2y'].map(r => ctx.fetchRangeFor(r, '1d'));
+  const same = new Set(daily).size === 1;
+  same ? ok(`كل الفريمات اليومية تجلب نفس التاريخ (${daily[0]}) — مخرجات التحليل لا تتغيّر بتغيّر الزرّ`)
+       : bad('الفريمات اليومية ما زالت تجلب نطاقات مختلفة: ' + daily.join(', '));
+  ctx.fetchRangeFor('1d', '5m') === '1d'
+    ? ok('الفواصل داخل اليوم مستثناة من الأرضية')
+    : bad('الأرضية طُبّقت على فاصل داخل اليوم — المصدر لا يوفّر له خمس سنوات');
+  ['5y', 'max'].every(r => ctx.fetchRangeFor(r, '1d') === r)
+    ? ok('النطاقات الأطول من الأرضية تبقى كما هي')
+    : bad('نطاق أطول من الأرضية جرى تقصيره');
+}
+
+/* ── 8) مستويات الصفقة: منطقة دخول ووقف وهدفان ─────────────────────── */
+if (typeof ctx.tradeLevels !== 'function') bad('tradeLevels غير موجودة — لا مصدر موحّد لمستويات الصفقة');
+else {
+  let built = 0, declined = 0, twoTargets = 0, broken = 0;
+  for (let s = 0; s < 12; s++) {
+    const sym = 'SMOKE_TL_' + s;
+    G.cans[sym] = gen(420, 300 + s * 13, 20 + s * 7, 0.014, s % 3 === 0 ? 24 : 0);
+    G.pr[sym] = G.cans[sym][G.cans[sym].length - 1].close;
+    G.demo.delete(sym);
+    try { ctx.calcInd(sym); } catch (e) { }
+    let L = null;
+    try { L = ctx.tradeLevels(sym); } catch (e) { bad(`tradeLevels رمى استثناءً: ${e.message}`); break; }
+    if (!L) { declined++; continue; }
+    built++;
+    if (!(L.entryLo < L.entryHi)) { broken++; bad(`[${sym}] منطقة دخول مقلوبة: ${L.entryLo} ≥ ${L.entryHi}`); }
+    if (!(L.stop < L.entryLo)) { broken++; bad(`[${sym}] الوقف ${L.stop} ليس تحت حدّ المنطقة الأدنى ${L.entryLo}`); }
+    if (!(L.risk > 0)) { broken++; bad(`[${sym}] مسافة مخاطرة غير موجبة: ${L.risk}`); }
+    for (const t of L.targets) {
+      if (!(t.price > L.entryHi)) { broken++; bad(`[${sym}] هدف ${t.price} ليس فوق منطقة الدخول`); }
+      if (t.rr != null && t.rr < L.minRR - 0.01) { broken++; bad(`[${sym}] هدف بعائد/مخاطرة ${t.rr} دون الحد ${L.minRR}`); }
+      if (!['structural', 'fractal'].includes(t.kind)) { broken++; bad(`[${sym}] هدف بمصدر غير معلن: ${t.kind}`); }
+    }
+    if (L.targets.length >= 2) twoTargets++;
+    else if (!L.shortNote) { broken++; bad(`[${sym}] أقل من هدفين بلا تفسير معلن`); }
+    /* حتمية: نفس البيانات نفس المستويات */
+    const again = JSON.stringify(ctx.tradeLevels(sym));
+    if (again !== JSON.stringify(L)) { broken++; bad(`[${sym}] tradeLevels غير حتمية`); }
+  }
+  if (!broken) ok(`مستويات الصفقة سليمة على ${built} سهماً (${twoTargets} منها بهدفين فأكثر · ${declined} رُفضت)`);
+}
 
 console.log(`\n${failures ? `✗ ${failures} مشكلة` : '✓ اختبار الدخان نجح بالكامل'}\n`);
 process.exit(failures ? 1 : 0);

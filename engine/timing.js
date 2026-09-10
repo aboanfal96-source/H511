@@ -460,6 +460,99 @@
   }
 
   /* ════════════════════════════════════════════════════════════════════
+     3.5) ثبات الدورة عبر النوافذ — الاختبار الذي كان ناقصاً
+     ──────────────────────────────────────────────────────────────────
+     المستخدم لاحظ أن «قاع غداً» يختفي حين يغيّر الشارت من سنة إلى سنتين،
+     وأن الأهداف ومناطق الدخول تتغيّر معه. وهذه ليست عشوائية في المنصة —
+     بل معلومة كانت تُهدر.
+
+     القياس الحاسم: على دورة حقيقية مزروعة، النوافذ 250·375·500·625·750
+     جلسة تعطي 60·60·60·60·60 — تشتّت 0–1٪. وعلى ضجيج محض تعطي
+     83·94·126·208·189 — تشتّت 65٪. **وكل نوافذ الضجيج اجتازت اختبار
+     فيشر** كلٌّ على حدة.
+
+     أي أن اختبار فيشر يجيب عن سؤال: «هل هذه الذروة تفسّرها الصدفة داخل
+     هذه النافذة؟» ولا يجيب عن: «هل هي نفس الذروة لو غيّرتُ النافذة؟».
+     والثاني هو ما يفصل الدورة عن قمّة ضجيج عابرة، ولا يُغني عنه أي
+     اختبار داخل نافذة واحدة مهما كان مضبوطاً.
+
+     ولهذا صار هذا شرطاً: **دورة تتغيّر بتغيّر النافذة ليست دورة**، وأي
+     تاريخ انعطاف مشتقّ منها رقمٌ يخصّ النافذة لا السهم.
+     ════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * @param {Array} cs شموع (يُستعمل أطول تاريخ متاح)
+   * @param {{windows?:number[], tolPct?:number, minWindows?:number}} [opt]
+   * @returns {{ok, stable, periods, medianPeriod, spreadPct, windowsUsed, note, reason?}}
+   */
+  /* نوافذ متداخلة تنتهي كلها عند اليوم نفسه، وتُشتق من التاريخ المتاح لا
+     من أرقام ثابتة: أقصرها 200 جلسة (أدنى ما يُعتدّ به طيفياً) وأطولها كل
+     التاريخ، والبقية موزّعة هندسياً بينهما. الثبات المقاس على نوافذ ثابتة
+     كان يعجز عن العمل على تاريخ قصير فيصمت — وصمت الفحص أسوأ من رسوبه. */
+  function _autoWindows(n) {
+    const minW = 200, k = 4;
+    if (n < minW + 50) return [];
+    const out = [];
+    for (let j = 0; j < k; j++) out.push(Math.round(minW * Math.pow(n / minW, j / (k - 1))));
+    return out.filter((v, i, a) => a.indexOf(v) === i);
+  }
+
+  function cycleStability(cs, opt) {
+    opt = opt || {};
+    const tolPct = opt.tolPct == null ? 25 : opt.tolPct;
+    const minWindows = opt.minWindows == null ? 3 : opt.minWindows;
+    if (!cs || cs.length < 200)
+      return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — فحص الثبات يتطلب 200+ ليُقسَّم إلى نوافذ متداخلة`, stable: false };
+
+    /* نوافذ متداخلة تنتهي كلها عند اليوم نفسه: نقارن «ماذا كنتُ سأقول لو
+       حمّلتُ تاريخاً أقصر؟» — وهو بالضبط ما فعله المستخدم يدوياً. */
+    const sizes = opt.windows || _autoWindows(cs.length);
+    if (!sizes.length)
+      return { ok: false, reason: `عيّنة ${cs.length} جلسة — لا تكفي لأربع نوافذ متداخلة كل واحدة 200 جلسة فأكثر`, stable: false };
+    const rows = [];
+    for (const n of sizes) {
+      if (cs.length < n) continue;
+      let sp;
+      try { sp = E.spectralPro(cs.slice(-n).map(c => c.close), { alpha: 0.05 }); } catch (e) { continue; }
+      if (!sp.ok) continue;
+      rows.push({ bars: n, period: sp.significant ? sp.period : null, significant: !!sp.significant, pValue: sp.pValueText });
+    }
+    /* دائماً نضيف التاريخ الكامل إن لم يوافق آخر مقاس */
+    if (!rows.length || rows[rows.length - 1].bars !== cs.length) {
+      try {
+        const sp = E.spectralPro(cs.map(c => c.close), { alpha: 0.05 });
+        if (sp.ok) rows.push({ bars: cs.length, period: sp.significant ? sp.period : null, significant: !!sp.significant, pValue: sp.pValueText });
+      } catch (e) { }
+    }
+
+    const sig = rows.filter(r => r.period != null);
+    if (rows.length < minWindows)
+      return { ok: false, reason: `لم تُقس إلا ${rows.length} نافذة — مطلوب ${minWindows}`, stable: false, windows: rows };
+    if (sig.length < minWindows)
+      return {
+        ok: true, stable: false, windows: rows, significantWindows: sig.length, totalWindows: rows.length,
+        periods: sig.map(r => r.period), medianPeriod: null, spreadPct: null,
+        note: `الدورة دالة في ${sig.length} من ${rows.length} نوافذ فقط. دورة تظهر في نافذة وتختفي في أخرى ليست خاصية للسهم بل خاصية للنافذة — ولا يُشتقّ منها تاريخ انعطاف.`
+      };
+
+    const periods = sig.map(r => r.period);
+    const med = S.median(periods);
+    const spread = med > 0 ? Math.max.apply(null, periods.map(p => Math.abs(p - med))) / med * 100 : 999;
+    const stable = spread <= tolPct;
+
+    return {
+      ok: true, stable,
+      windows: rows, periods, significantWindows: sig.length, totalWindows: rows.length,
+      medianPeriod: r2(med), spreadPct: r2(spread), tolPct,
+      note: stable
+        ? `الدورة ثابتة عبر ${sig.length} نوافذ: ${periods.map(p => Math.round(p)).join(' · ')} جلسة (تشتّت ${r2(spread)}٪ ≤ ${tolPct}٪). أي أنها خاصية للسهم لا للنافذة المحمّلة — وهذا شرط لا يجتازه إلا القليل.`
+        : `الدورة **تتغيّر بتغيّر النافذة**: ${periods.map(p => Math.round(p)).join(' · ')} جلسة عبر ${sig.length} نوافذ (تشتّت ${r2(spread)}٪ > ${tolPct}٪). `
+          + `وهذا يفسّر مباشرةً اختلاف الموعد المتوقّع حين تبدّل الشارت من سنة إلى سنتين: التاريخ كان يخصّ النافذة لا السهم. `
+          + `اختبار فيشر لا يكشف هذا لأنه يسأل «هل تفسّرها الصدفة داخل هذه النافذة؟» لا «هل هي نفسها لو غيّرتُ النافذة؟».`
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
      4) تزامن الفراكتلز عبر الفواصل (Multi-Timeframe Alignment)
      ──────────────────────────────────────────────────────────────────
      الفكرة: دورة على فاصل واحد قد تكون صدفة إحصائية. الدورة نفسها ظاهرةً
@@ -680,13 +773,33 @@
     } else if (dirUp == null) dirUp = true;
 
     const nearWindow = !!(nextTurn && nextTurn.barsAhead <= (opt.windowBars == null ? 3 : opt.windowBars) && nextTurn.usable);
-    add('cycle', spec.significant && nearWindow,
-      spec.significant
-        ? (nearWindow
-          ? `دورة ${spec.period} جلسة دالة (p=${spec.pValueText})، و${turnAr(nextTurn.type)} خلال ${nextTurn.barsAhead}±${nextTurn.sdBars} جلسة`
-          : `دورة ${spec.period} جلسة دالة لكن لا انعطاف قابل للاستعمال خلال النافذة${nextTurn ? ` (أقربه بعد ${barsAr(nextTurn.barsAhead)}${nextTurn.usable ? '' : ' وعدم يقينه أوسع من ربع دورة'})` : ''}`)
-        : `الطيف لا يختلف عن ضجيج عشوائي (p=${spec.pValueText}) — لا نافذة زمنية تُشتقّ منه`,
-      { period: spec.period, pValue: spec.pValue, nextTurn });
+
+    /* ①-ب ثبات الدورة عبر النوافذ — شرطٌ مستقلّ عن دلالة فيشر.
+       فيشر يقول «هذه القمة الطيفية لا تفسّرها الصدفة داخل هذه النافذة»؛
+       ولا يقول «هي نفسها لو حمّلتُ نافذة أخرى». دورة تتبدّل بتبدّل النافذة
+       تُنتج تاريخ انعطاف يخصّ النافذة لا السهم — وهو بالضبط ما جعل «قاع
+       غداً» يختفي عند التحويل من سنة إلى سنتين. لذلك: لا تاريخ بلا ثبات. */
+    let stab = opt.stability;
+    if (stab === undefined && opt.checkStability !== false) {
+      try { stab = cycleStability(view, { tolPct: opt.stabilityTolPct }); } catch (e) { stab = null; }
+    }
+    const stabPass = !!(stab && stab.ok && stab.stable);
+    const cyclePass = spec.significant && nearWindow && stabPass;
+
+    add('cycle', cyclePass,
+      !spec.significant
+        ? `الطيف لا يختلف عن ضجيج عشوائي (p=${spec.pValueText}) — لا نافذة زمنية تُشتقّ منه`
+        : !nearWindow
+          ? `دورة ${spec.period} جلسة دالة لكن لا انعطاف قابل للاستعمال خلال النافذة${nextTurn ? ` (أقربه بعد ${barsAr(nextTurn.barsAhead)}${nextTurn.usable ? '' : ' وعدم يقينه أوسع من ربع دورة'})` : ''}`
+          : !stab ? 'تعذّر فحص ثبات الدورة عبر النوافذ — لا يُشتقّ تاريخ بلا هذا الفحص'
+          : !stab.ok ? `${stab.reason} — لا يُشتقّ تاريخ انعطاف قبل إثبات ثبات الدورة`
+          : !stab.stable ? stab.note
+          : `دورة ${spec.period} جلسة دالة (p=${spec.pValueText}) وثابتة عبر ${stab.significantWindows} نوافذ (تشتّت ${stab.spreadPct}٪)، و${turnAr(nextTurn.type)} خلال ${nextTurn.barsAhead}±${nextTurn.sdBars} جلسة`,
+      { period: spec.period, pValue: spec.pValue, nextTurn, stability: stab || null });
+
+    /* الدورة غير الثابتة لا تُنتج تاريخاً: نحذف الانعطاف كي لا يُقرأ رقمه
+       في أي مكان آخر من المخرجات (بطاقة النشر، صندوق الإجراء، الشارت). */
+    if (spec.significant && !stabPass) { nextTurn = null; turns = []; }
 
     /* ② السيولة — FVG / Order Block */
     const liq = liquidityGate(view, { idx: view.length - 1, dirUp, tolATR: opt.tolATR, maxAgeBars: opt.maxAgeBars });
@@ -719,7 +832,7 @@
       passedCount: passed.length, totalGates: gates.length,
       gates, required, missingRequired,
       spectral: { period: spec.period, pValue: spec.pValue, pValueText: spec.pValueText, significant: spec.significant, cyclePosPct: spec.cyclePosPct, snr: spec.snr },
-      nextTurn, mtf, flow, liquidity: liq, warp: wp,
+      nextTurn, mtf, flow, liquidity: liq, warp: wp, stability: stab || null,
       summary: fire
         ? `إشارة مفعّلة (${passed.length}/${gates.length} بوابات) — ${gates.filter(g => g.pass).map(g => g.name).join(' + ')}`
         : `لا إشارة — لم تمرّ: ${missingRequired.join('، ')}`,
@@ -818,6 +931,24 @@
       out.why.push('هذه نتيجة صحيحة لا عطل، وهي حال أغلب الأسهم.');
       out.steps.push('افتح تبويب «🧭 غرفة القرار» واضغط «احسب القرارات» — القرار هناك مبني على الدعوم والمقاومات والسيولة، ولا يحتاج دورة.');
       out.steps.push('أو استعمل القسم «7️⃣ السيناريو التنفيذي» في هذا التقرير: دخول ووقف وهدف مشتقّة من البنية السعرية.');
+      if (measuredNote) out.measured = measuredNote;
+      return out;
+    }
+
+    /* ②-أ دورة دالة لكنها غير ثابتة عبر النوافذ ⇒ لا تاريخ يُنشر إطلاقاً.
+       هذا هو الفرق بين «لم تُفتح النافذة بعد» و«النافذة نفسها من صنع طول
+       التاريخ المحمّل». في الحالة الثانية الانتظار لا يُصلح شيئاً، لأن
+       التاريخ سيتغيّر مرة أخرى بمجرّد تغيّر النافذة. */
+    const stab = (cyc.stability !== undefined ? cyc.stability : sig.stability) || null;
+    if (!cyc.pass && stab && stab.ok && stab.stable === false) {
+      out.action = ACTION.NONE;
+      out.title = 'الدورة تتغيّر بتغيّر النافذة — لا تاريخ يُنشر';
+      out.action_ar = 'لا تنتظر موعداً: الموعد كان يخصّ طول التاريخ المحمّل لا السهم';
+      out.why.push(stab.note);
+      out.why.push('اختبار الدلالة (فيشر) اجتازته الدورة داخل كل نافذة على حدة، ولذلك كانت المنصة تعرض تاريخاً. لكن اجتياز الدلالة داخل نافذة لا يعني أنها الدورة نفسها في نافذة أخرى — وهذا الفحص هو ما كان ناقصاً.');
+      out.stability = stab;
+      out.steps.push('تعامل مع السهم بالبنية السعرية وحدها: «🧭 غرفة القرار» أو القسم «7️⃣ السيناريو التنفيذي».');
+      out.steps.push('لا تقارن مخرجات فريمين مختلفين لهذا السهم — الاختلاف بينهما ليس معلومة إضافية، بل هو نفسه الدليل على غياب دورة حقيقية.');
       if (measuredNote) out.measured = measuredNote;
       return out;
     }
@@ -938,7 +1069,8 @@
       rewardRisk: opt.rewardRisk == null ? 2 : opt.rewardRisk,
       minSamples: opt.minSamples == null ? 20 : opt.minSamples,
       fdr: opt.fdr == null ? 0.10 : opt.fdr,
-      recompute: opt.recompute == null ? 3 : opt.recompute
+      recompute: opt.recompute == null ? 3 : opt.recompute,
+      stabilityEvery: opt.stabilityEvery == null ? 40 : opt.stabilityEvery
     };
     if (!cs || cs.length < cfg.warmup + cfg.horizon + 30)
       return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — القياس يتطلب ${cfg.warmup + cfg.horizon + 30}+` };
@@ -947,6 +1079,10 @@
     const last = cs.length - 1 - cfg.horizon;
     const rows = [];
     let cached = null, cachedAt = -1;
+    /* ثبات الدورة خاصية بطيئة التغيّر، وحسابه أربع مرات طيفية لكل شمعة
+       يجعل مسح السوق دقائق. يُعاد كل `stabilityEvery` شمعة — ودائماً من
+       البيانات حتى تلك الشمعة فقط، فلا تسرّب زمني. */
+    let stabCache = null, stabAt = -1e9;
 
     for (let t = cfg.warmup; t <= last; t += cfg.step) {
       const a = atrA[t];
@@ -956,7 +1092,14 @@
          بينها. إعادة الحساب كل شمعة أدقّ لكنها تجعل مسح السوق كله دقائق. */
       let sig;
       if (cached && t - cachedAt < cfg.recompute) sig = cached;
-      else { sig = timingSignal(cs, { idx: t }); cached = sig; cachedAt = t; }
+      else {
+        if (t - stabAt >= cfg.stabilityEvery) {
+          try { stabCache = cycleStability(cs.slice(0, t + 1)); } catch (e) { stabCache = null; }
+          stabAt = t;
+        }
+        sig = timingSignal(cs, { idx: t, stability: stabCache });
+        cached = sig; cachedAt = t;
+      }
       if (!sig.ok) continue;
 
       const trade = E.simulateTrade(cs, t, sig.dirUp !== false, {
@@ -1100,7 +1243,7 @@
     findFVG, findOrderBlocks, liquidityGate,
 
     /* الزمن */
-    dtw, warpedCyclePhase, mtfAlignment,
+    dtw, warpedCyclePhase, cycleStability, mtfAlignment,
 
     /* التدفّق */
     volumeFlow,
