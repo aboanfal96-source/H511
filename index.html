@@ -451,6 +451,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <button class="pat-clear" onclick="clearPatterns()">مسح الرسم ✕</button>
     </div>
     <div class="pat-info" id="pat-info"></div>
+    <div id="tl-info" style="padding:4px 12px 2px;font-size:11px;line-height:1.9;color:#c8d0e0;direction:rtl"></div>
     <div class="draw-ctrl">
       <button class="draw-btn on" id="btn-tl" onclick="toggleTradeLevels()" title="إظهار/إخفاء منطقة الدخول والوقف والأهداف على الشارت">🎯 مستويات الصفقة</button>
       <button class="draw-btn" id="draw-trend" onclick="setDrawMode('trend')" title="خط اتجاه: انقر نقطتين">📈 اتجاه</button>
@@ -3057,14 +3058,57 @@ function tradeLevels(sym){
     }
   }
   if(!(hi>lo)){const t=lo;lo=Math.min(t,hi);hi=Math.max(t,hi);}
-  if(lo<=tp.stop){lo=f2(tp.stop+0.2*atr); if(hi<=lo)hi=f2(lo+0.2*atr);}
+
+  /* عرض أدنى وأقصى للمنطقة. فجوة قيمة عادلة بعرض هللة واحدة ليست منطقة
+     تنفيذ — هي نقطة مرسومة كأنها منطقة، ويستحيل تنفيذ أمر داخلها. والعرض
+     المفرط يجعل «المنطقة» بلا معنى أيضاً. الحدّان من ATR لأن ما يُعدّ
+     ضيقاً على سهم بـ150 ريالاً واسع على سهم بريالين. */
+  const MINW=0.20*atr, MAXW=1.50*atr;
+  if(hi-lo<MINW){const m=(hi+lo)/2;lo=f2(m-MINW/2);hi=f2(m+MINW/2);}
+  if(hi-lo>MAXW){const anchor=(tp.planType==='breakout')?lo:hi;
+    if(tp.planType==='breakout'){hi=f2(anchor+MAXW);}else{lo=f2(anchor-MAXW);}}
+
+  /* ══ الوقف يُشتقّ من المنطقة لا يُورَث ══════════════════════════════
+     🛠️ عطل خطير ظهر على الشارت: السهم 3060 بسعر 15.24، ومنطقة الدخول
+     14.87–14.88 (فجوة قيمة عادلة تحت السعر)، والوقف 14.82، والهدفان
+     بعائد/مخاطرة 1:11.17 و1:14.
+
+     السبب: calcTradePlan تحسب الوقف من الدخول = السعر الحالي (15.24)،
+     فيخرج 14.82 أي 1.8×ATR تحته. ثم كانت هذه الدالة تستبدل الدخول
+     بمنطقة أخفض بكثير وتُبقي الوقف كما هو، فتنكمش مسافة المخاطرة من 0.42
+     ريال إلى 0.055 — وقفٌ داخل ضجيج الجلسة الواحدة — وتنتفخ نسبة
+     العائد/المخاطرة إلى رقم خيالي. والرقم الخيالي أخطر من غيابه: يجعل
+     صفقة رديئة تبدو الأفضل في اللوحة.
+
+     القاعدة الآن: الوقف يُحسب من حدّ المنطقة الأدنى، ويُؤخذ الأبعد بينه
+     وبين وقف الخطة، ثم يُفحص أن مسافة المخاطرة لا تقلّ عن نصف ATR —
+     وهو المعيار المعلن أصلاً في calcTradePlan ولم يكن يُطبَّق هنا. */
+  const stopFromZone=f2(lo-Math.max(0.80*atr,lo*0.004));
+  let stop=Math.min(tp.stop,stopFromZone);
+  let stopSource=(stop===tp.stop)?tp.stopSource:`تحت حدّ منطقة الدخول الأدنى (${lo}) بمسافة 0.8×ATR`;
   const entryRef=f2((lo+hi)/2);
-  const risk=f2(entryRef-tp.stop);
+  let risk=f2(entryRef-stop);
+  /* مخاطرة أوسع من 3.5×ATR تجعل حجم المركز عديم المعنى — تُقرَّب مع
+     إبقاء الوقف تحت المنطقة دائماً. */
+  if(risk>3.5*atr){
+    const cap=f2(entryRef-3.5*atr);
+    if(cap<lo){stop=cap;stopSource=`مقيَّد عند 3.5×ATR تحت منطقة الدخول (الوقف البنيوي كان أبعد من أن يُدار)`;risk=f2(entryRef-stop);}
+  }
+  const riskATR=atr>0?+(risk/atr).toFixed(2):null;
+  const riskOk=risk>0&&atr>0&&risk>=0.5*atr;
+  const riskNote=riskOk?null:`مسافة المخاطرة ${risk} ر.س = ${riskATR}×ATR — أضيق من نصف ATR، أي داخل ضجيج الجلسة الواحدة. لا تُحسب نسبة عائد/مخاطرة على وقف كهذا لأنها تخرج مضخّمة.`;
+
+  /* موقع السعر من المنطقة — «منطقة دخول» تحت السعر بـ2٪ ليست دعوة دخول
+     الآن، والفرق بين الحالتين يجب أن يُقال لا أن يُستنتج من الرسم. */
+  const rel=cur<lo?'below':(cur>hi?'above':'inside');
+  const relNote=rel==='inside'?'السعر داخل منطقة الدخول الآن'
+    :rel==='above'?`السعر ${cur} أعلى من المنطقة بـ${(+((cur-hi)/hi*100).toFixed(2))}٪ — الدخول ينتظر ارتداداً إليها، لا يُطارَد`
+    :`السعر ${cur} أدنى من المنطقة بـ${(+((lo-cur)/lo*100).toFixed(2))}٪ — المنطقة فوق السعر، فهي ليست منطقة شراء الآن`;
 
   /* ── ② الأهداف: بنيوية أولاً، ثم فراكتالية موسومة ─────────────────── */
   const MIN_RR=tp.minRR||1.5;
-  const targets=(tp.targets||[]).map(t=>({price:t.price,source:t.source,kind:'structural',
-    rr:risk>0?+((t.price-entryRef)/risk).toFixed(2):null}));
+  const rrOf=px=>riskOk?+((px-entryRef)/risk).toFixed(2):null;
+  const targets=(tp.targets||[]).map(t=>({price:t.price,source:t.source,kind:'structural',rr:rrOf(t.price)}));
   let filled=false;
   if(targets.length<2&&window.KSAEngine){
     try{
@@ -3073,10 +3117,10 @@ function tradeLevels(sym){
         for(const cand of [fr.target1,fr.target2,fr.measuredMove]){
           if(targets.length>=2)break;
           if(cand==null)continue;
-          if(!(risk>0)||cand<entryRef+risk*MIN_RR)continue;
+          if(!riskOk||cand<entryRef+risk*MIN_RR)continue;
           if(targets.some(t=>Math.abs(t.price-cand)<0.25*atr))continue;
           targets.push({price:f2(cand),source:'قمة فراكتالية حيّة (ليست مستوى بنيوياً)',
-            kind:'fractal',rr:+((cand-entryRef)/risk).toFixed(2)});
+            kind:'fractal',rr:rrOf(cand)});
           filled=true;
         }
       }
@@ -3090,10 +3134,11 @@ function tradeLevels(sym){
        : (tp.viabilityNote||'لا يوجد هدف يستحق المخاطرة — الصفقة غير مجدية بالنسبة الحالية.'));
 
   return{sym,dirUp:true,planType:tp.planType,
-    entryLo:lo,entryHi:hi,entryRef,zoneSrc,zoneKind,
-    stop:tp.stop,stopSource:tp.stopSource,risk,
+    entryLo:lo,entryHi:hi,entryRef,zoneSrc,zoneKind,zoneWidth:f2(hi-lo),
+    price:cur,rel,relNote,
+    stop,stopSource,risk,riskATR,riskOk,riskNote,atr:f2(atr),
     targets:targets.slice(0,3),targetsFilled:filled,shortNote,
-    viable:tp.viable&&targets.length>0,minRR:MIN_RR,
+    viable:tp.viable&&targets.length>0&&riskOk,minRR:MIN_RR,
     rr1:targets[0]?targets[0].rr:null,rr2:targets[1]?targets[1].rr:null};
 }
 window.tradeLevels=tradeLevels;
@@ -3529,6 +3574,7 @@ function getHeaders(){
    ══════════════════════════════════════════════════════════════════════ */
 let _radarData=[],_radarBuilt=false;
 
+let _radarDiag=null;
 function buildRadar(){
   if(!_advData.length){ alert('⚠️ شغّل «🔬 مسح شامل» أولاً — الرادار يفحص الأسهم التي مسحتها.'); return; }
   const horizon=+(document.getElementById('radar-horizon')?.value||10);
@@ -3547,7 +3593,7 @@ function buildRadar(){
     if(!e||e.state!=='ok')continue;
     if(e.bars>horizon)continue;
     if(src==='cycle'&&e.tier!=='cycle')continue;
-    if(src==='verified'&&!(e.tier==='cycle'&&e.coherent&&e.usable))continue;
+    if(src==='verified'&&!(e.tier==='cycle'&&e.coherent&&e.usable&&e.stabilityTested!==false))continue;
 
     /* مستوى المراقبة: أقرب دعم تحت السعر لانعطاف صعودي، ومقاومة فوقه لهبوطي */
     let watchLvl=null,watchWhy='';
@@ -3566,12 +3612,43 @@ function buildRadar(){
   out.sort((a,b)=>b.rscore-a.rscore);
   _radarData=out; _radarBuilt=true;
 
+  /* ══ تشريح القائمة الفارغة ═══════════════════════════════════════════
+     🛠️ سأل المستخدم: «لا يوجد أسهم في الرادار — هل هذا طبيعي؟» ولم تكن
+     المنصة تملك جواباً. قول «القائمة الفارغة نتيجة صحيحة» ادّعاء بلا
+     أرقام، وهو بالضبط ما تحاربه بقية المنصة. الآن يُعرض التفصيل الكامل:
+     كم سهماً سقط عند أي شرط، فيرى المستخدم أين انقطع الطريق ويقرّر هل
+     يوسّع الأفق أم يبدّل المصدر. وإن كان هناك عطل فعلاً، يظهر هنا رقماً
+     شاذاً بدل أن يختبئ خلف جدول فارغ. */
+  _radarDiag={total:_advData.length,noData:0,noCycle:0,unstable:0,untested:0,
+              cycleStable:0,beyondHorizon:0,filteredBySrc:0,shown:out.length};
+  for(const d of _advData){
+    const e=_timeMap[d.sym];
+    if(!e||e.state==='na'){_radarDiag.noData++;continue;}
+    if(e.state==='unstable'){_radarDiag.unstable++;continue;}
+    if(e.state==='none'){_radarDiag.noCycle++;continue;}
+    if(e.tier!=='cycle'){_radarDiag.noCycle++;continue;}
+    if(e.stabilityTested===false)_radarDiag.untested++;
+    _radarDiag.cycleStable++;
+    if(e.bars>horizon)_radarDiag.beyondHorizon++;
+    else if(src==='verified'&&!(e.coherent&&e.usable&&e.stabilityTested!==false))_radarDiag.filteredBySrc++;
+  }
+
   const strong=out.filter(r=>r.radar.tier==='cycle').length;
   const conf=out.filter(r=>r.radar.coherent).length;
   const srcTxt=src==='cycle'?'الدورات المقاسة فقط':src==='verified'?'المؤكدة خارج العيّنة فقط':'المقاسة + النوافذ الكلاسيكية';
+  const D=_radarDiag;
+  const diagTxt=`من <b>${D.total}</b> سهماً ممسوحاً: `
+    +`<b style="color:#7a8ba8">${D.noCycle}</b> بلا دورة دالة إحصائياً`
+    +(D.unstable?` · <b style="color:#f5c842">${D.unstable}</b> دورته تتغيّر بتغيّر النافذة`:'')
+    +(D.untested?` · <b style="color:#f5c842">${D.untested}</b> ثباتها غير مفحوص`:'')
+    +` · <b style="color:#0ecf7e">${D.cycleStable}</b> بدورة صالحة`
+    +(D.beyondHorizon?`، منها <b>${D.beyondHorizon}</b> انعطافها أبعد من ${horizon} جلسة`:'')
+    +(D.filteredBySrc?` و<b>${D.filteredBySrc}</b> استبعدها شرط «${srcTxt}»`:'');
   if(st)st.innerHTML=out.length
     ? `✅ <b>${out.length}</b> سهم خلال ${horizon} جلسة (${srcTxt}) · <b style="color:#0ecf7e">${strong}</b> بدورة مقاسة · <b style="color:#FFD700">${conf}</b> أثبتت إصابتها خارج العيّنة`
-    : `لا سهم ضمن ${horizon} جلسة بهذا المصدر (${srcTxt}). وسّع الأفق أو اسمح بالنوافذ الكلاسيكية — والقائمة الفارغة نتيجة صحيحة لا عطل.`;
+      +`<br><span style="font-size:11px;color:#9aa4b8">${diagTxt}</span>`
+    : `لا سهم ضمن ${horizon} جلسة بهذا المصدر (${srcTxt}).`
+      +`<br><span style="font-size:11px;color:#9aa4b8">${diagTxt}</span>`;
   const fb=document.getElementById('fb-radar'); if(fb)fb.textContent=out.length;
   if(_filter==='radar')renderResults();
 }
@@ -3586,9 +3663,27 @@ function renderRadarTable(){
     _visibleSyms=[]; return;
   }
   if(!_radarData.length){
-    body.innerHTML=`<tr><td colspan="11" style="padding:26px;text-align:center;color:var(--t3);line-height:2">
-      لا سهم أمامه انعطاف متوقع ضمن الأفق المحدد.<br>
-      <span style="font-size:11px;color:#9aa4b8">وسّع الأفق من القائمة أعلاه. أغلب الأسهم لا تتحرك بدورات قابلة للقياس، والقائمة الفارغة نتيجة صحيحة.</span></td></tr>`;
+    const D=_radarDiag||{};
+    const row=(lbl,val,col,why)=>`<tr><td style="padding:5px 10px;color:${col||'var(--t2)'};text-align:right">${lbl}</td>
+      <td style="padding:5px 10px;font-family:'IBM Plex Mono',monospace;font-weight:700;color:${col||'var(--t2)'};text-align:center">${val}</td>
+      <td style="padding:5px 10px;color:var(--t3);font-size:calc(var(--base-font)*0.72);text-align:right">${why}</td></tr>`;
+    body.innerHTML=`<tr><td colspan="11" style="padding:20px 26px;color:var(--t3);line-height:2">
+      <div style="font-size:calc(var(--base-font)*0.95);color:#e6ecf7;font-weight:700;margin-bottom:4px">لا سهم أمامه انعطاف متوقع ضمن الأفق المحدد</div>
+      <div style="font-size:calc(var(--base-font)*0.78);margin-bottom:10px">وهذا ليس عطلاً ولا صمتاً — هذا تشريح ما حدث لكل سهم مسحته:</div>
+      <table style="margin:0 auto;border-collapse:collapse;max-width:640px">
+        ${row('إجمالي الأسهم الممسوحة',D.total??'—','#e6ecf7','')}
+        ${row('بلا دورة دالة إحصائياً',D.noCycle??'—','#7a8ba8','اختبار فيشر لم يرفض العشوائية — وهذه حال أغلب الأسهم فعلاً')}
+        ${D.unstable?row('دورتها تتغيّر بتغيّر النافذة',D.unstable,'#f5c842','دالة داخل كل نافذة لكنها ليست الدورة نفسها عبرها — لا يُشتقّ منها تاريخ'):''}
+        ${D.untested?row('ثبات دورتها غير مفحوص',D.untested,'#f5c842','الدورة أطول من أن تُستجوَب ثلاث مرات داخل التاريخ المتاح'):''}
+        ${row('بدورة صالحة للتوقيت',D.cycleStable??'—','#0ecf7e','')}
+        ${D.beyondHorizon?row('منها: انعطافها أبعد من الأفق',D.beyondHorizon,'#4a9eff','وسّع «أفق البحث» أعلاه ليظهروا'):''}
+        ${D.filteredBySrc?row('منها: استبعدها شرط المصدر',D.filteredBySrc,'#4a9eff','بدّل «المصدر» أعلاه إلى خيار أوسع'):''}
+      </table>
+      <div style="font-size:calc(var(--base-font)*0.75);color:#9aa4b8;margin-top:12px;line-height:1.9;max-width:700px;margin-right:auto;margin-left:auto">
+        الرقم الذي يستحق الانتباه هو الصف الثاني. قياسنا على مشي عشوائي بحت (400 سلسلة، 1250 جلسة):
+        <b>94٪</b> منها لا تُظهر دورة دالة. فإن كان هذا الصف يبتلع أغلب أسهمك، فالسوق يتصرّف كما يتصرّف المشي العشوائي —
+        وهذه معلومة حقيقية عن السوق، لا نقص في الأداة. تعامل مع تلك الأسهم بالبنية السعرية من «🧭 غرفة القرار».
+      </div></td></tr>`;
     _visibleSyms=[]; return;
   }
   _visibleSyms=_radarData.map(r=>r.sym);
@@ -3663,6 +3758,8 @@ function _timeEntry(sym){
     const t=tm.turns[0];
     const v=tm.turns.find(x=>x.type==='valley');
     return{state:'ok',tier:'cycle',
+      stabilityTested:tm.stabilityTested!==false,
+      stabilityNote:(tm.stability&&tm.stability.note)||null,
       type:t.type,bars:t.barsAhead,sd:t.sdBars,lo:t.loBars,hi:t.hiBars,usable:!!t.usable,
       valleyBars:v?v.barsAhead:null,valleySd:v?v.sdBars:null,
       period:tm.period,p:tm.pText,coherent:!!tm.coherent,cyclePos:tm.cyclePos,
@@ -3739,8 +3836,9 @@ function timeCell(sym){
   const isV=e.type==='valley';
   const col=isV?'var(--up)':'var(--dn)';
   const icon=isV?'🟢 قاع':'🔴 قمة';
-  const mark=e.coherent?' ✅':(e.usable?'':' ⚠');
+  const mark=(e.stabilityTested===false)?' ◐':(e.coherent?' ✅':(e.usable?'':' ⚠'));
   const tip=`${isV?'ارتداد متوقع من قاع الدورة':'قمة متوقعة — منطقة تصريف'} بعد ${e.bars}${e.sd!=null?'±'+e.sd:''} جلسة (${dt}) · دورة ${e.period} جلسة · p=${e.p}`
+    +(e.stabilityTested===false?' · ◐ ثبات الدورة غير مفحوص: '+(e.stabilityNote||'الدورة أطول من أن تُستجوَب ثلاث مرات داخل التاريخ المتاح'):'')
     +(e.coherent?' · ✅ الدورة أثبتت إصابتها خارج العيّنة':' · لم تُثبت إصابتها خارج العيّنة — للمراقبة')
     +(e.usable?'':' · النطاق أوسع من ربع دورة');
   return `<span style="color:${col};font-weight:700" title="${tip}">${icon} ${when}${mark}</span> ${band}`;
@@ -4023,32 +4121,71 @@ function clearTradeLevels(){
 }
 function drawTradeLevels(sym){
   clearTradeLevels();
-  const _b=document.getElementById('btn-tl');if(_b)_b.classList.toggle('on',_tlOn);
+  const btn=document.getElementById('btn-tl');if(btn)btn.classList.toggle('on',_tlOn);
+  const info=document.getElementById('tl-info');
+  if(info)info.innerHTML='';
   if(!_tlOn||!G.lwChart||!G.cSeries)return null;
   let L=null;try{L=tradeLevels(sym);}catch(e){return null;}
   if(!L)return null;
   const cs=G.cans[sym];if(!cs||!cs.length)return L;
-  const t0=cs[Math.max(0,cs.length-1-60)].time,t1=cs[cs.length-1].time;
+  const t0=cs[0].time,t1=cs[cs.length-1].time;
+
+  /* ① شريط منطقة الدخول — بسلسلة خطّ أساس لا بسلسلة منطقة.
+     🛠️ النسخة السابقة استعملت addAreaSeries وأعطتها قيمة واحدة (حدّ
+     المنطقة الأعلى)، وسلسلة المنطقة تملأ من قاع اللوحة إلى تلك القيمة —
+     فكان نصف الشارت الأسفل مظلّلاً بالأخضر وكأنه كله منطقة دخول. خطّ
+     الأساس يملأ بين قيمته وقاعدته، وهو ما يعنيه «نطاق» فعلاً. */
+  const reach=(L.rel==='inside');
+  try{
+    const band=G.lwChart.addBaselineSeries({
+      baseValue:{type:'price',price:L.entryLo},
+      topFillColor1:reach?'rgba(14,207,126,.26)':'rgba(14,207,126,.12)',
+      topFillColor2:reach?'rgba(14,207,126,.26)':'rgba(14,207,126,.12)',
+      bottomFillColor1:'rgba(0,0,0,0)',bottomFillColor2:'rgba(0,0,0,0)',
+      topLineColor:'rgba(0,0,0,0)',bottomLineColor:'rgba(0,0,0,0)',
+      lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+    band.setData([{time:t0,value:L.entryHi},{time:t1,value:L.entryHi}]);
+    _tlObjs.push({kind:'series',obj:band});
+  }catch(e){}
+
   const pl=(price,color,title,style,width)=>{
     if(price==null||!isFinite(price))return;
     try{_tlObjs.push({kind:'priceline',obj:G.cSeries.createPriceLine({
       price:price,color:color,lineWidth:width||1,lineStyle:style==null?2:style,
       axisLabelVisible:true,title:title})});}catch(e){}
   };
-  /* شريط منطقة الدخول */
-  try{
-    const band=G.lwChart.addAreaSeries({topColor:'rgba(14,207,126,.18)',bottomColor:'rgba(14,207,126,.18)',
-      lineColor:'rgba(14,207,126,0)',lineWidth:1,priceLineVisible:false,lastValueVisible:false,
-      crosshairMarkerVisible:false,baseLineVisible:false});
-    band.setData([{time:t0,value:L.entryHi},{time:t1,value:L.entryHi}]);
-    _tlObjs.push({kind:'series',obj:band});
-  }catch(e){}
-  pl(L.entryHi,'#0ecf7e',`دخول ▲ ${L.entryHi}`,0,1);
-  pl(L.entryLo,'#0ecf7e',`دخول ▼ ${L.entryLo}`,0,1);
-  pl(L.stop,'#f04458',`وقف ${L.stop}`,0,2);
-  const tc=['#4a9eff','#a78bfa','#22d3ee'];
-  L.targets.forEach((t,i)=>pl(t.price,t.kind==='fractal'?'#f5c842':tc[i]||'#4a9eff',
-    `هدف ${i+1} ${t.price}${t.rr!=null?` · 1:${t.rr}`:''}${t.kind==='fractal'?' (فراكتالي)':''}`,2,2));
+  /* ② المستويات. عناوين قصيرة: محور السعر يعرض الرقم أصلاً، وتكراره في
+     العنوان كان يصنع لافتات متداخلة تخفي الشموع. */
+  const zc=reach?'#0ecf7e':'#3f8f68';
+  /* حدّا المنطقة بلافتة واحدة: المسافة بينهما صغيرة بطبيعتها فلافتتان
+     متلاصقتان تغطّيان الشموع. الشريط الملوّن يقول «منطقة»، ومحور السعر
+     يقول الرقمين، فالعنوان المكرّر ضجيج بصري لا معلومة. */
+  pl(L.entryHi,zc,'منطقة الدخول',0,1);
+  pl(L.entryLo,zc,'',0,1);
+  if(L.riskOk){
+    pl(L.stop,'#f04458','⛔ وقف',0,2);
+    const tc=['#4a9eff','#a78bfa','#22d3ee'];
+    L.targets.forEach((t,i)=>pl(t.price,t.kind==='fractal'?'#f5c842':tc[i]||'#4a9eff',
+      `🎯 ${i+1}${t.rr!=null?`  1:${t.rr}`:''}${t.kind==='fractal'?' ~':''}`,2,2));
+  }else{
+    pl(L.stop,'#7a8ba8','⚠ وقف داخل الضجيج',3,1);
+  }
+
+  /* ③ سطر واحد تحت الشارت يقول ما لا يقوله الرسم: هل وصل السعر للمنطقة،
+     وكم المخاطرة بمقياس ATR، ومن أين جاء الوقف. */
+  if(info){
+    const relCol=L.rel==='inside'?'#0ecf7e':(L.rel==='above'?'#f5c842':'#7a8ba8');
+    info.innerHTML=
+      `<span style="color:${relCol}">${L.rel==='inside'?'●':'○'} ${L.relNote}</span>`
+      +` <span style="color:#5a6a85">·</span> منطقة <b style="color:#0ecf7e">${L.entryLo}–${L.entryHi}</b>`
+      +` <span style="color:#5a6a85">·</span> وقف <b style="color:#f04458">${L.stop}</b>`
+      +` <span style="color:#7a8ba8">(${L.stopSource})</span>`
+      +(L.riskOk
+        ? ` <span style="color:#5a6a85">·</span> مخاطرة <b>${L.risk}</b> ر.س = <b>${L.riskATR}×ATR</b>`
+          +(L.targets.length?` <span style="color:#5a6a85">·</span> ${L.targets.map((t,i)=>`هدف ${i+1} <b style="color:${t.kind==='fractal'?'#f5c842':'#4a9eff'}">${t.price}</b>${t.rr!=null?` (1:${t.rr})`:''}`).join(' · ')}`:'')
+          +(L.shortNote?` <span style="color:#f5c842">· ${L.shortNote}</span>`:'')
+        : ` <span style="color:#f5c842">· ⚠ ${L.riskNote}</span>`);
+  }
   return L;
 }
 /** زرّ إظهار/إخفاء المستويات — الحالة محفوظة بين الجلسات. */
@@ -4056,7 +4193,7 @@ function toggleTradeLevels(){
   _tlOn=!_tlOn;
   try{localStorage.setItem('ksaTL',_tlOn?'1':'0');}catch(e){}
   const b=document.getElementById('btn-tl');if(b)b.classList.toggle('on',_tlOn);
-  if(_tlOn)drawTradeLevels(G.sel);else clearTradeLevels();
+  if(_tlOn)drawTradeLevels(G.sel);else{clearTradeLevels();const i=document.getElementById('tl-info');if(i)i.innerHTML='';}
 }
 window.drawTradeLevels=drawTradeLevels;window.toggleTradeLevels=toggleTradeLevels;
 
@@ -4658,10 +4795,14 @@ function updateTradePlan(sym){
       </div>
       <div class="tp-box">
         <div class="tp-box-title">🛑 وقف الخسارة</div>
-        <div class="tp-box-val" style="color:var(--dn)">${tp.stop}</div>
-        <div class="tp-box-sub">${tp.stopSource} — مخاطرة ${tp.risk} ر.س/سهم</div>
+        <div class="tp-box-val" style="color:var(--dn)">${TL?TL.stop:tp.stop}</div>
+        <div class="tp-box-sub">${TL?`${TL.stopSource} — مخاطرة ${TL.risk} ر.س/سهم (${TL.riskATR}×ATR)`:`${tp.stopSource} — مخاطرة ${tp.risk} ر.س/سهم`}</div>
       </div>
     </div>
+    ${TL?`<div style="padding:0 12px 6px;font-size:10.5px;line-height:1.8;color:${TL.rel==='inside'?'#0ecf7e':'#f5c842'}">
+      ${TL.rel==='inside'?'●':'○'} ${TL.relNote}
+      ${TL.riskOk?'':`<br><span style="color:#f5c842">⚠ ${TL.riskNote}</span>`}
+    </div>`:''}
     ${verdictHtml}
     <div class="tp-levels">
       <div class="tp-box-title" style="padding:2px 0">🟢 الدعوم (الأقرب أولاً)</div>
@@ -8183,6 +8324,13 @@ function ddTiming(sym) {
       /* الطيف أعلاه محسوب على آخر 750 جلسة (سقف core.js) — نمرّره كي لا
          يُعاد حسابه داخل فحص الثبات. */
       try { if (window.KSATiming) stab = KSATiming.cycleStability(cs, { spectral: sp, spectralBars: Math.min(cs.length, 750) }); } catch (e) { }
+      /* ثلاث حالات لا اثنتان:
+         • stable === true  ⇒ فُحص وثبت ⇒ تاريخ كامل الرتبة.
+         • stable === false ⇒ فُحص وسقط ⇒ لا تاريخ إطلاقاً.
+         • testable === false ⇒ لم يُفحص أصلاً (الدورة أطول من أن تُستجوَب
+           ثلاث مرات داخل التاريخ المتاح) ⇒ يُنشر التاريخ موسوماً بأن
+           ثباته غير مفحوص، ويُستبعد من مرتبة «المؤكَّدة». إعلانه ساقطاً
+           ادّعاء بأننا فحصنا وفشل، ولم نفحص. */
       if (stab && stab.ok && stab.stable === false) {
         out = {
           ok: true, significant: true, unstable: true, stability: stab,
@@ -8216,6 +8364,7 @@ function ddTiming(sym) {
         period: sp.period, cyclePos: pos, p: sp.pValue, pText: sp.pValueText,
         snr: sp.snr, nCycles: sp.nCycles, gridErrorPct: sp.gridErrorPct,
         turns, nextTurn, nextValley, risingPhase, stability: stab, unstable: false,
+        stabilityTested: !!(stab && stab.ok && stab.testable !== false),
         coherent, coh, score: Math.min(15, score)
       };
     }

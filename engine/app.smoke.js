@@ -261,6 +261,20 @@ else {
     if (!(L.entryLo < L.entryHi)) { broken++; bad(`[${sym}] منطقة دخول مقلوبة: ${L.entryLo} ≥ ${L.entryHi}`); }
     if (!(L.stop < L.entryLo)) { broken++; bad(`[${sym}] الوقف ${L.stop} ليس تحت حدّ المنطقة الأدنى ${L.entryLo}`); }
     if (!(L.risk > 0)) { broken++; bad(`[${sym}] مسافة مخاطرة غير موجبة: ${L.risk}`); }
+    /* 🛠️ الحارس ضدّ العطل الذي ظهر على الشارت: منطقة دخول من فجوة قيمة
+       عادلة أخفض من السعر مع وقف مورَّث محسوب من السعر ⇒ مخاطرة 0.055
+       ريال وعائد/مخاطرة 1:11. المعيار المعلن في calcTradePlan هو نصف
+       ATR على الأقل، ولم يكن مطبَّقاً هنا. */
+    if (L.riskOk && L.atr > 0 && L.risk < 0.5 * L.atr) {
+      broken++; bad(`[${sym}] مخاطرة ${L.risk} = ${L.riskATR}×ATR أضيق من نصف ATR مع إعلانها سليمة`);
+    }
+    if (!L.riskOk && !L.riskNote) { broken++; bad(`[${sym}] مخاطرة غير سليمة بلا تفسير معلن`); }
+    if (!L.riskOk && L.targets.some(t => t.rr != null)) {
+      broken++; bad(`[${sym}] نسبة عائد/مخاطرة مُعلنة رغم أن الوقف داخل الضجيج`);
+    }
+    if (L.atr > 0 && L.zoneWidth < 0.19 * L.atr) { broken++; bad(`[${sym}] عرض المنطقة ${L.zoneWidth} أضيق من 0.2×ATR`); }
+    if (L.atr > 0 && L.zoneWidth > 1.55 * L.atr) { broken++; bad(`[${sym}] عرض المنطقة ${L.zoneWidth} أوسع من 1.5×ATR`); }
+    if (!['inside', 'above', 'below'].includes(L.rel) || !L.relNote) { broken++; bad(`[${sym}] موقع السعر من المنطقة غير معلن`); }
     for (const t of L.targets) {
       if (!(t.price > L.entryHi)) { broken++; bad(`[${sym}] هدف ${t.price} ليس فوق منطقة الدخول`); }
       if (t.rr != null && t.rr < L.minRR - 0.01) { broken++; bad(`[${sym}] هدف بعائد/مخاطرة ${t.rr} دون الحد ${L.minRR}`); }

@@ -493,7 +493,9 @@
     /* السقف الأعلى 750 جلسة مطابقاً لسقف العيّنة الطيفية في core.js: بلا
        هذا التطابق تُقتطع كل النوافذ الأطول إلى الطول نفسه فتتساوى نتائجها
        بالتعريف، ويصبح فحص الثبات يقارن الشيء بنفسه. */
-    const minW = 200, k = 4, maxW = 750;
+    /* ست نوافذ لا أربع: العدد الأقل كان يترك دورة 80 جلسة بنافذتين
+       مؤهَّلتين فقط فتُعلَن «غير مفحوصة» بلا سبب حقيقي. */
+    const minW = 200, k = 6, maxW = 750;
     const top = Math.min(n, maxW);
     if (top < minW + 50) return [];
     const out = [];
@@ -505,6 +507,11 @@
     opt = opt || {};
     const tolPct = opt.tolPct == null ? 25 : opt.tolPct;
     const minWindows = opt.minWindows == null ? 3 : opt.minWindows;
+    /* كم دورة كاملة يجب أن تسع في النافذة كي تُعدّ قادرة على اختبارها.
+       النطاق المفحوص في core.js يتوقف عند ثلث العيّنة، أي أن ثلاث دورات
+       كاملة هي بالضبط شرط دخول الدورة في النطاق. واشتراط أكثر من ذلك هنا
+       تشدّد غير متّسق: يجعل معيار «تُفحص» أقسى من معيار «تُكتشف». */
+    const minCycles = opt.minCycles == null ? 3 : opt.minCycles;
     if (!cs || cs.length < 200)
       return { ok: false, reason: `عيّنة ${cs ? cs.length : 0} جلسة — فحص الثبات يتطلب 200+ ليُقسَّم إلى نوافذ متداخلة`, stable: false };
 
@@ -513,36 +520,74 @@
     const sizes = opt.windows || _autoWindows(cs.length);
     if (!sizes.length)
       return { ok: false, reason: `عيّنة ${cs.length} جلسة — لا تكفي لأربع نوافذ متداخلة كل واحدة 200 جلسة فأكثر`, stable: false };
+
+    /* ① الدورة المرشَّحة من أطول نافذة — هي ما نسأل عن ثباته */
+    const topBars = Math.min(cs.length, sizes[sizes.length - 1]);
+    let ref = (opt.spectral && opt.spectralBars === topBars) ? opt.spectral : null;
+    if (!ref) { try { ref = E.spectralPro(cs.slice(-topBars).map(c => c.close), { alpha: 0.05, maxBars: topBars }); } catch (e) { ref = null; } }
+    if (!ref || !ref.ok)
+      return { ok: false, reason: (ref && ref.reason) || 'تعذّر قياس الطيف على أطول نافذة', stable: false };
+    if (!ref.significant)
+      return { ok: false, reason: `لا دورة دالة على أطول نافذة (p = ${ref.pValueText}) — لا شيء يُفحص ثباته`, stable: false };
+    const P = ref.period;
+
+    /* ② لا تُستجوَب إلا النوافذ القادرة على اختبار هذه الدورة.
+       ══════════════════════════════════════════════════════════════════
+       🛠️ هذا هو تصحيح خلل حقيقي ظهر على بيانات السوق: سهم أعطى دورة
+       49 و50 جلسة في نافذتين (توافق 2٪!) وأُعلن «غير ثابت» لمجرّد أن
+       النافذتين الأقصر لم تُظهراها. والسبب ليس تغيّر الدورة بل أن نافذة
+       200 جلسة تفحص دورات حتى 66 جلسة فقط، ودورة 50 تقع عند حافة النطاق
+       حيث عدد حزم فورييه قليل والقدرة الإحصائية منهارة. فكان الفحص يخلط
+       بين «الدورة تتغيّر» و«النافذة أعجز من أن تراها» — وهما نقيضان في
+       المعنى: الأول يُبطل التاريخ والثاني لا يقول عنه شيئاً.
+       النوافذ غير المؤهَّلة تُستبعد من البسط والمقام معاً وتُعلَن كذلك. */
     const rows = [];
     for (const n of sizes) {
       if (cs.length < n) continue;
+      if (n < minCycles * P) { rows.push({ bars: n, eligible: false, period: null, significant: false }); continue; }
       let sp;
-      /* النافذة الكبرى غالباً محسوبة سلفاً عند المستدعي (ddTiming يحسب
-         الطيف قبل أن يسأل عن الثبات) — تمريرها يوفّر استدعاءً كاملاً. */
-      if (opt.spectral && opt.spectralBars === n) sp = opt.spectral;
+      if (n === topBars) sp = ref;
+      else if (opt.spectral && opt.spectralBars === n) sp = opt.spectral;
       else { try { sp = E.spectralPro(cs.slice(-n).map(c => c.close), { alpha: 0.05, maxBars: n }); } catch (e) { continue; } }
       if (!sp.ok) continue;
-      rows.push({ bars: n, period: sp.significant ? sp.period : null, significant: !!sp.significant, pValue: sp.pValueText });
+      rows.push({ bars: n, eligible: true, period: sp.significant ? sp.period : null, significant: !!sp.significant, pValue: sp.pValueText });
 
-      /* خروج مبكر: إن تجاوز التشتّت الحدّ بين نافذتين دالّتين فلا تُصلحه
-         نافذة ثالثة — الحكم «غير ثابتة» نهائي، وبقية الحساب هدر. وهذه هي
-         الحالة الأغلب، فالتوفير يقع حيث يقع العبء. */
-      const sofar = rows.filter(r => r.period != null).map(r => r.period);
-      if (sofar.length >= 2) {
+      /* خروج مبكر: إن تجاوز التشتّت الحدّ بين نوافذ مؤهَّلة دالّة فلا
+         تُصلحه نافذة أخرى — الحكم نهائي وبقية الحساب هدر. */
+      const sofar = rows.filter(r => r.eligible && r.period != null).map(r => r.period);
+      if (sofar.length >= minWindows) {
         const md = S.median(sofar);
         const sp2 = md > 0 ? Math.max.apply(null, sofar.map(v => Math.abs(v - md))) / md * 100 : 999;
-        if (sp2 > tolPct && sofar.length >= minWindows) break;
+        if (sp2 > tolPct) break;
       }
     }
 
-    const sig = rows.filter(r => r.period != null);
-    if (rows.length < minWindows)
-      return { ok: false, reason: `لم تُقس إلا ${rows.length} نافذة — مطلوب ${minWindows}`, stable: false, windows: rows };
+    const elig = rows.filter(r => r.eligible);
+    const sig = elig.filter(r => r.period != null);
+    const skipped = rows.length - elig.length;
+
+    /* ③ لا يكفي عدد النوافذ المؤهَّلة ⇒ الفحص **غير منطبق**، لا راسب.
+       دورة 150 جلسة تحتاج 600 جلسة لنافذة واحدة مؤهَّلة، فلا يمكن
+       استجوابها ثلاث مرات ضمن 750. إعلانها «غير ثابتة» ادّعاء بأننا
+       فحصنا وفشلت، ولم نفحص. وإعلانها «ثابتة» ادّعاء معاكس بلا دليل.
+       الحالة الثالثة هي الصادقة، ويقرّر المستهلك ماذا يفعل بها. */
+    if (elig.length < minWindows)
+      return {
+        ok: true, testable: false, stable: null, windows: rows,
+        period: r2(P), eligibleWindows: elig.length, skippedWindows: skipped, totalWindows: rows.length,
+        periods: sig.map(r => r.period), tolPct, minCycles,
+        note: `الدورة المرشَّحة ${r2(P)} جلسة، وفحص الثبات يتطلب ${minWindows} نوافذ لا يقلّ طول الواحدة عن ${Math.round(minCycles * P)} جلسة (${minCycles} دورات كاملة). `
+          + `المتاح ${elig.length} فقط ضمن ${topBars} جلسة، فالثبات **غير مفحوص** — لا مثبَت ولا منفيّ. `
+          + `وهذا حدّ في طول التاريخ لا حكم على السهم.`
+      };
+
     if (sig.length < minWindows)
       return {
-        ok: true, stable: false, windows: rows, significantWindows: sig.length, totalWindows: rows.length,
-        periods: sig.map(r => r.period), medianPeriod: null, spreadPct: null,
-        note: `الدورة دالة في ${sig.length} من ${rows.length} نوافذ فقط. دورة تظهر في نافذة وتختفي في أخرى ليست خاصية للسهم بل خاصية للنافذة — ولا يُشتقّ منها تاريخ انعطاف.`
+        ok: true, testable: true, stable: false, windows: rows,
+        period: r2(P), significantWindows: sig.length, eligibleWindows: elig.length, skippedWindows: skipped, totalWindows: rows.length,
+        periods: sig.map(r => r.period), medianPeriod: null, spreadPct: null, tolPct, minCycles,
+        note: `الدورة دالة في ${sig.length} من ${elig.length} نوافذ **مؤهَّلة لاختبارها** (كل واحدة تسع ${minCycles} دورات فأكثر). `
+          + `دورة تظهر في نافذة وتختفي في أخرى قادرة على رؤيتها ليست خاصية للسهم بل خاصية للنافذة — ولا يُشتقّ منها تاريخ انعطاف.`
       };
 
     const periods = sig.map(r => r.period);
@@ -551,12 +596,15 @@
     const stable = spread <= tolPct;
 
     return {
-      ok: true, stable,
-      windows: rows, periods, significantWindows: sig.length, totalWindows: rows.length,
-      medianPeriod: r2(med), spreadPct: r2(spread), tolPct,
+      ok: true, testable: true, stable,
+      windows: rows, periods, period: r2(P),
+      significantWindows: sig.length, eligibleWindows: elig.length, skippedWindows: skipped, totalWindows: rows.length,
+      medianPeriod: r2(med), spreadPct: r2(spread), tolPct, minCycles,
       note: stable
-        ? `الدورة ثابتة عبر ${sig.length} نوافذ: ${periods.map(p => Math.round(p)).join(' · ')} جلسة (تشتّت ${r2(spread)}٪ ≤ ${tolPct}٪). أي أنها خاصية للسهم لا للنافذة المحمّلة — وهذا شرط لا يجتازه إلا القليل.`
-        : `الدورة **تتغيّر بتغيّر النافذة**: ${periods.map(p => Math.round(p)).join(' · ')} جلسة عبر ${sig.length} نوافذ (تشتّت ${r2(spread)}٪ > ${tolPct}٪). `
+        ? `الدورة ثابتة عبر ${sig.length} نوافذ مؤهَّلة: ${periods.map(p => Math.round(p)).join(' · ')} جلسة (تشتّت ${r2(spread)}٪ ≤ ${tolPct}٪). `
+          + `أي أنها خاصية للسهم لا للنافذة المحمّلة — وهذا شرط لا يجتازه إلا القليل.`
+          + (skipped ? ` (استُبعدت ${skipped} نافذة أقصر من أن تسع ${minCycles} دورات — استبعادها ليس رسوباً.)` : '')
+        : `الدورة **تتغيّر بتغيّر النافذة**: ${periods.map(p => Math.round(p)).join(' · ')} جلسة عبر ${sig.length} نوافذ مؤهَّلة (تشتّت ${r2(spread)}٪ > ${tolPct}٪). `
           + `وهذا يفسّر مباشرةً اختلاف الموعد المتوقّع حين تبدّل الشارت من سنة إلى سنتين: التاريخ كان يخصّ النافذة لا السهم. `
           + `اختبار فيشر لا يكشف هذا لأنه يسأل «هل تفسّرها الصدفة داخل هذه النافذة؟» لا «هل هي نفسها لو غيّرتُ النافذة؟».`
     };
