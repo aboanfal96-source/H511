@@ -73,8 +73,22 @@ function synth(sym) {
   }
   return { chart: { result: [{ meta: { regularMarketPrice: c[c.length - 1], previousClose: c[c.length - 2], symbol: sym }, timestamp: ts, indicators: { quote: [{ open: o, high: h, low: l, close: c, volume: v }] } }], error: null } };
 }
+const NOTIFIED = [];
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  /* بديل عن /api/notify: الدالة الحقيقية تحتاج رمز بوت حيّاً، والمقصود
+     هنا فحص أن الواجهة تستدعيها بالمحتوى الصحيح لا فحص تلقرام نفسه. */
+  if (u.pathname === '/api/notify') {
+    let body = '';
+    req.on('data', c => body += c);
+    return req.on('end', () => {
+      let msgs = [];
+      try { const j = JSON.parse(body); msgs = j.messages || (j.text ? [j.text] : []); } catch (e) { }
+      NOTIFIED.push(...msgs);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, sent: msgs.length }));
+    });
+  }
   if (u.pathname === '/api/stock') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(synth(u.searchParams.get('symbol') || '2222')));
@@ -114,7 +128,8 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
     server.close(); process.exit(0);
   }
   try {
-    const pg = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+    const ctxt = await browser.newContext({ viewport: { width: 1500, height: 950 }, permissions: ['notifications'] });
+    const pg = await ctxt.newPage();
     const errs = [];
     pg.on('pageerror', e => errs.push(e.message));
     await pg.goto(`http://localhost:${port}/`, { waitUntil: 'networkidle', timeout: 60000 });
@@ -169,6 +184,58 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
     });
     drawn.hasCanvas ? ok('الشارت مرسوم فعلاً في المتصفّح') : bad('لا لوحة رسم — الشارت لم يُبنَ');
     drawn.info.length > 40 ? ok('سطر مستويات الصفقة معروض تحت الشارت') : bad('سطر المستويات فارغ');
+
+    /* ── التنبيهات ───────────────────────────────────────────────────
+       تُفحص في المتصفّح لأن ثلاثة أعطال منها ظهرت هنا ولم تظهر في
+       الاختبارات النقيّة: اسم دالة غير معرّف، ومتجر منع التكرار لا
+       يُحفظ بعد الفحص اليدوي، ونطاق ATR يُطلق تنبيهاً على أكثر من نصف
+       الأسهم المحمّلة. */
+    await pg.evaluate(async () => {
+      const syms = STKS.slice(0, 25).map(s => s.sym);
+      for (const s of syms) { try { await loadStock(s); calcInd(s); } catch (e) { } }
+      window.__N = [];
+      window.Notification = function (t, o) { window.__N.push({ t, b: o && o.body }); };
+      window.Notification.permission = 'granted';
+      window.Notification.requestPermission = async () => 'granted';
+    });
+    await pg.waitForTimeout(1200);
+
+    const a1 = await pg.evaluate(async () => {
+      AL.cfg.telegram = true; AL.cfg.browser = true; AL.cfg.sound = false;
+      AL.cfg.kinds = ['ready', 'zone', 'approach']; AL.store = {}; AL.log = []; alSave();
+      const r = await runAlertScan({ force: true });
+      return { stats: r.stats, sent: r.sent.length, keys: r.sent.map(x => x.key), del: r.delivery, store: Object.keys(AL.store).length };
+    });
+    const a2 = await pg.evaluate(async () => {
+      const r = await runAlertScan({ silent: true });
+      return { sent: r.sent.length, keys: r.sent.map(x => x.key) };
+    });
+    const browserN = await pg.evaluate(() => window.__N.length);
+
+    a1.stats.scanned > 10 ? ok(`فحص التنبيهات مرّ على ${a1.stats.scanned} سهماً محمّلاً`)
+      : bad(`لم يُفحص إلا ${a1.stats.scanned} سهماً — الفحص لا يرى البيانات`);
+    a1.sent > 0 ? ok(`أُطلق ${a1.sent} تنبيهاً (مكتملة ${a1.stats.ready} · منطقة ${a1.stats.zone} · اقتراب ${a1.stats.approach})`)
+      : bad('لم يُطلق أي تنبيه رغم وجود أسهم محمّلة');
+    a1.stats.skippedAtrZone > 0
+      ? ok(`${a1.stats.skippedAtrZone} سهماً نطاقه مشتقّ من ATR ⇒ لا تنبيه (نطاق يحيط بالسعر بالتعريف)`)
+      : ok('لا نطاقات ATR في هذه العيّنة');
+    a1.del.browser === a1.sent ? ok('كل تنبيه وصل إشعار المتصفّح') : bad(`إشعارات المتصفّح ${a1.del.browser} ≠ ${a1.sent}`);
+    a1.del.telegram === a1.sent && !a1.del.tgError ? ok('كل تنبيه وصل قناة تلقرام') : bad(`تلقرام ${a1.del.telegram}/${a1.sent} — ${a1.del.tgError || ''}`);
+    /* __N تتراكم عبر الفحصين معاً، فالمقارنة مع مجموعهما لا مع الأول. */
+    browserN === a1.sent + a2.sent ? ok(`عدد إشعارات المتصفّح مطابق لمجموع الفحصين (${browserN})`)
+      : bad(`إشعارات ${browserN} ≠ ${a1.sent + a2.sent}`);
+    a1.store === a1.sent ? ok('الفحص اليدوي سجّل ما أرسله في متجر منع التكرار')
+      : bad(`المتجر يحوي ${a1.store} مفتاحاً بعد إرسال ${a1.sent} — منع التكرار معطَّل بعد الفحص اليدوي`);
+
+    const repeat = a2.keys.filter(k => a1.keys.indexOf(k) >= 0);
+    repeat.length === 0 ? ok(`الفحص التالي لم يُعد أي تنبيه سبق إرساله (أرسل ${a2.sent} من قائمة الانتظار)`)
+      : bad(`تكرّر ${repeat.length} تنبيهاً: ${repeat.slice(0, 2).join(' , ')}`);
+
+    const texts = NOTIFIED.join('\n---\n');
+    /\u0645\u0646\u0637\u0642\u0629 \u0627\u0644\u062f\u062e\u0648\u0644/.test(texts) && /\u0627\u0644\u0648\u0642\u0641/.test(texts)
+      ? ok('رسائل القناة تحمل منطقة الدخول والوقف')
+      : bad('رسائل القناة بلا أرقام الخطة');
+    /\u0644\u064a\u0633 \u062a\u0648\u0635\u064a\u0629/.test(texts) ? ok('كل رسالة تحمل تنويه المسؤولية') : bad('رسالة بلا تنويه المسؤولية');
 
     errs.length ? bad('استثناءات في الصفحة: ' + errs.slice(0, 3).join(' | ')) : ok('لا استثناءات في المتصفّح');
   } finally {
