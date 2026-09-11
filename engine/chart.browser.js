@@ -33,7 +33,25 @@ if (!chromium || !LWC) {
   console.log('  التثبيت: npm i -D playwright lightweight-charts@4.1.0');
   process.exit(0);
 }
-const EXEC = process.env.CHROME_PATH || undefined;
+/* مسار المتصفّح: المتغيّر البيئي أولاً، ثم أي بناء كروميوم موجود في
+   مجلّد متصفّحات playwright. بدون هذا يفشل الاختبار لمجرّد أن نسخة
+   playwright المثبّتة تتوقّع رقم بناء غير الموجود على الجهاز — وهو فشل
+   في البيئة لا في الكود، ويجب أن يُقرأ كتخطٍّ لا كعطل. */
+function findChrome() {
+  if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/pw-browsers';
+  try {
+    for (const d of fs.readdirSync(root)) {
+      if (!/^chromium-/.test(d)) continue;
+      for (const rel of ['chrome-linux/chrome', 'chrome-mac/Chromium.app/Contents/MacOS/Chromium']) {
+        const f = path.join(root, d, rel);
+        if (fs.existsSync(f)) return f;
+      }
+    }
+  } catch (e) { }
+  return undefined;
+}
+const EXEC = findChrome();
 
 /* ── خادم محلّي: يخدم الصفحة والمحرّك، ويزوّد شموعاً اصطناعية ثابتة ── */
 function synth(sym) {
@@ -88,7 +106,13 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
 (async () => {
   await new Promise(r => server.listen(0, r));
   const port = server.address().port;
-  const browser = await chromium.launch({ executablePath: EXEC, args: ['--no-sandbox'] });
+  let browser;
+  try { browser = await chromium.launch({ executablePath: EXEC, args: ['--no-sandbox'] }); }
+  catch (e) {
+    console.log('⊘ تخطٍّ: تعذّر تشغيل متصفّح — ' + e.message.split('\n')[0]);
+    console.log('  حدّد المسار بـ CHROME_PATH أو ثبّت المتصفّح: npx playwright install chromium');
+    server.close(); process.exit(0);
+  }
   try {
     const pg = await browser.newPage({ viewport: { width: 1500, height: 950 } });
     const errs = [];
