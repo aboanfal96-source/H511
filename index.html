@@ -11,6 +11,7 @@
 <script src="/engine/timing.js"></script>
 <script src="/engine/market.js"></script>
 <script src="/engine/alerts.js"></script>
+<script src="/engine/schools.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--c0:#04060e;--c1:#080b16;--c2:#0c1020;--c3:#111628;--c4:#172030;--bd:rgba(255,255,255,.055);--bd2:rgba(255,255,255,.1);--t1:#dde3f0;--t2:#7a8ba8;--t3:#3d4a5e;--up:#0ecf7e;--dn:#f04458;--ubg:rgba(14,207,126,.08);--dbg:rgba(240,68,88,.08);--bl:#4a9eff;--bl2:rgba(74,158,255,.12);--gd:#f5c842;--pu:#a78bfa;--cy:#22d3ee;--or:#fb923c;--pk:#f472b6;--base-font:12px}
@@ -9871,7 +9872,9 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
    بطاقة إطلاقاً. نشر سعر دخول مُختلَق أسوأ من عدم النشر.
    ══════════════════════════════════════════════════════════════════════ */
 (function(){
-  const W=1080,H=1500,PAD=54;
+  /* ارتفعت البطاقة من 1500 إلى 1820 لتتّسع لجدول المدارس بلا ضغط الشارت.
+     النسبة تبقى طولية مناسبة للنشر على تلقرام وإكس. */
+  const W=1080,H=1820,PAD=54;
   const C={bg0:'#05070f',bg1:'#0b1020',card:'#0d1224',line:'rgba(255,255,255,.08)',
     t1:'#e6ecf7',t2:'#8fa0bd',t3:'#5a6a85',up:'#0ecf7e',dn:'#f04458',gd:'#f5c842',
     pu:'#a78bfa',bl:'#4a9eff',cy:'#22d3ee'};
@@ -9979,13 +9982,29 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     /* ── النماذج ── */
     ensurePatternData(sym);
     const harm=G.harmCache?.[sym],ew=G.ewCache?.[sym],fr=G.fracCache?.[sym];
+
+    /* ── أهداف مدارس التحليل ─────────────────────────────────────────
+       كل مدرسة بقاعدتها هي، والقيمة في رؤية أين تتفق وأين تختلف. تُستدعى
+       كواشف المنصة نفسها (إليوت والهارمونيك والذئب والقناة) ولا تُعاد
+       كتابتها، فلا تتباعد نسختان. */
+    let schools=null;
+    try{
+      if(window.KSASchools)schools=KSASchools.schoolTargets(cs,{
+        price,
+        sr:calcSupportResistance(cs,G.ind?.[sym]||{},price),
+        elliott:ew, harmonic:harm, wolfe:G.wolfeCache?.[sym], channel:G.chanCache?.[sym],
+        fractalTargets:fr,
+        volumeProfile:(window.KSAEngine?KSAEngine.volumeProfile(cs,{bins:60}):null),
+        liquidity:(window.KSATiming?KSATiming.liquidityGate(cs,{dirUp:true}):null)
+      });
+    }catch(e){console.warn('schoolTargets failed',e);}
     const tags=[];
     if(harm)tags.push(`🦋 ${harm.name} ${harm.sig==='شراء'?'صعودي':'هبوطي'}${harm.live?` ${harm.completion}٪`:''}`);
     if(ew&&ew.wave!==0)tags.push(`🌊 ${ew.desc}`);
     if(fr&&fr.ok&&fr.target1)tags.push(`🎯 قمة فراكتالية ${f2(fr.target1)}`);
 
     return{sym,name:stkName(sym),price,pct,entry,stop,target,target2,rr,risk,upPct,
-      entryLo,entryHi,zoneSrc,tShort,t2Kind,timingBlocked,
+      entryLo,entryHi,zoneSrc,tShort,t2Kind,timingBlocked,schools,
       label,labelColor:labelColor||C.gd,src,timing,act,tags,cs,betterEntry,
       demo:false};
   }
@@ -9997,6 +10016,18 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     ctx.save();ctx.direction=dir;ctx.textAlign=align;ctx.textBaseline='alphabetic';
     ctx.fillStyle=color;ctx.font=`${weight} ${size}px ${font}`;ctx.fillText(s,x,y);ctx.restore();
   }
+  /** يقصّ النصّ إلى أطول بادئة تسع في العرض المتاح، ويضيف نقاط الحذف. */
+  function fitText(ctx,s,font,maxW){
+    if(!s)return '';
+    ctx.save();ctx.font=font;
+    if(ctx.measureText(s).width<=maxW){ctx.restore();return s;}
+    let lo=0,hi=s.length;
+    while(lo<hi){const mid=(lo+hi+1)>>1;
+      if(ctx.measureText(s.slice(0,mid)+'…').width<=maxW)lo=mid;else hi=mid-1;}
+    ctx.restore();
+    return lo>0?s.slice(0,lo)+'…':'';
+  }
+
   function dash(ctx,x1,y,x2,color,w=2,d=[8,7]){ctx.save();ctx.setLineDash(d);ctx.strokeStyle=color;
     ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y);ctx.lineTo(x2,y);ctx.stroke();ctx.restore();}
 
@@ -10158,6 +10189,85 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
       y+=60;
     }
 
+    /* ── أهداف مدارس التحليل ──────────────────────────────────────────
+       الغرض ليس كثرة الأرقام بل عكسها: أن يُرى **الإجماع** بالعين. اتفاق
+       أربع مدارس على مستوى واحد معلومة، واتفاق واحدة معلومة أخرى، ولا
+       يظهر الفرق إلا بعرضها جنباً إلى جنب بقواعدها المعلنة.
+       المدارس الممتنعة تُذكر بعددها وأسمائها: امتناعها نتيجة لا فراغ. */
+    if(d.schools&&d.schools.ok){
+      const S=d.schools;
+      const withT=S.rows.filter(r=>r.ok&&r.target!=null);
+      const shown=withT.slice(0,8);
+      const abst=S.rows.filter(r=>!(r.ok&&r.target!=null));
+      const rowH=40, headH=46;
+      const COL_NAME=W-PAD-24, COL_TGT=W-PAD-262, COL_PCT=W-PAD-362,
+            COL_STOP=W-PAD-482, COL_BASIS=W-PAD-602;
+      const BASIS_W=COL_BASIS-(PAD+22);
+      const boxH=headH+20+Math.max(1,shown.length)*rowH+(S.agreed.length?52:0)+(abst.length?46:0)+18;
+
+      rr_(ctx,PAD,y,W-PAD*2,boxH,16);ctx.fillStyle=C.card;ctx.fill();
+      ctx.strokeStyle=C.line;ctx.lineWidth=1;ctx.stroke();
+
+      let ry=y+34;
+      txt(ctx,'📚 أهداف مدارس التحليل — الأقرب أولاً',W-PAD-22,ry,{size:25,color:C.t1,weight:700});
+      txt(ctx,`${withT.length} من ${S.stats.total} مدرسة أعطت هدفاً`,PAD+22,ry,{size:20,color:C.t3,align:'left'});
+      ry+=14;
+      ctx.strokeStyle=C.line;ctx.beginPath();ctx.moveTo(PAD+18,ry);ctx.lineTo(W-PAD-18,ry);ctx.stroke();
+      /* عناوين الأعمدة: بدونها يرى القارئ ثلاثة أرقام متجاورة ولا يعرف
+         أيّها الهدف وأيّها الوقف — وهو أسوأ من عدم عرضها. */
+      /* أعمدة بإحداثيات صريحة محاذاة يميناً كلّها — الخلط بين
+         direction:'rtl' و textAlign:'left' لا يضع النصّ حيث يُتوقَّع،
+         وكان عمود «الأساس» يتداخل مع عمود الوقف بسببه. */
+      txt(ctx,'المدرسة',COL_NAME,ry+26,{size:18,color:C.t3});
+      txt(ctx,'الهدف',COL_TGT,ry+26,{size:18,color:C.t3});
+      txt(ctx,'الوقف',COL_STOP,ry+26,{size:18,color:C.t3});
+      txt(ctx,'الأساس',COL_BASIS,ry+26,{size:18,color:C.t3});
+      ry+=20;
+
+      if(!shown.length){
+        ry+=34;
+        txt(ctx,'لا مدرسة أعطت هدفاً فوق السعر — السهم في اكتشاف سعري أو فوق كل مستوياته',
+          W-PAD-22,ry,{size:22,color:C.gd});
+        ry+=rowH-24;
+      }
+      shown.forEach((r,i)=>{
+        ry+=rowH;
+        if(i%2===0){ctx.fillStyle='rgba(255,255,255,.018)';ctx.fillRect(PAD+14,ry-30,W-PAD*2-28,rowH-4);}
+        /* اسم المدرسة */
+        txt(ctx,r.name,COL_NAME,ry,{size:24,color:C.t1,weight:600});
+        /* الهدف */
+        const up=((r.target-S.price)/S.price*100);
+        txt(ctx,f2(r.target),COL_TGT,ry,{size:26,color:C.up,weight:700,font:MN,dir:'ltr',align:'right'});
+        txt(ctx,`+${up.toFixed(1)}٪`,COL_PCT,ry,{size:20,color:C.t3,font:MN,dir:'ltr',align:'right'});
+        /* الوقف */
+        txt(ctx,r.stop!=null?f2(r.stop):'—',COL_STOP,ry,{size:24,color:r.stop!=null?C.dn:C.t3,weight:600,font:MN,dir:'ltr',align:'right'});
+        /* الأساس مختصراً — يُقصّ بالعرض المقاس لا بعدد الأحرف: الحروف
+           العربية متفاوتة العرض، فالقصّ بالعدد يتداخل مع العمود المجاور. */
+        txt(ctx,fitText(ctx,(r.basis||'').split('·')[0].trim(),`400 19px ${AR}`,BASIS_W),
+          COL_BASIS,ry,{size:19,color:C.t3});
+      });
+      ry+=18;
+
+      if(S.agreed.length){
+        const a=S.agreed[0];
+        ry+=30;
+        rr_(ctx,PAD+14,ry-26,W-PAD*2-28,44,9);
+        ctx.fillStyle='rgba(14,207,126,.09)';ctx.fill();
+        ctx.strokeStyle='rgba(14,207,126,.3)';ctx.lineWidth=1;ctx.stroke();
+        txt(ctx,`🎯 إجماع ${a.count} مدارس على ${f2(a.lo)}${a.lo!==a.hi?` – ${f2(a.hi)}`:''}`,
+          COL_NAME,ry+2,{size:23,color:C.up,weight:700});
+        txt(ctx,fitText(ctx,a.schools.join(' · '),`400 19px ${AR}`,COL_STOP-(PAD+22)),
+          COL_STOP,ry+2,{size:19,color:C.t3});
+        ry+=22;
+      }
+      if(abst.length){
+        ry+=34;
+        txt(ctx,fitText(ctx,`◇ امتنعت ${abst.length}: ${abst.map(r=>r.name).join(' · ')}`,
+          `400 19px ${AR}`,W-PAD*2-48),COL_NAME,ry,{size:19,color:C.t3});
+      }
+      y+=boxH+18;
+    }
+
     /* ── الشارت ── */
     const chH=H-y-152;
     drawChart(ctx,d,PAD,y,W-PAD*2,chH);
@@ -10175,6 +10285,24 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
   /* ══ النصوص المرافقة ══════════════════════════════════════════════
      نصّ إكس مضبوط تحت 280 محرفاً. التوقيت يُكتب نافذةً لا تاريخاً — النافذة
      احتمالية بطبيعتها، وكتابتها كتاريخ محدّد تُكذَّب أمام المتابعين. */
+  /* أهداف المدارس نصّاً — لتلقرام لا لإكس: إكس محدود بـ280 محرفاً،
+     وحشرها فيه يقصّ الأرقام نفسها التي أُضيفت لأجلها. */
+  function schoolsText(d){
+    const S=d.schools;
+    if(!S||!S.ok)return '';
+    const withT=S.rows.filter(r=>r.ok&&r.target!=null);
+    if(!withT.length)return '\n📚 *المدارس*\nلا مدرسة أعطت هدفاً فوق السعر.';
+    const lines=withT.slice(0,9).map(r=>{
+      const up=((r.target-S.price)/S.price*100).toFixed(1);
+      return `• ${r.name}: هدف \`${f2(r.target)}\` (+${up}٪)${r.stop!=null?` · وقف \`${f2(r.stop)}\``:''}`;
+    });
+    const agree=S.agreed.length
+      ? `\n🎯 إجماع ${S.agreed[0].count} مدارس على ${f2(S.agreed[0].lo)}${S.agreed[0].lo!==S.agreed[0].hi?`–${f2(S.agreed[0].hi)}`:''} (${S.agreed[0].schools.join('، ')})`
+      : '';
+    const abst=S.rows.filter(r=>!(r.ok&&r.target!=null));
+    const abstTxt=abst.length?`\n◇ امتنعت ${abst.length} مدرسة: ${abst.map(r=>r.name).join('، ')}`:'';
+    return `\n📚 *أهداف المدارس — الأقرب أولاً*\n${lines.join('\n')}${agree}${abstTxt}`;
+  }
   function texts(d){
     const t=d.timing;
     const when=t?(t.lo!=null?`${t.kind} متوقّع خلال ${rng(t.lo,t.hi)}`
@@ -10208,6 +10336,7 @@ ${when}${t&&t.date?` (حول ${t.date})`:''}
 ${t&&!t.measured?'⚠️ رقم كلاسيكي مفروض من خارج السهم — للمراقبة لا للتنفيذ':''}
 🚀 نافذة النشاط: ${d.act}
 ${d.tags.length?'\n📐 '+d.tags.join(' · '):''}
+${schoolsText(d)}
 
 _تحليل فني آلي — ليس توصية استثمارية. القرار ومسؤوليته على القارئ._`;
     return{tweet:tweet.trim(),tg:tg.trim()};

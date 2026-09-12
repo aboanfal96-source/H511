@@ -237,6 +237,34 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
       : bad('رسائل القناة بلا أرقام الخطة');
     /\u0644\u064a\u0633 \u062a\u0648\u0635\u064a\u0629/.test(texts) ? ok('كل رسالة تحمل تنويه المسؤولية') : bad('رسالة بلا تنويه المسؤولية');
 
+    /* ── أهداف المدارس في بطاقة النشر ─────────────────────────────── */
+    const sc = await pg.evaluate(async () => {
+      const d = window.cardData(G.sel);
+      if (d.err) return { err: d.err };
+      const S = d.schools;
+      if (!S || !S.ok) return { err: (S && S.reason) || 'لم تُحسب المدارس' };
+      let cardW = 0;
+      try { const cv = await window.makeCard(G.sel); cardW = (cv && cv.canvas && cv.canvas.width) || 0; } catch (e) { }
+      return {
+        price: S.price, total: S.stats.total, withTarget: S.stats.withTarget,
+        rows: S.rows.map(r => ({ n: r.name, ok: !!r.ok, t: r.target, s: r.stop, b: (r.basis || '').length, why: (r.reason || '').length })),
+        agreed: S.agreed.length, cardW
+      };
+    });
+
+    if (sc.err) bad('بطاقة المدارس: ' + sc.err);
+    else {
+      sc.total === 13 ? ok(`جدول المدارس مكتمل (${sc.total} مدرسة · ${sc.withTarget} أعطت هدفاً)`)
+        : bad(`عدد المدارس ${sc.total} بدل 13`);
+      const bads = sc.rows.filter(r => (r.t != null && r.t <= sc.price) || (r.s != null && r.s >= sc.price));
+      bads.length === 0 ? ok('كل هدف فوق السعر وكل وقف تحته في البطاقة')
+        : bad(`${bads.length} صفّاً بأرقام مقلوبة: ${bads.map(r => r.n).join('، ')}`);
+      const silent = sc.rows.filter(r => (r.ok && r.t != null) ? r.b < 8 : r.why < 8);
+      silent.length === 0 ? ok('كل مدرسة تحمل أساسها أو سبب امتناعها')
+        : bad(`${silent.length} مدرسة بلا أساس ولا سبب: ${silent.map(r => r.n).join('، ')}`);
+      sc.cardW >= 1000 ? ok(`بطاقة النشر رُسمت (${sc.cardW}px عرضاً)`) : bad('تعذّر رسم بطاقة النشر');
+    }
+
     errs.length ? bad('استثناءات في الصفحة: ' + errs.slice(0, 3).join(' | ')) : ok('لا استثناءات في المتصفّح');
   } finally {
     await browser.close();

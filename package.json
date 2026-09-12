@@ -4,7 +4,7 @@
   "private": true,
   "description": "منصة تحليل كمي للسوق السعودي (تداول) — محرك مُختبَر بلا تسرّب زمني",
   "scripts": {
-    "test": "node engine/core.test.js && node engine.test.js && node timing.test.js && node market.test.js && node alerts.test.js",
+    "test": "node engine/core.test.js && node engine.test.js && node timing.test.js && node market.test.js && node alerts.test.js && node schools.test.js",
     "smoke": "node engine/app.smoke.js",
     "verify": "npm run test && npm run smoke && npm run scanner && npm run browser",
     "browser": "node engine/chart.browser.js",
