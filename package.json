@@ -6,8 +6,10 @@
   "scripts": {
     "test": "node engine/core.test.js && node engine.test.js && node timing.test.js && node market.test.js && node alerts.test.js",
     "smoke": "node engine/app.smoke.js",
-    "verify": "npm run test && npm run smoke && npm run browser",
-    "browser": "node engine/chart.browser.js"
+    "verify": "npm run test && npm run smoke && npm run scanner && npm run browser",
+    "browser": "node engine/chart.browser.js",
+    "scanner": "node scanner.test.js",
+    "alerts": "node scripts/alert-scan.js"
   },
   "engines": {
     "node": ">=18"

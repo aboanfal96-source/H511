@@ -1,0 +1,81 @@
+# ══════════════════════════════════════════════════════════════════════════
+# تنبيهات السوق — فحص مجدول يعمل والمتصفّح مغلق
+# ──────────────────────────────────────────────────────────────────────────
+# لا خادم ولا قاعدة بيانات: GitHub Actions يشغّل الفاحص، والحالة ملف JSON
+# صغير يُحفظ في المستودع، والإرسال مباشرةً إلى واجهة بوت تلقرام.
+# المستودع عام ⇒ دقائق التشغيل غير محدودة ومجانية.
+#
+# التوقيت: سوق تداول يفتح 10:00 ويغلق 15:00 بتوقيت الرياض (UTC+3)،
+# أحد–خميس. أي 07:00–12:00 بتوقيت UTC، وأيام الأسبوع 0,1,2,3,4 في cron
+# (الأحد = 0). الجدولة هنا كل 15 دقيقة داخل النافذة.
+#
+# ⚠️ جدولة GitHub تقريبية بطبعها: التشغيل المجدول يتأخّر دقائق وقد يبلغ
+# التأخير عشرين دقيقة في أوقات الذروة، وأقصر فاصل مسموح خمس دقائق. فهذه
+# أداة «لا تفوّت الفرصة» لا أداة تنفيذ لحظي.
+#
+# ⚠️ وغيت هَب يوقف المهامّ المجدولة تلقائياً إذا مرّ 60 يوماً بلا أي نشاط
+# في المستودع. أعِد تفعيلها من تبويب Actions إن حدث.
+#
+# الضبط المطلوب مرّة واحدة:
+#   Settings → Secrets and variables → Actions → New repository secret
+#     TELEGRAM_BOT_TOKEN
+#     TELEGRAM_CHAT_ID
+# ══════════════════════════════════════════════════════════════════════════
+name: تنبيهات السوق
+
+on:
+  schedule:
+    - cron: '*/15 7-11 * * 0-4'   # كل 15 دقيقة، 10:00–14:59 بتوقيت الرياض
+    - cron: '0 12 * * 0-4'        # فحص أخير عند الإغلاق 15:00
+  workflow_dispatch:              # تشغيل يدوي من تبويب Actions
+    inputs:
+      dry:
+        description: 'تجربة جافّة (بلا إرسال)'
+        type: boolean
+        default: false
+
+# صلاحية الكتابة لازمة لحفظ ملف الحالة في المستودع
+permissions:
+  contents: write
+
+# تشغيلان متزامنان قد يرسلان التنبيه نفسه مرّتين ويتصادمان على ملف الحالة
+concurrency:
+  group: market-alerts
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # لا تثبيت حزم: المستودع بلا اعتماديات npm إطلاقاً
+      - name: فحص التنبيهات
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SITE_URL: https://h511-alpha.vercel.app
+        run: node scripts/alert-scan.js ${{ (github.event_name == 'workflow_dispatch' && inputs.dry) && '--dry' || '' }}
+
+      - name: حفظ حالة منع التكرار
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry) }}
+        run: |
+          if [ -n "$(git status --porcelain .alerts-state.json)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .alerts-state.json
+            git commit -m "حالة التنبيهات [skip ci]"
+            # إعادة المحاولة: تشغيل آخر قد يكون دفع بين الفحص والدفع
+            for i in 1 2 3; do
+              git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+              sleep $((i * 5))
+            done
+            exit 1
+          else
+            echo "لا تغيّر في ملف الحالة — لا شيء يُحفظ"
+          fi

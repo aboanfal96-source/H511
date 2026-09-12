@@ -12,81 +12,30 @@
    ══════════════════════════════════════════════════════════════════════════ */
 'use strict';
 const fs = require('fs');
-const vm = require('vm');
 const path = require('path');
-
-const ROOT = path.join(__dirname, '..');
-const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-const engineSrc = fs.readFileSync(path.join(ROOT, 'engine', 'core.js'), 'utf8');
-
-/* استخراج السكربت الرئيسي: آخر كتلة <script> بلا src */
-const blocks = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)];
-const appSrc = blocks.map(m => m[1]).sort((a, b) => b.length - a.length)[0];
-if (!appSrc || appSrc.length < 50000) {
-  console.error('✗ تعذّر استخراج سكربت التطبيق من index.html');
-  process.exit(1);
-}
-
-/* ── بيئة DOM وهمية ────────────────────────────────────────────────── */
-const el = () => ({
-  style: {}, dataset: {}, children: [], parentElement: null,
-  classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
-  textContent: '', innerHTML: '', value: '', disabled: false,
-  offsetWidth: 100, offsetHeight: 100,
-  appendChild() {}, addEventListener() {}, removeEventListener() {}, remove() {},
-  setAttribute() {}, getAttribute: () => null, insertAdjacentHTML() {},
-  querySelector: () => el(), querySelectorAll: () => [],
-  scrollIntoView() {}, focus() {},
-  getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 })
-});
-const alerts = [];
-const ctx = {
-  console, Math, Date, JSON, Number, String, Array, Object, Set, Map, Symbol,
-  Error, TypeError, RangeError, Promise, Intl, isNaN, isFinite, parseFloat, parseInt,
-  Infinity, NaN, encodeURIComponent, decodeURIComponent,
-  setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
-  requestAnimationFrame: (f) => setTimeout(f, 0),
-  performance: { now: () => Date.now() },
-  navigator: { userAgent: 'node' },
-  location: { href: 'http://localhost/', search: '' },
-  localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-  document: {
-    getElementById: () => el(), querySelector: () => el(), querySelectorAll: () => [],
-    createElement: () => el(), body: el(), documentElement: el(), head: el(), addEventListener() {}
-  },
-  alert: (m) => alerts.push(String(m)),
-  fetch: async () => ({ ok: false, status: 503, json: async () => ({}) }),
-  AbortSignal: { timeout: () => null },
-  CustomEvent: function () {}, Event: function () {},
-  addEventListener() {}, removeEventListener() {},
-  matchMedia: () => ({ matches: false, addListener() {}, addEventListener() {} }),
-  innerWidth: 1400, innerHeight: 900,
-  LightweightCharts: undefined
-};
-ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
-vm.createContext(ctx);
+const { createAppContext, ROOT } = require('./appvm.js');
 
 let failures = 0;
 const ok = (m) => console.log('  ✓ ' + m);
 const bad = (m) => { console.log('  ✗ ' + m); failures++; };
 
-/* ── تحميل المحرك ثم التطبيق ───────────────────────────────────────── */
-vm.runInContext(engineSrc, ctx, { filename: 'engine/core.js' });
-if (!ctx.KSAEngine) { bad('KSAEngine لم يُسجَّل على window'); process.exit(1); }
-ok(`تحميل المحرك (v${ctx.KSAEngine.version})`);
-/* وحدة التوقيت تُحمَّل أيضاً: مستويات الصفقة تسأل عن بنية السيولة منها،
-   وتشغيل الدخان بدونها يترك المسار الأهم غير مفحوص. */
-vm.runInContext(fs.readFileSync(path.join(ROOT, 'engine', 'timing.js'), 'utf8'), ctx, { filename: 'engine/timing.js' });
-if (!ctx.KSATiming) { bad('KSATiming لم يُسجَّل على window'); process.exit(1); }
-ok(`تحميل وحدة التوقيت (v${ctx.KSATiming.version})`);
-
+/* ── تهيئة البيئة ──────────────────────────────────────────────────────
+   بُنية DOM الوهمية وتحميل المحرّك والسكربت انتقلت إلى engine/appvm.js
+   ليشاركها فاحص التنبيهات على الخادم (scripts/alert-scan.js). نسختان من
+   هذه التهيئة تعنيان أن الاختبار قد ينجح على بيئة والفاحص يعمل على أخرى. */
+let ctx, alerts, appSrc;
 try {
-  vm.runInContext(appSrc + '\n;globalThis.G=G;globalThis.STKS=STKS;', ctx, { filename: 'index.html:script' });
-  ok('تحميل سكربت التطبيق بلا استثناء');
+  ({ ctx, alerts, appSrc } = createAppContext());
 } catch (e) {
-  bad('سكربت التطبيق رمى استثناءً عند التحميل: ' + e.message);
+  console.log('  ✗ تعذّر تحميل بيئة التطبيق: ' + e.message);
   process.exit(1);
 }
+ok(`تحميل المحرك (v${ctx.KSAEngine.version})`);
+if (!ctx.KSATiming) { bad('KSATiming لم يُسجَّل على window'); process.exit(1); }
+ok(`تحميل وحدة التوقيت (v${ctx.KSATiming.version})`);
+if (!ctx.KSAAlerts) { bad('KSAAlerts لم يُسجَّل على window'); process.exit(1); }
+ok(`تحميل وحدة التنبيهات (v${ctx.KSAAlerts.version})`);
+ok('تحميل سكربت التطبيق بلا استثناء');
 
 /* ── 1) الدوال الحيّة موجودة ───────────────────────────────────────── */
 const required = [

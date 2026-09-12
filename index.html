@@ -3130,16 +3130,29 @@ function tradeLevels(sym){
   }
   targets.sort((a,b)=>a.price-b.price);
 
+  /* 🛠️ إعادة الترشيح بالمخاطرة النهائية.
+     calcTradePlan ترشّح المستويات بحدّ 1:1.5 مقاساً من دخولها هي (السعر
+     الحالي). وهذه الدالة تُنزل الوقف ليصير تحت منطقة الدخول، فتتّسع
+     مسافة المخاطرة وتنكمش النسبة — فظهر في المخرجات هدف بـ1:1.11 تحت
+     عنوان «لا هدف دون 1:1.5». الحدّ يجب أن يُقاس على الأرقام التي تُعرض
+     فعلاً، لا على أرقام وسيطة حُذفت قبل العرض. وإسقاط كل الأهداف يجعل
+     الخطة غير مجدية — وهو الحكم الصحيح لا خسارة. */
+  const kept=targets.filter(t=>t.rr==null||t.rr>=MIN_RR);
+  const dropped=targets.length-kept.length;
+  targets.length=0; kept.forEach(t=>targets.push(t));
+
   const shortNote = targets.length>=2 ? null
     : (targets.length===1
        ? `هدف واحد فقط: لا يوجد مستوى ثانٍ فوق ${targets[0].price} يستحق المخاطرة (1:${MIN_RR}) ضمن التاريخ المحمّل. لم يُختلق هدف ثانٍ بمضاعف ثابت.`
-       : (tp.viabilityNote||'لا يوجد هدف يستحق المخاطرة — الصفقة غير مجدية بالنسبة الحالية.'));
+       : (dropped
+          ? `لا هدف يستحق المخاطرة: ${dropped===1?'المستوى البنيوي الوحيد فوق السعر يعطي':'المستويات البنيوية فوق السعر تعطي'} عائداً دون 1:${MIN_RR} بعد وضع الوقف تحت منطقة الدخول. لم تُضخَّم الأهداف للوصول إلى النسبة.`
+          : (tp.viabilityNote||'لا يوجد هدف يستحق المخاطرة — الصفقة غير مجدية بالنسبة الحالية.')));
 
   return{sym,dirUp:true,planType:tp.planType,
     entryLo:lo,entryHi:hi,entryRef,zoneSrc,zoneKind,zoneWidth:f2(hi-lo),
     price:cur,rel,relNote,
     stop,stopSource,risk,riskATR,riskOk,riskNote,atr:f2(atr),
-    targets:targets.slice(0,3),targetsFilled:filled,shortNote,
+    targets:targets.slice(0,3),targetsFilled:filled,targetsDropped:dropped,shortNote,
     viable:tp.viable&&targets.length>0&&riskOk,minRR:MIN_RR,
     rr1:targets[0]?targets[0].rr:null,rr2:targets[1]?targets[1].rr:null};
 }
