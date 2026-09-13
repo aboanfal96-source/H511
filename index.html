@@ -1823,6 +1823,20 @@ function _ewScan(cs,zz){
   return best;
 }
 
+/* هامش الوقف خلف مستوى الإبطال الإليوتي.
+   🛠️ كانت الهوامش كسوراً من **طول الموجة** (6٪ من ①، و5٪ من ③، و3٪ من
+   المدى). وطول الموجة لا علاقة له بتذبذب السهم اليوم: موجة ثالثة طويلة
+   تُنتج هامشاً ضخماً. القياس على 120 سلسلة أعطى وقف إليوت وسيطاً 1.53×ATR
+   لكن **22٪ من الحالات تجاوزت 3×ATR وبلغ أقصاها 8.6×ATR** — وقف لا يُدار
+   ولا يُحسب عليه حجم مركز. المرساة (مستوى الإبطال) صحيحة ولم تتغيّر،
+   والهامش وحده صار بمقياس التذبذب. */
+function _ewMargin(cs){
+  let a=null;
+  try{a=(window.KSAEngine&&KSAEngine.atr)?KSAEngine.atr(cs,14):null;}catch(e){}
+  if(!(a>0)){const p=cs[cs.length-1].close;return p*0.008;}
+  return 0.35*a;
+}
+
 function detectElliott(cs){
   const NONE={sig:'محايد',wave:0,desc:'',why:'لا يوجد عدّ إليوت صالح',points:[],target:null,target2:null,bullBias:false,fresh:false,stop:null};
   if(!cs||cs.length<40)return{...NONE,why:'بيانات غير كافية لعدّ موجات'};
@@ -1850,7 +1864,7 @@ function detectElliott(cs){
     sig=up?'شراء':'بيع';wave=up?3:-3;desc='الموجة ③ الجارية';
     target={price:t1,label:'هدف الموجة ③ (امتداد 1.618× للموجة ①)',basis:'ext1618'};
     target2={price:t2,label:'امتداد ممتد 2.618×',basis:'ext2618'};
-    stop={price:+(win[2].p-dir*Math.abs(v.w1)*0.06).toFixed(2),label:'وقف تحت نهاية الموجة ②'};
+    stop={price:+(win[2].p-dir*_ewMargin(cs)).toFixed(2),label:'وقف تحت نهاية الموجة ②'};
     projection={from:{time:cs[n-1].time,price:liveP},to:{time:fut,price:t1}};
     fresh=prog<40;
     why=`عدّ صالح: 0-①-② مؤكدة والموجة ③ جارية — الموجة ② صحّحت ${(v.r2*100).toFixed(0)}٪ من ①، وقُطع ${Math.min(150,prog)}٪ من مسافة الهدف. القواعد الثلاث محقّقة.`;
@@ -1862,7 +1876,7 @@ function detectElliott(cs){
     sig='محايد';wave=up?4:-4;desc='الموجة ④ التصحيحية';
     target={price:w4lo,label:'منطقة انتهاء الموجة ④ (0.382 من ③)',basis:'w4zone'};
     target2={price:w5,label:'هدف الموجة ⑤ بعدها (تعادل مع ①)',basis:'equality'};
-    stop={price:+(win[1].p+dir*Math.abs(v.w1)*0.02).toFixed(2),label:'إبطال العدّ: دخول أرض الموجة ①'};
+    stop={price:+(win[1].p-dir*_ewMargin(cs)).toFixed(2),label:'إبطال العدّ: دخول أرض الموجة ①'};
     why=`عدّ صالح: 0-①-②-③ مؤكدة والموجة ④ التصحيحية جارية — الشراء يكون عند انتهاء ④ لا الآن. يُبطل العدّ إن دخل السعر أرض الموجة ① عند ${win[1].p.toFixed(2)}.`;
   }else if(len===5){
     /* 0-1-2-3-4 مؤكدة → الموجة ⑤ هي الجارية */
@@ -1873,7 +1887,7 @@ function detectElliott(cs){
     sig=up?'شراء':'بيع';wave=up?5:-5;desc='الموجة ⑤ الأخيرة';
     target={price:eq,label:'هدف الموجة ⑤ (تعادل مع الموجة ①)',basis:'equality'};
     target2={price:ext,label:'هدف بديل 0.618× لطول 0→③',basis:'ext0618'};
-    stop={price:+(win[4].p-dir*Math.abs(v.w3)*0.05).toFixed(2),label:'وقف تحت نهاية الموجة ④'};
+    stop={price:+(win[4].p-dir*_ewMargin(cs)).toFixed(2),label:'وقف تحت نهاية الموجة ④'};
     projection={from:{time:cs[n-1].time,price:liveP},to:{time:fut,price:eq}};
     fresh=prog<40;
     why=`عدّ صالح: 0-①-②-③-④ مؤكدة والموجة ⑤ جارية (${Math.min(150,prog)}٪ من الهدف) — الموجة ⑤ آخر موجات الدافعة، فالمخاطرة أعلى وما بعدها تصحيح للدورة كاملة.`;
@@ -1886,7 +1900,7 @@ function detectElliott(cs){
     sig=up?'بيع':'شراء';wave=up?-1:1;desc='الدافعة ①→⑤ اكتملت — تصحيح متوقّع';
     target={price:r382,label:'هدف التصحيح الأول (0.382 من الدافعة كاملة)',basis:'retr382'};
     target2={price:r618,label:'هدف التصحيح الأعمق (0.618) — وغالباً منطقة الموجة ④ عند '+win[4].p.toFixed(2),basis:'retr618'};
-    stop={price:+(win[5].p+dir*Math.abs(span)*0.03).toFixed(2),label:'إبطال: تجاوز قمة الموجة ⑤'};
+    stop={price:+(win[5].p+dir*_ewMargin(cs)).toFixed(2),label:'إبطال: تجاوز قمة الموجة ⑤'};
     projection={from:{time:cs[n-1].time,price:liveP},to:{time:fut,price:r382}};
     fresh=done<=0;
     why=`عدّ صالح ومكتمل: الموجات ①→⑤ كلها مؤكدة كمحاور — الدورة الدافعة انتهت عند ${win[5].p.toFixed(2)}، والمتوقّع تصحيح A-B-C. القواعد الثلاث محقّقة (② لا تبتلع ①، ③ ليست الأقصر، ④ لا تدخل أرض ①).`;
@@ -3086,7 +3100,27 @@ function tradeLevels(sym){
      القاعدة الآن: الوقف يُحسب من حدّ المنطقة الأدنى، ويُؤخذ الأبعد بينه
      وبين وقف الخطة، ثم يُفحص أن مسافة المخاطرة لا تقلّ عن نصف ATR —
      وهو المعيار المعلن أصلاً في calcTradePlan ولم يكن يُطبَّق هنا. */
-  const stopFromZone=f2(lo-Math.max(0.80*atr,lo*0.004));
+  /* ══ هامش الوقف تحت قاع المنطقة ═════════════════════════════════
+     🛠️ كان 0.80×ATR. لاحظ المستخدم أن الوقف بعيد، والقياس أيّده:
+     4645 صفقة على مناطق سيولة مرصودة، بتثبيت النسبة 1:2 وتغيير الهامش
+     وحده — نسبة ضرب الوقف **لا تتحسّن** بتوسيعه إطلاقاً:
+
+       الهامش×ATR   ضُرب الوقف   بلغ الهدف   متوسط R   المخاطرة×ATR
+          0.20         53٪         47٪        0.410       0.76
+          0.35         56٪         44٪        0.317       0.91
+          0.50         56٪         43٪        0.305       1.06
+          0.80         56٪         43٪        0.306       1.36
+          1.30         53٪         38٪        0.295       1.86
+
+     أي أن الانتقال من 0.35 إلى 0.80 يرفع المخاطرة 50٪ مقابل صفر تحسّن
+     في نسبة الصمود. الهامش لم يكن يشتري شيئاً — كان يدفع فقط.
+
+     اختير 0.35 لا 0.20: الأخير يعظّم الرقم المقاس لكنه يترك هامشاً
+     ضئيلاً لذيل شمعة واحدة، والفرق بينهما داخل ضجيج القياس.
+     ⚠️ القياس على بيانات اصطناعية — والمقارنة النسبية (عرض الهامش مقابل
+     نسبة الضرب) خاصية بنيوية يُرجَّح انتقالها، أمّا الأرقام المطلقة فلا. */
+  const STOP_BUFFER_ATR=0.35;
+  const stopFromZone=f2(lo-Math.max(STOP_BUFFER_ATR*atr,lo*0.002));
   let stop=Math.min(tp.stop,stopFromZone);
   let stopSource=(stop===tp.stop)?tp.stopSource:`تحت حدّ منطقة الدخول الأدنى (${lo}) بمسافة 0.8×ATR`;
   const entryRef=f2((lo+hi)/2);
@@ -10203,7 +10237,8 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
       const COL_NAME=W-PAD-24, COL_TGT=W-PAD-262, COL_PCT=W-PAD-362,
             COL_STOP=W-PAD-482, COL_BASIS=W-PAD-602;
       const BASIS_W=COL_BASIS-(PAD+22);
-      const boxH=headH+20+Math.max(1,shown.length)*rowH+(S.agreed.length?52:0)+(abst.length?46:0)+18;
+      const boxH=headH+20+Math.max(1,shown.length)*rowH+(S.agreed.length?52:0)
+        +(S.stats.stopFarCount?32:0)+(abst.length?46:0)+18;
 
       rr_(ctx,PAD,y,W-PAD*2,boxH,16);ctx.fillStyle=C.card;ctx.fill();
       ctx.strokeStyle=C.line;ctx.lineWidth=1;ctx.stroke();
@@ -10239,8 +10274,13 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
         const up=((r.target-S.price)/S.price*100);
         txt(ctx,f2(r.target),COL_TGT,ry,{size:26,color:C.up,weight:700,font:MN,dir:'ltr',align:'right'});
         txt(ctx,`+${up.toFixed(1)}٪`,COL_PCT,ry,{size:20,color:C.t3,font:MN,dir:'ltr',align:'right'});
-        /* الوقف */
-        txt(ctx,r.stop!=null?f2(r.stop):'—',COL_STOP,ry,{size:24,color:r.stop!=null?C.dn:C.t3,weight:600,font:MN,dir:'ltr',align:'right'});
+        /* الوقف + مسافته: رقم الوقف وحده لا يُقرأ. البعيد (فوق 3×ATR)
+           بلون تحذيري لأن حجم المركز المحسوب عليه يصير ضئيلاً. */
+        txt(ctx,r.stop!=null?f2(r.stop):'—',COL_STOP,ry-8,
+          {size:23,color:r.stop==null?C.t3:(r.stopFar?C.gd:C.dn),weight:600,font:MN,dir:'ltr',align:'right'});
+        if(r.stop!=null&&r.stopATR!=null)
+          txt(ctx,`${r.stopATR}×ATR`,COL_STOP,ry+13,
+            {size:16,color:r.stopFar?C.gd:C.t3,font:MN,dir:'ltr',align:'right'});
         /* الأساس مختصراً — يُقصّ بالعرض المقاس لا بعدد الأحرف: الحروف
            العربية متفاوتة العرض، فالقصّ بالعدد يتداخل مع العمود المجاور. */
         txt(ctx,fitText(ctx,(r.basis||'').split('·')[0].trim(),`400 19px ${AR}`,BASIS_W),
@@ -10259,6 +10299,11 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
         txt(ctx,fitText(ctx,a.schools.join(' · '),`400 19px ${AR}`,COL_STOP-(PAD+22)),
           COL_STOP,ry+2,{size:19,color:C.t3});
         ry+=22;
+      }
+      if(S.stats.stopFarCount){
+        ry+=32;
+        txt(ctx,`⚠ ${S.stats.stopFarCount} مدرسة وقفها أبعد من 3×ATR — مستوى إبطالها بعيد، وحجم المركز المحسوب عليه صغير`,
+          COL_NAME,ry,{size:19,color:C.gd});
       }
       if(abst.length){
         ry+=34;
@@ -10294,7 +10339,10 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
     if(!withT.length)return '\n📚 *المدارس*\nلا مدرسة أعطت هدفاً فوق السعر.';
     const lines=withT.slice(0,9).map(r=>{
       const up=((r.target-S.price)/S.price*100).toFixed(1);
-      return `• ${r.name}: هدف \`${f2(r.target)}\` (+${up}٪)${r.stop!=null?` · وقف \`${f2(r.stop)}\``:''}`;
+      const st=r.stop!=null
+        ? ` · وقف \`${f2(r.stop)}\`${r.stopATR!=null?` (${r.stopATR}×ATR)`:''}${r.stopFar?' ⚠ بعيد':''}`
+        : '';
+      return `• ${r.name}: هدف \`${f2(r.target)}\` (+${up}٪)${st}`;
     });
     const agree=S.agreed.length
       ? `\n🎯 إجماع ${S.agreed[0].count} مدارس على ${f2(S.agreed[0].lo)}${S.agreed[0].lo!==S.agreed[0].hi?`–${f2(S.agreed[0].hi)}`:''} (${S.agreed[0].schools.join('، ')})`

@@ -192,6 +192,46 @@ test('الحارس المركزي يمنع أي وقف فوق السعر مهم�
   }
 });
 
+test('كل وقف يحمل مسافته بمضاعف ATR وبالنسبة المئوية', () => {
+  const cs = gen(4141, 'walk');
+  const R = S.schoolTargets(cs, base(cs));
+  const withStop = R.rows.filter(r => r.stop != null);
+  ok(withStop.length >= 3, `${withStop.length} وقفاً فقط — العيّنة أصغر من أن تُفحص`);
+  for (const r of withStop) {
+    ok(r.stopATR != null && r.stopATR > 0, `${r.name}: بلا مسافة بمضاعف ATR`);
+    ok(r.stopPct != null && r.stopPct > 0, `${r.name}: بلا مسافة بالنسبة المئوية`);
+    const expect = (R.price - r.stop) / r.stopPct * 100;
+    near(expect, R.price, R.price * 0.02, `${r.name}: النسبة لا تطابق الفرق`);
+  }
+});
+
+test('الوقف الأبعد من 3×ATR يُوسَم ولا يُقصّ', () => {
+  /* وقف وايكوف تحت قاع النطاق **هو** وايكوف؛ تضييقه يُزيّف المدرسة.
+     الواجب إعلانه لا إخفاؤه ولا تعديله. */
+  let far = 0, flagged = 0, counted = 0;
+  for (let s = 1; s <= 14; s++) {
+    const cs = gen(s * 353, 'walk');
+    const R = S.schoolTargets(cs, base(cs));
+    counted += R.stats.stopFarCount;
+    for (const r of R.rows) {
+      if (r.stopATR != null && r.stopATR > 3) { far++; if (r.stopFar && r.stopNote) flagged++; }
+    }
+  }
+  ok(far > 0, 'لا وقف بعيد في العيّنة — الفحص لا يثبت شيئاً');
+  ok(flagged === far, `${far} وقفاً بعيداً و${flagged} فقط موسوم`);
+  ok(counted === far, `الإحصاء يقول ${counted} والعدّ الفعلي ${far}`);
+});
+
+test('هوامش الوقف بمقياس التذبذب لا بنسبة ثابتة من السعر', () => {
+  /* سهم بسعر واحد وتذبذبين مختلفين يجب أن يعطي هامشين مختلفين. */
+  const calm = gen(600, 'walk').map(c => c);
+  const wild = calm.map(c => ({ ...c, high: c.close + (c.high - c.close) * 4, low: c.close - (c.close - c.low) * 4 }));
+  const a = S.schoolTargets(calm, base(calm));
+  const b = S.schoolTargets(wild, base(wild));
+  const fa = a.rows.find(r => r.key === 'fractal'), fb = b.rows.find(r => r.key === 'fractal');
+  if (fa.stop != null && fb.stop != null) ok(fb.stop < fa.stop, 'الهامش لم يتّسع مع اتساع التذبذب');
+});
+
 /* ═════════ الإجماع ═════════ */
 group('قراءة الإجماع');
 

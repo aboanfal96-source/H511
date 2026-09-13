@@ -84,7 +84,7 @@
     if (!above.length) return mk('structure', 'البنية السعرية', { reason: 'لا مقاومة فوق السعر ضمن التاريخ المحمّل — اكتشاف سعري' });
     return mk('structure', 'البنية السعرية', {
       ok: true, target: r2(above[0].price), target2: above[1] ? r2(above[1].price) : null,
-      stop: below[0] ? r2(below[0].price * 0.995) : null,
+      stop: below[0] ? r2(below[0].price - 0.35 * (o.atr || below[0].price * 0.008)) : null,
       basis: `أقرب مقاومة (${(above[0].sources || []).join(' + ') || 'مستوى بنيوي'})${below[0] ? ` · الوقف تحت أقرب دعم ${r2(below[0].price)}` : ''}`
     });
   }
@@ -96,7 +96,9 @@
     if (fr.target1 == null) return mk('fractal', 'الفراكتال', { reason: 'لا قمة فراكتالية غير مكسورة فوق السعر' });
     return mk('fractal', 'الفراكتال', {
       ok: true, target: r2(fr.target1), target2: r2(fr.target2),
-      stop: fr.support != null ? r2(fr.support * 0.995) : null,
+      /* الهامش بمقياس التذبذب لا نسبة ثابتة من السعر: 0.5٪ على سهم
+         تذبذبه اليومي 3٪ هامش وهمي، وعلى سهم تذبذبه 0.4٪ هامش مفرط. */
+      stop: fr.support != null ? r2(fr.support - 0.35 * (o.atr || fr.support * 0.008)) : null,
       basis: 'أقرب قمة فراكتالية لم تُكسر بإغلاق' + (fr.support != null ? ` · الوقف تحت آخر قاع فراكتالي ${r2(fr.support)}` : '')
     });
   }
@@ -212,7 +214,7 @@
     const target = best.hi + best.height;
     if (o.price > best.hi + best.height) return mk('wyckoff', 'وايكوف', { reason: `الحركة المقيسة (${r2(target)}) تحقّقت — السعر تجاوزها` });
     return mk('wyckoff', 'وايكوف', {
-      ok: true, target: r2(target), target2: null, stop: r2(best.lo * 0.995),
+      ok: true, target: r2(target), target2: null, stop: r2(best.lo - 0.35 * (o.atr || best.lo * 0.008)),
       basis: `نطاق ${best.win} جلسة بين ${r2(best.lo)} و${r2(best.hi)} · الحركة المقيسة = ارتفاع النطاق (${r2(best.height)}) فوق حدّه · الوقف تحت قاع النطاق`
         + ' · تبسيط: ارتفاع النطاق بدل عدّ نقطة ورقم'
     });
@@ -292,7 +294,7 @@
     if (!cands.length) return mk('volumeProfile', 'ملف الحجم', { reason: `السعر فوق منطقة القيمة (قمتها ${r2(vah)}) — لا عائق حجمي أعلى ضمن التاريخ المحمّل` });
     return mk('volumeProfile', 'ملف الحجم', {
       ok: true, target: r2(cands[0]), target2: cands[1] != null ? r2(cands[1]) : null,
-      stop: isNum(val) ? r2(val * 0.995) : null,
+      stop: isNum(val) ? r2(val - 0.35 * (o.atr || val * 0.008)) : null,
       basis: `نقطة التحكّم ${r2(poc)} · منطقة القيمة ${r2(val)}–${r2(vah)} (${vp.valueAreaPct != null ? vp.valueAreaPct + '٪ من الحجم' : ''}) · الوقف تحت حدّها الأدنى`
     });
   }
@@ -315,7 +317,7 @@
     const above = pv.H.map(h => h.p).filter(p => p > o.price).sort((a, b) => a - b);
     const t = above.length ? above[0] : H[1].p + (H[1].p - L[1].p);
     return mk('dow', 'داو (هيكل الاتجاه)', {
-      ok: true, target: r2(t), stop: r2(L[1].p * 0.995),
+      ok: true, target: r2(t), stop: r2(L[1].p - 0.35 * (o.atr || L[1].p * 0.008)),
       basis: `اتجاه صاعد: قمم وقيعان صاعدة · ${above.length ? 'الهدف أقرب قمة سابقة لم تُكسر' : 'الهدف امتداد الموجة الأخيرة فوق القمة'} · الوقف تحت آخر قاع أعلى ${r2(L[1].p)}`
     });
   }
@@ -330,7 +332,7 @@
     const zone = lq.zone || (lq.zones || []).filter(z => z.top <= o.price * 1.02).sort((a, b) => b.top - a.top)[0];
     return mk('smc', 'مناطق السيولة', {
       ok: true, target: r2(above[0]), target2: above[1] != null ? r2(above[1]) : null,
-      stop: zone ? r2(zone.bot * 0.995) : null,
+      stop: zone ? r2(zone.bot - 0.35 * (o.atr || zone.bot * 0.008)) : null,
       basis: `السيولة المستهدفة فوق قمة ${r2(above[0])}${zone ? ` · الوقف تحت ${zone.kind === 'FVG' ? 'فجوة القيمة العادلة' : 'كتلة الأوامر'} ${r2(zone.bot)}–${r2(zone.top)}` : ' · لا بنية سيولة حيّة لاشتقاق وقف'}`
     });
   }
@@ -371,6 +373,24 @@
         row.target = null; row.target2 = null;
       }
       if (isNum(row.target2) && row.target2 <= price) row.target2 = null;
+      /* ══ سياق الوقف ═════════════════════════════════════════════════
+         رقم الوقف وحده لا يُقرأ: 14.98 بجانب سعر 17.46 يبدو خطأً مطبعياً
+         ما لم يُقَل إنه حدّ منطقة القيمة على بعد 12×ATR. القياس على 120
+         سلسلة أظهر ذيولاً حقيقية: داو وسيطها 2.83×ATR و44٪ منها فوق
+         3×ATR، وملف الحجم بلغ أقصاه 26×ATR.
+
+         ولا تُقصّ هذه الوقفات: وقف وايكوف تحت قاع النطاق **هو** وايكوف،
+         وتضييقه يُزيّف المدرسة. لكنها تُعلَن بمسافتها ويُوسَم البعيد منها،
+         لأن حجم المركز المحسوب على وقف 5×ATR يصير جزءاً ضئيلاً من رأس
+         المال — وهذه معلومة يحتاجها القارئ قبل أن يتصرّف. */
+      if (isNum(row.stop) && row.stop < price && isNum(o.atr) && o.atr > 0) {
+        row.stopATR = r2((price - row.stop) / o.atr);
+        row.stopPct = r2((price - row.stop) / price * 100);
+        if (row.stopATR > 3) {
+          row.stopFar = true;
+          row.stopNote = `الوقف على بعد ${row.stopATR}×ATR (${row.stopPct}٪) — بعيد: حجم المركز المحسوب عليه صغير`;
+        }
+      }
       if (isNum(row.stop) && row.stop >= price) {
         row.stopDropped = r2(row.stop);
         row.stop = null;
@@ -412,7 +432,8 @@
         withTarget: withTarget.length,
         noTarget: rows.length - withTarget.length,
         stopHigh: stops.length ? r2(Math.max.apply(null, stops)) : null,
-        stopLow: stops.length ? r2(Math.min.apply(null, stops)) : null
+        stopLow: stops.length ? r2(Math.min.apply(null, stops)) : null,
+        stopFarCount: rows.filter(r => r.stopFar).length
       },
       caveat: 'هذه مدارس وصفية لم تُقس نسبة إصابتها على هذا السوق. عرضها معاً يُظهر الإجماع والاختلاف، ولا يعني تساويها في الجدارة.'
     };
