@@ -1,10 +1,10 @@
 {
- "updatedAt": "2026-09-14T17:10:45.151Z",
+ "updatedAt": "2026-09-15T12:21:50.622Z",
  "lastRun": {
   "scanned": 257,
-  "candidates": 32,
+  "candidates": 44,
   "sent": 0,
-  "suppressed": 24,
+  "suppressed": 36,
   "failedFetch": 2
  },
  "store": {}
