@@ -145,6 +145,10 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
 .pat-info.show{display:block}
 .pat-info b{color:var(--pu)}
 .draw-ctrl{display:flex;gap:4px;padding:6px 12px;background:var(--c1);border-bottom:1px solid var(--bd);flex-shrink:0;flex-wrap:wrap;align-items:center}
+.live-opt{padding:1px 6px;border-radius:4px;cursor:pointer;font-size:9px;font-family:inherit;font-weight:600;
+  border:1px solid var(--bd2);background:none;color:var(--t2);transition:all .15s}
+.live-opt:hover{border-color:var(--up);color:var(--up)}
+.live-opt.on{background:rgba(14,207,126,.18);border-color:var(--up);color:var(--up)}
 .draw-btn,.draw-tool-btn{padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-family:inherit;border:1px solid var(--bd2);background:none;color:var(--t2);transition:all .15s;font-weight:600}
 .draw-btn:hover,.draw-tool-btn:hover{border-color:var(--pu);color:var(--pu)}
 .draw-btn.on{background:rgba(167,139,250,.15);border-color:var(--pu);color:var(--pu)}
@@ -397,6 +401,15 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
     <div class="scan-bar">
       <button class="scan-btn scan-main" onclick="runFullScan()">🔬 مسح شامل</button>
       <span id="last-scan-time" style="font-size:9px;color:var(--t3);align-self:center">لم يتم المسح بعد</span>
+      <span style="display:inline-flex;align-items:center;gap:3px;align-self:center;padding:2px 6px;border-radius:6px;background:rgba(14,207,126,.06);border:1px solid rgba(14,207,126,.2)">
+        <span style="font-size:9px;color:var(--t3)">📡 حيّ</span>
+        <button class="live-opt on" data-m="0" onclick="setLiveInterval(0)" title="اللوحة ثابتة — التحديث يدوي">إيقاف</button>
+        <button class="live-opt" data-m="1" onclick="setLiveInterval(1)" title="دقيقة — مصدر البيانات متأخّر ربع ساعة فلن يأتي جديد غالباً">1د</button>
+        <button class="live-opt" data-m="5" onclick="setLiveInterval(5)" title="خمس دقائق — الافتراضي الموصى به">5د</button>
+        <button class="live-opt" data-m="15" onclick="setLiveInterval(15)" title="ربع ساعة — يطابق تأخير المصدر وذاكرة الوسيط">15د</button>
+        <button class="live-opt" onclick="refreshLive()" title="حدّث الآن مرّة واحدة" style="border-color:rgba(74,158,255,.4);color:#4a9eff">↻</button>
+      </span>
+      <span id="live-pill" style="font-size:9px;align-self:center"></span>
       <span id="timemap-status" style="font-size:9px;color:var(--t3);align-self:center"></span>
       <button class="scan-btn scan-sec" id="btn-buy" onclick="toggleBuySell('buy',this)">▲ شراء فقط</button>
       <button class="scan-btn scan-sec" id="btn-sell" onclick="toggleBuySell('sell',this)">▼ بيع فقط</button>
@@ -2542,44 +2555,72 @@ function preBreakoutSniper(cs,ind,tat){
 }
 
 
+/* ══════════════════════════════════════════════════════════════════════
+   مراسي العدّ الزمني
+   ──────────────────────────────────────────────────────────────────────
+   🛠️ عطل بنيوي كشفه القياس: كانت كل النوافذ تُقاس من **آخر ارتكاز مؤكَّد**
+   وحده. وآخر ارتكاز مؤكَّد قريب دائماً بطبيعته — القياس على 135 سلسلة
+   أعطى وسيط مسافته 5 شمعات وأقصاها 21. أي أن نوافذ 34 و55 و89 و144
+   لفيبوناتشي، و30 و45 و90 لغان، **لا يمكن أن تتحقّق إطلاقاً**: فرع
+   العقوبة المشروط بتجاوز 92 شمعة لم يُطلَق ولا مرّة واحدة (0٪).
+
+   وهذا خلاف معنى نوافذ الزمن أصلاً: فيبوناتشي وغان يُعدّان من **قمة أو
+   قاع مهمّ**، لا من آخر تعرّج صغير. فأُضيفت مرساتان: أعمق قاع وأعلى قمة
+   مؤكَّدتان خلال آخر 250 جلسة. والمرساة المستعملة تُسمّى في نصّ السبب،
+   فيعرف القارئ من أين عُدّ. */
+function _timeAnchors(cs){
+  const n=cs.length,out=[],seen=new Set();
+  const add=(pv,label)=>{if(!pv||seen.has(pv.i))return;seen.add(pv.i);out.push({i:pv.i,p:pv.p,type:pv.type,label});};
+  try{add(findLastConfirmedPivot(cs),'آخر ارتكاز مؤكَّد');}catch(e){}
+  /* محاور مؤكَّدة (3 شمعات على كل جانب) خلال آخر 250 جلسة */
+  const from=Math.max(3,n-250);
+  let lo=null,hi=null;
+  for(let i=from;i<n-3;i++){
+    let isH=true,isL=true;
+    for(let j=i-3;j<=i+3;j++){if(j===i)continue;
+      if(cs[j].high>=cs[i].high)isH=false;
+      if(cs[j].low<=cs[i].low)isL=false;}
+    if(isL&&(!lo||cs[i].low<lo.p))lo={i,p:cs[i].low,type:'L'};
+    if(isH&&(!hi||cs[i].high>hi.p))hi={i,p:cs[i].high,type:'H'};
+  }
+  add(lo,'أدنى قاع مؤكَّد في 250 جلسة');
+  add(hi,'أعلى قمة مؤكَّدة في 250 جلسة');
+  return out;
+}
+
 function timeAlignmentTrigger(cs,ind){
   const n=cs?.length||0;
   if(n<20)return{active:false,candleDistance:0,timeBonus:0,sniperBonus:false,penalty:false,badge:null,reason:'بيانات غير كافية'};
 
-  const pivot=findLastConfirmedPivot(cs);
-  if(!pivot)return{active:false,candleDistance:0,timeBonus:0,sniperBonus:false,penalty:false,badge:null,reason:'لا توجد نقطة ارتكاز مؤكدة'};
+  const anchors=_timeAnchors(cs);
+  if(!anchors.length)return{active:false,candleDistance:0,timeBonus:0,sniperBonus:false,penalty:false,badge:null,reason:'لا توجد نقطة ارتكاز مؤكدة'};
 
   const cur=cs[n-1].close;
-  /* Trading-day distance since the last confirmed pivot */
-  const candleDistance=(n-1)-pivot.i;
+  /* تُفحص كل مرساة، وتُختار صاحبة أقوى دليل زمني (ثم الأقرب عند التعادل).
+     بلا هذا كانت النوافذ الطويلة معطّلة بالكامل — انظر تعليق _timeAnchors. */
+  const _dcAll=detectDominantCycle(cs);
+  const _evid=a=>{
+    const d=(n-1)-a.i;
+    let fib=null,gann=null,dcm=null;
+    for(const f of FIB_TIME_ZONES){if(Math.abs(d-f)<=TIME_TOLERANCE){fib=f;break;}}
+    for(const gg of GANN_CYCLES){if(Math.abs(d-gg)<=TIME_TOLERANCE){gann=gg;break;}}
+    if(_dcAll&&_dcAll.consistency>=55)
+      for(let k=1;k<=3;k++){const t=_dcAll.cycle*k;if(Math.abs(d-t)<=TIME_TOLERANCE){dcm=t;break;}}
+    let gc=null;try{gc=gannCalendarMatch(cs,a.i);}catch(e){}
+    let sq=null;try{sq=gannSquareOfNine(a.p,cur,calendarDaysBetween(cs,a.i,n-1));}catch(e){}
+    const cnt=[!!fib,!!gann,!!gc,!!dcm,!!(sq&&sq.squared)].filter(Boolean).length;
+    return {a,d,fib,gann,dcm,gc,sq:sq||{squared:false},cnt};
+  };
+  const scored=anchors.map(_evid).sort((x,y)=>(y.cnt-x.cnt)||(x.d-y.d));
+  const best=scored[0];
+  const pivot={i:best.a.i,p:best.a.p,type:best.a.type};
+  const anchorLabel=best.a.label;
+  const candleDistance=best.d;
 
-  /* ── 1) Fibonacci Time Zone check (±2 tolerance) ── */
-  let fibMatch=null;
-  for(const f of FIB_TIME_ZONES){if(Math.abs(candleDistance-f)<=TIME_TOLERANCE){fibMatch=f;break;}}
-
-  /* ── 2) Gann Pivot Cycle check — TASI critical cycles (±2 tolerance) ── */
-  let gannMatch=null;
-  for(const g of GANN_CYCLES){if(Math.abs(candleDistance-g)<=TIME_TOLERANCE){gannMatch=g;break;}}
-
-  /* ── 2b) Detected dominant cycle (this stock's own historical rhythm) ──
-     Only counted as a match when the pivot spacing is reasonably regular
-     (consistency>=55) — an erratic spacing isn't a real "cycle" to confirm
-     against, it's noise, and treating it as one would just add false hits. */
-  const dc=detectDominantCycle(cs);
-  let dcMatch=null;
-  if(dc&&dc.consistency>=55){
-    for(let k=1;k<=3;k++){/* check the cycle itself and its first 2 multiples */
-      const target=dc.cycle*k;
-      if(Math.abs(candleDistance-target)<=TIME_TOLERANCE){dcMatch=target;break;}
-    }
-  }
-
-  /* ── 2c) Calendar-accurate Gann cycle (real elapsed days, not candles) ── */
-  const gannCal=gannCalendarMatch(cs,pivot.i);
-
-  /* ── 2d) Gann Square of Nine — genuine price-time squaring ── */
+  /* النتائج محسوبة سلفاً للمرساة المختارة */
+  const fibMatch=best.fib,gannMatch=best.gann,dcMatch=best.dcm,gannCal=best.gc,sq9=best.sq;
+  const dc=_dcAll;
   const calDays=calendarDaysBetween(cs,pivot.i,n-1);
-  const sq9=gannSquareOfNine(pivot.p,cur,calDays);
 
   const cycleMatch=fibMatch||gannMatch||dcMatch||!!gannCal;
   const cycleType=fibMatch?'فيبوناتشي':gannMatch?'غان':dcMatch?'دورة السهم':gannCal?'غان تقويمي':null;
@@ -2620,28 +2661,46 @@ function timeAlignmentTrigger(cs,ind){
   const evidenceCount=[!!fibMatch,!!gannMatch,!!gannCal,!!dcMatch,sq9.squared].filter(Boolean).length;
   const strength=evidenceCount>=3?'قوي':evidenceCount===2?'متوسط':evidenceCount===1?'ضعيف':'—';
 
-  if(strongSR&&cycleMatch&&momentumConfirms){
+  /* 🛠️ عتبة الدليل: كان يكفي تطابق زمني **واحد** لمنح المكافأة. ومع
+     ثلاث مراسٍ وأربعة أنظمة عدّ (فيبوناتشي · غان جلسات · غان تقويمي ·
+     دورة السهم) يتحقّق تطابقٌ ما في نصف الحالات — وفلتر يُطلق على نصف
+     السوق لا يميّز شيئاً. القياس على 135 سلسلة بعد إحياء المراسي:
+     توافق 53٪ · مكافأة 20٪. باشتراط دليلين مستقلَّين: انظر الأرقام في
+     رسالة الالتزام. والعتبة معلنة هنا لا مخبّأة. */
+  const MIN_TIME_EVIDENCE=2;
+  const cycleStrong=cycleMatch&&evidenceCount>=MIN_TIME_EVIDENCE;
+
+  if(strongSR&&cycleStrong&&momentumConfirms){
     /* 🎯 Sniper Time Bonus — confluence of price (S/R) + time (Fib/Gann) + actual reversal follow-through */
     timeBonus=dirUp?20:-20;
     active=true;sniperBonus=true;
     badge='⏱ Time Confluence Active';
-    reason=`توافق ${strength} (${cycleType} ${cycleNum}${sq9.squared?' + مربع غان مُربَّع':''}) + ${srReason} + ${dirUp?'ارتداد صعودي مؤكد':'ارتداد هبوطي مؤكد'} (${candleDistance} شمعة${calDays!=null?` / ${calDays} يوم تقويمي`:''}) ← مكافأة قناص زمنية`;
-  }else if(strongSR&&cycleMatch&&!momentumConfirms){
+    reason=`توافق ${strength} (${cycleType} ${cycleNum}${sq9.squared?' + مربع غان مُربَّع':''}) + ${srReason} + ${dirUp?'ارتداد صعودي مؤكد':'ارتداد هبوطي مؤكد'} — العدّ ${candleDistance} جلسة${calDays!=null?` ≈ ${calDays} يوماً`:''} من ${anchorLabel} ← مكافأة قناص زمنية`;
+  }else if(strongSR&&cycleStrong&&!momentumConfirms){
     /* Cycle + level line up, but price hasn't actually turned yet — watch, don't count it as a fired signal */
     timeBonus=0;active=false;
-    reason=`توافق ${strength} (${cycleType} ${cycleNum}) + ${srReason} لكن بدون تأكيد ارتداد فعلي بعد (${candleDistance} شمعة) — بانتظار الإغلاق`;
+    reason=`توافق ${strength} (${cycleType} ${cycleNum}) + ${srReason} لكن بدون تأكيد ارتداد فعلي بعد — العدّ ${candleDistance} جلسة من ${anchorLabel} — بانتظار الإغلاق`;
+  }else if(strongSR&&cycleMatch&&momentumConfirms){
+    /* دليل زمني واحد فقط: يُذكر ولا يُكافأ — ذكرُه معلومة، ومكافأته ادّعاء. */
+    timeBonus=0;active=false;
+    reason=`دليل زمني واحد (${cycleType} ${cycleNum}) + ${srReason} + ارتداد مؤكَّد — لكن العتبة دليلان مستقلّان فأكثر، ودليل واحد يتحقّق بالصدفة كثيراً. العدّ ${candleDistance} جلسة من ${anchorLabel}`;
   }else if(candleDistance>GANN_CYCLES[GANN_CYCLES.length-1]+TIME_TOLERANCE&&(!gannCal||calDays>gannCal.cycle+GANN_CALENDAR_TOLERANCE)){
     /* ⚠ Major Gann cycle (90) exceeded by 2+ candles without a reversal —
        the absence of a NEW confirmed pivot proves no reversal has occurred */
     timeBonus=-10;active=true;penalty=true;
     badge='⚠ Time Cycle Break';
-    reason=`تجاوز دورة غان الرئيسية 90 يوم (${candleDistance} شمعة${calDays!=null?` / ${calDays} يوم تقويمي`:''}) دون انعكاس ← كسر الدورة الزمنية واستمرار الاتجاه`;
+    /* 🛠️ كان النصّ يقول «90 يوم» والمقارنة بالشموع — و90 شمعة تداول ≈ 126
+       يوماً تقويمياً. خلط الوحدتين هو نفسه الخطأ الذي أُصلح في نوافذ الزمن. */
+    reason=`تجاوز دورة غان الكبرى 90 **جلسة** (${candleDistance} جلسة${calDays!=null?` ≈ ${calDays} يوماً تقويمياً`:''}) دون انعكاس، والعدّ من ${anchorLabel} ← كسر الدورة الزمنية واستمرار الاتجاه`;
   }else{
     timeBonus=0;
     reason=cycleMatch?`توافق ${strength} (${cycleType} ${cycleNum}) بدون دعم/مقاومة قوي — لا تأثير (إشارة زمنية مستبعدة لعدم وجود دعم سعري)`:`بعيد عن أي دورة زمنية (${candleDistance} شمعة) — محايد`;
   }
 
-  if(typeof console!=='undefined'&&console.debug)console.debug(`[TimeAlignment] pivot=${pivot.type}@${pivot.p.toFixed(2)} dist=${candleDistance}c/${calDays}d fib=${fibMatch||'-'} gann=${gannMatch||'-'} gannCal=${gannCal?.cycle||'-'} sq9=${sq9.squared} SR=${strongSR} → bonus=${timeBonus}`);
+  /* 🛠️ كان يطبع سطراً لكل سهم في كل مسح — 259 سطراً تُغرق وحدة التحكّم
+     وتُبطئ المتصفّح بلا فائدة للمستخدم. صار خلف راية تُفعَّل يدوياً:
+     window.KSA_DEBUG_TIME = true */
+  if(window.KSA_DEBUG_TIME&&typeof console!=='undefined'&&console.debug)console.debug(`[TimeAlignment] pivot=${pivot.type}@${pivot.p.toFixed(2)} dist=${candleDistance}c/${calDays}d fib=${fibMatch||'-'} gann=${gannMatch||'-'} gannCal=${gannCal?.cycle||'-'} sq9=${sq9.squared} SR=${strongSR} → bonus=${timeBonus}`);
 
   return{active,candleDistance,calendarDays:calDays,pivotPrice:+pivot.p.toFixed(2),pivotType:pivot.type,pivotIdx:pivot.i,
     fibMatch,gannMatch,gannCalMatch:gannCal,dcMatch,squareOfNine:sq9,priceTimeConvergence:ptConv,
@@ -3122,7 +3181,7 @@ function tradeLevels(sym){
   const STOP_BUFFER_ATR=0.35;
   const stopFromZone=f2(lo-Math.max(STOP_BUFFER_ATR*atr,lo*0.002));
   let stop=Math.min(tp.stop,stopFromZone);
-  let stopSource=(stop===tp.stop)?tp.stopSource:`تحت حدّ منطقة الدخول الأدنى (${lo}) بمسافة 0.8×ATR`;
+  let stopSource=(stop===tp.stop)?tp.stopSource:`تحت حدّ منطقة الدخول الأدنى (${lo}) بمسافة ${STOP_BUFFER_ATR}×ATR`;
   const entryRef=f2((lo+hi)/2);
   let risk=f2(entryRef-stop);
   /* مخاطرة أوسع من 3.5×ATR تجعل حجم المركز عديم المعنى — تُقرَّب مع
@@ -3135,12 +3194,56 @@ function tradeLevels(sym){
   const riskOk=risk>0&&atr>0&&risk>=0.5*atr;
   const riskNote=riskOk?null:`مسافة المخاطرة ${risk} ر.س = ${riskATR}×ATR — أضيق من نصف ATR، أي داخل ضجيج الجلسة الواحدة. لا تُحسب نسبة عائد/مخاطرة على وقف كهذا لأنها تخرج مضخّمة.`;
 
-  /* موقع السعر من المنطقة — «منطقة دخول» تحت السعر بـ2٪ ليست دعوة دخول
-     الآن، والفرق بين الحالتين يجب أن يُقال لا أن يُستنتج من الرسم. */
+  /* ══ الحكم الواحد ═══════════════════════════════════════════════════
+     🛠️ عطل أبلغ عنه المستخدم: «الرادار يعطيني سهماً ثم يقول انتظر حتى
+     يصل لمنطقة الدخول — ليش ما يقول ادخل ووقفك قريب؟»
+
+     السبب أن كل لوحة كانت تحكم بنفسها: سطر الشارت يقول «السعر داخل
+     منطقة الدخول الآن»، وغرفة القرار تقول «مراقبة»، والرأي الفني يقول
+     «الأفضل الانتظار» — للسهم نفسه في اللحظة نفسها.
+
+     وتحت التناقض عطل أعمق: حين لا توجد فجوة قيمة عادلة ولا كتلة أوامر
+     حيّة، تُشتقّ المنطقة من ATR **حول السعر الحالي** — فيقع السعر داخلها
+     بالتعريف دائماً. أي أن «السعر داخل المنطقة» كان جملة صحيحة حسابياً
+     وفارغة من المعنى: نتيجة طريقة الرسم لا حدثاً في السوق.
+
+     الآن حكم واحد يُشتقّ هنا وتقرؤه كل اللوحات، ويميّز حالتين مختلفتين
+     فعلاً: دخول **عند بنية مرصودة**، ودخول **عند السعر بوقف بنيوي**.
+     وكلاهما مشروع، والفرق بينهما يُقال لا يُخفى. وحين تكتمل الشروط
+     تُقال الجملة التي طلبها المستخدم صراحةً: ادخل الآن، ووقفك هنا،
+     وبُعده كذا. */
   const rel=cur<lo?'below':(cur>hi?'above':'inside');
-  const relNote=rel==='inside'?'السعر داخل منطقة الدخول الآن'
-    :rel==='above'?`السعر ${cur} أعلى من المنطقة بـ${(+((cur-hi)/hi*100).toFixed(2))}٪ — الدخول ينتظر ارتداداً إليها، لا يُطارَد`
-    :`السعر ${cur} أدنى من المنطقة بـ${(+((lo-cur)/lo*100).toFixed(2))}٪ — المنطقة فوق السعر، فهي ليست منطقة شراء الآن`;
+  const structural=zoneKind&&zoneKind!=='atr';
+  const gapUp=+((cur-hi)/hi*100).toFixed(2), gapDn=+((lo-cur)/lo*100).toFixed(2);
+  const zoneName=zoneKind==='FVG'?'فجوة القيمة العادلة'
+    :zoneKind==='OB'?'كتلة الأوامر'
+    :zoneKind==='breakout'?'نطاق تأكيد الاختراق':'نطاق ATR';
+
+  let verdict,verdictText;
+  if(!riskOk){
+    verdict='no_trade';
+    verdictText=`لا دخول: ${riskNote}`;
+  }else if(!structural){
+    /* لا بنية حيّة: الدخول عند السعر والوقف من أقرب دعم. مشروع لكنه
+       أضعف من الدخول عند بنية، ويُقال ذلك بدل ادّعاء «داخل المنطقة». */
+    verdict='enter_at_market';
+    verdictText=`ادخل عند السعر ${cur} — لا فجوة قيمة عادلة ولا كتلة أوامر حيّة قربه، `
+      +`فالمنطقة المعروضة مرسومة حول السعر من التذبذب لا من بنية مرصودة (وقوع السعر داخلها لا يعني شيئاً). `
+      +`الوقف ${stop} على بعد ${(+(cur-stop).toFixed(2))} ر.س = ${riskATR}×ATR (${(+((cur-stop)/cur*100).toFixed(2))}٪). `
+      +`وهذا دخول عند السعر بوقف بنيوي — أضعف من الدخول عند بنية، وليس رفضاً.`;
+  }else if(rel==='inside'){
+    verdict='enter_now';
+    verdictText=`✅ ادخل الآن — السعر ${cur} داخل ${zoneName} (${lo}–${hi}) فعلاً. `
+      +`الوقف ${stop} قريب: ${(+(cur-stop).toFixed(2))} ر.س = ${riskATR}×ATR (${(+((cur-stop)/cur*100).toFixed(2))}٪ تحت السعر).`;
+  }else if(rel==='above'){
+    verdict='wait_pullback';
+    verdictText=`السعر ${cur} أعلى من ${zoneName} بـ${gapUp}٪ — الدخول ينتظر ارتداداً إليها (${lo}–${hi})، لا يُطارَد. `
+      +`ولو دخلت عند السعر الآن لصار الوقف على بعد ${(+((cur-stop)/cur*100).toFixed(2))}٪ بدل ${(+((entryRef-stop)/entryRef*100).toFixed(2))}٪.`;
+  }else{
+    verdict='zone_above';
+    verdictText=`السعر ${cur} أدنى من ${zoneName} بـ${gapDn}٪ — المنطقة فوق السعر فهي ليست منطقة شراء الآن.`;
+  }
+  const relNote=verdictText;
 
   /* ── ② الأهداف: بنيوية أولاً، ثم فراكتالية موسومة ─────────────────── */
   const MIN_RR=tp.minRR||1.5;
@@ -3185,6 +3288,7 @@ function tradeLevels(sym){
 
   return{sym,dirUp:true,planType:tp.planType,
     entryLo:lo,entryHi:hi,entryRef,zoneSrc,zoneKind,zoneWidth:f2(hi-lo),
+    structural,zoneName,verdict,verdictText,
     price:cur,rel,relNote,
     stop,stopSource,risk,riskATR,riskOk,riskNote,atr:f2(atr),
     targets:targets.slice(0,3),targetsFilled:filled,targetsDropped:dropped,shortNote,
@@ -4271,6 +4375,189 @@ function alRenderPanel() {
   alRefreshBadge();
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   📡 لوحة حيّة — الأسعار تتجدّد والفلاتر معها، بلا تحديث يدوي
+   ──────────────────────────────────────────────────────────────────────
+   لماذا لا تُعاد «مسح شامل» كل دورة: المسح يجلب خمس سنوات لكل سهم من 259
+   — عشرات الميغابايتات ودقائق. والتحديث الحيّ لا يحتاج التاريخ، يحتاج
+   **شمعة اليوم** فقط. فيُجلب نطاق 5 أيام (استجابة صغيرة) وتُرقَّع به آخر
+   شمعة في السلسلة المحفوظة: التاريخ يبقى كما هو، واليوم وحده يتغيّر.
+   وبهذا تبقى مخرجات التحليل حتمية (نفس التاريخ) وتتحرّك الأسعار.
+
+   ⏱️ مصدر البيانات متأخّر ~15 دقيقة، ووسيط المنصة يخزّن 15 دقيقة أيضاً
+   (s-maxage=900). فالتحديث الأسرع من ذلك لن يأتي بجديد غالباً — لكنه
+   لا يضرّ لأن الطلب يُخدَم من الذاكرة الوسيطة. الافتراضي 5 دقائق.
+
+   القياس على 259 سهماً: calcInd 1.8 ثانية · calcAllFilters 1.5 · 
+   tradeLevels 3.6 — أي نحو 7 ثوانٍ معالجة لكل دورة، تُنفَّذ على دفعات
+   مع إفساح للواجهة فلا تتجمّد.
+   ══════════════════════════════════════════════════════════════════════ */
+const LIVE={timer:null,running:false,lastRun:0,nextAt:0,cfg:null,tick:null,lastErr:null,updated:0};
+const LIVE_KEY='ksaLiveCfg';
+const LIVE_DEFAULTS={intervalMin:0,onlyMarketHours:true,refilter:true};
+function liveLoad(){
+  try{LIVE.cfg=Object.assign({},LIVE_DEFAULTS,JSON.parse(localStorage.getItem(LIVE_KEY)||'{}'));}
+  catch(e){LIVE.cfg=Object.assign({},LIVE_DEFAULTS);}
+}
+function liveSave(){try{localStorage.setItem(LIVE_KEY,JSON.stringify(LIVE.cfg));}catch(e){}}
+liveLoad();
+
+/** هل السوق السعودي مفتوح الآن؟ أحد–خميس، 10:00–15:10 بتوقيت الرياض. */
+function marketOpen(d){
+  d=d||new Date();
+  const riyadh=new Date(d.getTime()+(3*60+d.getTimezoneOffset())*60000);
+  const day=riyadh.getDay();                 /* 5=جمعة 6=سبت */
+  if(day===5||day===6)return false;
+  const mins=riyadh.getHours()*60+riyadh.getMinutes();
+  return mins>=600&&mins<=910;
+}
+
+/** يدمج شموعاً جديدة في السلسلة المحفوظة: يستبدل اليوم نفسه ويُلحق الجديد. */
+function mergeCandles(sym,fresh){
+  const cs=G.cans[sym];
+  if(!cs||!cs.length||!fresh||!fresh.length)return 0;
+  const byTime=new Map(cs.map((c,i)=>[c.time,i]));
+  let changed=0;
+  for(const nc of fresh){
+    const idx=byTime.get(nc.time);
+    if(idx!=null){
+      const old=cs[idx];
+      if(old.close!==nc.close||old.high!==nc.high||old.low!==nc.low||old.volume!==nc.volume){
+        cs[idx]=nc;changed++;
+      }
+    }else if(nc.time>cs[cs.length-1].time){ cs.push(nc);changed++; }
+  }
+  return changed;
+}
+
+/** يجلب شمعة اليوم لكل سهم محمّل ويُرقّعها، ثم يعيد حساب ما يلزم. */
+async function refreshLive(opt){
+  opt=opt||{};
+  if(LIVE.running)return null;
+  LIVE.running=true;
+  const pill=document.getElementById('live-pill');
+  try{
+    const syms=Object.keys(G.cans).filter(s=>!G.demo.has(s));
+    if(!syms.length){LIVE.lastErr='لا سهم محمّل — شغّل «مسح شامل» أولاً';return null;}
+    liveRender('⏳ يحدّث…');
+    let changed=0,failed=0,done=0;
+    const CONC=6;
+    let i=0;
+    await Promise.all(Array.from({length:Math.min(CONC,syms.length)},async()=>{
+      while(true){
+        const k=i++; if(k>=syms.length)return;
+        const sym=syms[k];
+        try{
+          const r=await fetch(`/api/stock?symbol=${encodeURIComponent(sym)}&range=5d&interval=1d`,
+            {signal:AbortSignal.timeout(12000),cache:'no-store'});
+          if(!r.ok){failed++;}
+          else{
+            const d=await r.json();
+            const res=d?.chart?.result?.[0];
+            const p=res?parseY(res,sym):null;
+            if(p){
+              const n=mergeCandles(sym,p.cs);
+              if(n){changed++;}
+              /* السعر الحيّ ونسبة التغيّر تُحدَّثان دائماً ولو لم تتغيّر الشمعة */
+              G.pr[sym]=p.price;G.op[sym]=p.op;G.hi[sym]=p.hi;G.lo[sym]=p.lo;G.vo[sym]=p.vo;
+              G.ch[sym]=+(p.price-p.pv).toFixed(2);G.pc[sym]=+((p.price-p.pv)/p.pv*100).toFixed(2);
+            }else failed++;
+          }
+        }catch(e){failed++;}
+        done++;
+        if(done%20===0)liveRender(`⏳ ${done}/${syms.length}`);
+      }
+    }));
+
+    /* إعادة الحساب على دفعات مع إفساح للواجهة */
+    for(let k=0;k<syms.length;k++){
+      const sym=syms[k];
+      try{calcInd(sym);}catch(e){}
+      if(G.harmCache)delete G.harmCache[sym];
+      if(G.ewCache)delete G.ewCache[sym];
+      if(G.wolfeCache)delete G.wolfeCache[sym];
+      if(G.chanCache)delete G.chanCache[sym];
+      if(G.fracCache)delete G.fracCache[sym];
+      if(k%40===39)await new Promise(r=>setTimeout(r,0));
+    }
+    /* ذاكرة التوقيت مفتاحها sym|طول السلسلة — تُمسح عند تغيّر الطول تلقائياً،
+       لكن تغيّر شمعة اليوم لا يغيّر الطول، فتُمسح صراحةً. */
+    try{ _ddTimeCache={}; }catch(e){}
+
+    if(LIVE.cfg.refilter&&_advData.length){
+      const roc=(()=>{let t=0,c=0;for(const s of syms){const cl=G.cans[s].map(x=>x.close),n=cl.length;
+        if(n>20){t+=((cl[n-1]-cl[n-21])/cl[n-21]*100);c++;}}return c?t/c:0;})();
+      const next=[];
+      for(let k=0;k<STKS.length;k++){
+        const s=STKS[k];
+        if(!G.cans[s.sym]||G.demo.has(s.sym))continue;
+        try{const res=calcAllFilters(s.sym,roc);
+          if(res)next.push({...res,name:s.name,price:G.pr[s.sym]||0,pct:G.pc[s.sym]||0});}catch(e){}
+        if(k%40===39)await new Promise(r=>setTimeout(r,0));
+      }
+      if(next.length)_advData=next;
+      try{updateBadges();}catch(e){}
+    }
+
+    LIVE.lastRun=Date.now();LIVE.updated=changed;LIVE.lastErr=failed?`${failed} سهماً لم يصل`:null;
+    try{renderResults();}catch(e){}
+    try{if(G.sel){updateHeader(G.sel);updateChart(G.sel);updateTradePlan(G.sel);}}catch(e){}
+    try{if(window.AL&&AL.cfg&&AL.cfg.intervalMin===0&&typeof runAlertScan==='function'&&AL.cfg.kinds.length)
+      await runAlertScan({silent:true});}catch(e){}
+    const el=document.getElementById('last-scan-time');
+    if(el)el.textContent=`✅ آخر تحديث: ${Tm()}`;
+    return {changed,failed,scanned:syms.length};
+  }finally{
+    LIVE.running=false;
+    LIVE.nextAt=LIVE.cfg.intervalMin?Date.now()+LIVE.cfg.intervalMin*60000:0;
+    liveRender();
+  }
+}
+window.refreshLive=refreshLive;
+
+function liveRender(override){
+  const el=document.getElementById('live-pill');if(!el)return;
+  const on=LIVE.cfg.intervalMin>0;
+  if(override){el.innerHTML=`<span style="color:#f5c842">${override}</span>`;return;}
+  if(!on){el.innerHTML='<span style="color:var(--t3)">⏸ اللوحة الحيّة متوقّفة</span>';return;}
+  const closed=LIVE.cfg.onlyMarketHours&&!marketOpen();
+  const secs=LIVE.nextAt?Math.max(0,Math.round((LIVE.nextAt-Date.now())/1000)):0;
+  const mm=String(Math.floor(secs/60)).padStart(2,'0'),ss=String(secs%60).padStart(2,'0');
+  const last=LIVE.lastRun?new Date(LIVE.lastRun).toLocaleTimeString('ar-SA',{hour:'2-digit',minute:'2-digit'}):'—';
+  el.innerHTML=closed
+    ? `<span style="color:var(--t3)">🌙 السوق مغلق — آخر تحديث ${last}</span>`
+    : `<span style="color:#0ecf7e">● حيّ</span> <span style="color:var(--t3)">آخر ${last} · التالي ${mm}:${ss}`
+      +(LIVE.updated?` · تغيّر ${LIVE.updated}`:'')+(LIVE.lastErr?` · <span style="color:#f04458">${LIVE.lastErr}</span>`:'')+'</span>';
+}
+
+function liveApply(){
+  if(LIVE.timer){clearInterval(LIVE.timer);LIVE.timer=null;}
+  if(LIVE.tick){clearInterval(LIVE.tick);LIVE.tick=null;}
+  if(LIVE.cfg.intervalMin>0){
+    LIVE.nextAt=Date.now()+LIVE.cfg.intervalMin*60000;
+    LIVE.timer=setInterval(()=>{
+      if(document.hidden)return;                       /* تبويب مخفي: لا طلبات */
+      if(LIVE.cfg.onlyMarketHours&&!marketOpen())return;
+      refreshLive({auto:true});
+    },LIVE.cfg.intervalMin*60000);
+    LIVE.tick=setInterval(liveRender,1000);
+  }
+  liveRender();
+}
+function setLiveInterval(m){
+  LIVE.cfg.intervalMin=m;liveSave();liveApply();
+  document.querySelectorAll('.live-opt').forEach(b=>b.classList.toggle('on',+b.dataset.m===m));
+  if(m>0&&!LIVE.running)refreshLive({auto:true});
+}
+window.setLiveInterval=setLiveInterval;
+/* استئناف فوري عند العودة للتبويب إن فات موعد التحديث */
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden||!LIVE.cfg.intervalMin)return;
+  if(LIVE.cfg.onlyMarketHours&&!marketOpen())return;
+  if(Date.now()-LIVE.lastRun>LIVE.cfg.intervalMin*60000)refreshLive({auto:true});
+});
+
 /* ══ RENDER TABLE ══ */
 function renderResults(){
   document.getElementById('rthead').innerHTML='<tr>'+getHeaders()+'</tr>';
@@ -4601,9 +4888,11 @@ function drawTradeLevels(sym){
   /* ③ سطر واحد تحت الشارت يقول ما لا يقوله الرسم: هل وصل السعر للمنطقة،
      وكم المخاطرة بمقياس ATR، ومن أين جاء الوقف. */
   if(info){
-    const relCol=L.rel==='inside'?'#0ecf7e':(L.rel==='above'?'#f5c842':'#7a8ba8');
+    const VC={enter_now:'#0ecf7e',enter_at_market:'#4a9eff',wait_pullback:'#f5c842',zone_above:'#7a8ba8',no_trade:'#f04458'};
+    const VI={enter_now:'✅',enter_at_market:'▶',wait_pullback:'⏸',zone_above:'○',no_trade:'⛔'};
+    const relCol=VC[L.verdict]||'#7a8ba8';
     info.innerHTML=
-      `<span style="color:${relCol}">${L.rel==='inside'?'●':'○'} ${L.relNote}</span>`
+      `<span style="color:${relCol}">${VI[L.verdict]||'○'} ${L.verdictText}</span>`
       +` <span style="color:#5a6a85">·</span> منطقة <b style="color:#0ecf7e">${L.entryLo}–${L.entryHi}</b>`
       +` <span style="color:#5a6a85">·</span> وقف <b style="color:#f04458">${L.stop}</b>`
       +` <span style="color:#7a8ba8">(${L.stopSource})</span>`
@@ -5226,10 +5515,14 @@ function updateTradePlan(sym){
         <div class="tp-box-sub">${TL?`${TL.stopSource} — مخاطرة ${TL.risk} ر.س/سهم (${TL.riskATR}×ATR)`:`${tp.stopSource} — مخاطرة ${tp.risk} ر.س/سهم`}</div>
       </div>
     </div>
-    ${TL?`<div style="padding:0 12px 6px;font-size:10.5px;line-height:1.8;color:${TL.rel==='inside'?'#0ecf7e':'#f5c842'}">
-      ${TL.rel==='inside'?'●':'○'} ${TL.relNote}
-      ${TL.riskOk?'':`<br><span style="color:#f5c842">⚠ ${TL.riskNote}</span>`}
-    </div>`:''}
+    ${TL?(()=>{
+      const VC={enter_now:'#0ecf7e',enter_at_market:'#4a9eff',wait_pullback:'#f5c842',zone_above:'#7a8ba8',no_trade:'#f04458'};
+      const VI={enter_now:'✅',enter_at_market:'▶',wait_pullback:'⏸',zone_above:'○',no_trade:'⛔'};
+      const c=VC[TL.verdict]||'#f5c842';
+      return `<div style="margin:2px 12px 7px;padding:7px 9px;border-radius:7px;font-size:11px;line-height:1.85;
+           color:${c};background:${c}12;border:1px solid ${c}44">
+        ${VI[TL.verdict]||'○'} ${TL.verdictText}</div>`;
+    })():''}
     ${verdictHtml}
     <div class="tp-levels">
       <div class="tp-box-title" style="padding:2px 0">🟢 الدعوم (الأقرب أولاً)</div>
@@ -9589,10 +9882,20 @@ function tpCoherent(r){
     r.rr=rr; r.stopATR=fx(risk/atr);
     r.size=size; r.size.riskPerShare=risk; r.qty=qty; r.atr=atr; r.isBreakout=isBreakout;
     r.sessionsToT= atr>0 ? Math.ceil((target-entry)/atr) : null;
-    r.trigger = isBreakout
-      ? ('لا تشترِ الآن — السعر '+fx(cur)+'. ضع أمر شراء موقوف عند '+entry+' ر.س (فوق المقاومة). إن لم يصلها فلا صفقة.')
-      : (r.tier==='B' ? ('مراقبة — '+(r.missWhy?r.missWhy[0]:'لم يجتز بوابة الترشيح الكاملة')+'. الدخول عند '+entry+' والوقف '+stop+'.')
-                      : ('دخول عند السعر الحالي '+entry+' ر.س، والوقف '+stop+'.'));
+    /* 🛠️ الزناد كان يُصاغ هنا من جديد، فيقول «مراقبة» بينما سطر الشارت
+       يقول «السعر داخل منطقة الدخول». حكم واحد من tradeLevels يقرؤه
+       الاثنان، ويُضاف إليه سبب الترشيح الناقص إن وُجد — لا بدلاً منه. */
+    var TL=null; try{ TL=window.tradeLevels?window.tradeLevels(sym):null; }catch(e){}
+    r.levels=TL;
+    if(isBreakout){
+      r.trigger='لا تشترِ الآن — السعر '+fx(cur)+'. ضع أمر شراء موقوف عند '+entry+' ر.س (فوق المقاومة). إن لم يصلها فلا صفقة.';
+    }else if(TL&&TL.verdictText){
+      r.trigger=TL.verdictText
+        +(r.tier==='B'?(' ⚠ ولم يجتز بوابة الترشيح الكاملة: '+(r.missWhy?r.missWhy[0]:'سبب غير مسجّل')+' — الكمية منصّفة.'):'');
+    }else{
+      r.trigger=(r.tier==='B' ? ('مراقبة — '+(r.missWhy?r.missWhy[0]:'لم يجتز بوابة الترشيح الكاملة')+'. الدخول عند '+entry+' والوقف '+stop+'.')
+                              : ('دخول عند السعر الحالي '+entry+' ر.س، والوقف '+stop+'.'));
+    }
     if(r.tier==='B'){ r.label='🟠 مرشّح مراقبة'; r.color='#fb923c'; r.action='watch'; }
     return true;
   }catch(e){ return false; }
@@ -9885,6 +10188,16 @@ function boot(){
   initSimpleBtn();
   host();
   if(typeof _filter!=='undefined' && _filter==='decision') renderResults();
+  /* اللوحة الحيّة: تستعيد الفاصل المحفوظ وتبدأ العدّاد. لا تُطلق طلباً
+     عند الإقلاع — تنتظر أول دورة أو ضغطة «↻». */
+  try{
+    if(typeof liveApply==='function'){
+      liveApply();
+      document.querySelectorAll('.live-opt').forEach(function(b){
+        if(b.dataset&&b.dataset.m!=null)b.classList.toggle('on',+b.dataset.m===LIVE.cfg.intervalMin);
+      });
+    }
+  }catch(e){}
   setTimeout(resizeCharts,300);
 }
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot);

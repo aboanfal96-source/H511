@@ -71,9 +71,11 @@ function synth(sym) {
     c.push(cl); v.push(Math.round(2e5 * (0.4 + rnd())));
     t += 86400;
   }
+  if (DRIFT) { const k = c.length - 1; c[k] = +(c[k] * (1 + DRIFT)).toFixed(2); h[k] = Math.max(h[k], c[k]); l[k] = Math.min(l[k], c[k]); }
   return { chart: { result: [{ meta: { regularMarketPrice: c[c.length - 1], previousClose: c[c.length - 2], symbol: sym }, timestamp: ts, indicators: { quote: [{ open: o, high: h, low: l, close: c, volume: v }] } }], error: null } };
 }
 const NOTIFIED = [];
+let DRIFT = 0;          /* يحرّك آخر شمعة لمحاكاة تحرّك السوق بين دورتين */
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   /* بديل عن /api/notify: الدالة الحقيقية تحتاج رمز بوت حيّاً، والمقصود
@@ -89,6 +91,7 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: true, sent: msgs.length }));
     });
   }
+  if (u.pathname === '/__drift') { DRIFT = +(u.searchParams.get('v') || 0); res.writeHead(200); return res.end('ok'); }
   if (u.pathname === '/api/stock') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(synth(u.searchParams.get('symbol') || '2222')));
@@ -264,6 +267,52 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
         : bad(`${silent.length} مدرسة بلا أساس ولا سبب: ${silent.map(r => r.n).join('، ')}`);
       sc.cardW >= 1000 ? ok(`بطاقة النشر رُسمت (${sc.cardW}px عرضاً)`) : bad('تعذّر رسم بطاقة النشر');
     }
+
+    /* ── الحكم الواحد: لا لوحة تناقض أخرى ───────────────────────────── */
+    const vd = await pg.evaluate(() => {
+      const out = { counts: {}, bad: [], n: 0 };
+      for (const s of Object.keys(G.cans).filter(x => !G.demo.has(x))) {
+        let L = null; try { L = tradeLevels(s); } catch (e) { continue; }
+        if (!L) continue;
+        out.n++;
+        out.counts[L.verdict] = (out.counts[L.verdict] || 0) + 1;
+        if (!L.verdict || !L.verdictText) out.bad.push(s + ': بلا حكم');
+        if (L.verdict === 'enter_now' && !L.structural) out.bad.push(s + ': «ادخل الآن» لنطاق مرسوم حول السعر');
+        if (L.verdict === 'enter_at_market' && L.structural) out.bad.push(s + ': تصنيف مقلوب');
+        if (/داخل منطقة الدخول الآن/.test(L.verdictText)) out.bad.push(s + ': نصّ قديم');
+      }
+      return out;
+    });
+    vd.bad.length === 0 ? ok(`حكم واحد متّسق على ${vd.n} سهماً (${Object.entries(vd.counts).map(([k, v]) => k + ':' + v).join(' · ')})`)
+      : bad(`تناقض في الحكم: ${vd.bad.slice(0, 3).join(' | ')}`);
+
+    /* ── اللوحة الحيّة: السعر يتحرّك والتاريخ لا ──────────────────────── */
+    const port2 = server.address().port;
+    const b4 = await pg.evaluate(() => {
+      const s = Object.keys(G.cans).filter(x => !G.demo.has(x))[0];
+      return { sym: s, bars: G.cans[s].length, price: G.pr[s], close: G.cans[s][G.cans[s].length - 1].close };
+    });
+    await fetch(`http://localhost:${port2}/__drift?v=0.04`);
+    const live = await pg.evaluate(async () => await window.refreshLive());
+    await fetch(`http://localhost:${port2}/__drift?v=0`);
+    const af = await pg.evaluate((sym) => ({
+      bars: G.cans[sym].length, price: G.pr[sym], close: G.cans[sym][G.cans[sym].length - 1].close
+    }), b4.sym);
+
+    live && live.changed > 0 ? ok(`التحديث الحيّ رقّع ${live.changed} سهماً (${live.failed} أخفق)`)
+      : bad('التحديث الحيّ لم يغيّر شيئاً رغم تحرّك السوق');
+    af.price !== b4.price ? ok(`السعر تتبّع السوق: ${b4.price} ← ${af.price}`)
+      : bad(`السعر ثابت رغم تحرّك السوق (${b4.price})`);
+    af.bars === b4.bars ? ok(`تاريخ التحليل لم يتمدّد بالتحديث (${af.bars} شمعة) — المخرجات تبقى حتمية`)
+      : bad(`طول التاريخ تغيّر ${b4.bars} ← ${af.bars} — التحديث يلوّث عيّنة التحليل`);
+
+    const mh = await pg.evaluate(() => ({
+      sun: marketOpen(new Date(Date.UTC(2026, 8, 14, 9, 0))),
+      fri: marketOpen(new Date(Date.UTC(2026, 8, 18, 9, 0))),
+      night: marketOpen(new Date(Date.UTC(2026, 8, 14, 20, 0)))
+    }));
+    (mh.sun && !mh.fri && !mh.night) ? ok('ساعات السوق: أحد ظهراً مفتوح · جمعة مغلق · ليلاً مغلق')
+      : bad('حساب ساعات السوق خاطئ: ' + JSON.stringify(mh));
 
     errs.length ? bad('استثناءات في الصفحة: ' + errs.slice(0, 3).join(' | ')) : ok('لا استثناءات في المتصفّح');
   } finally {
