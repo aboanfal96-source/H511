@@ -1252,6 +1252,62 @@ async function loadStock(sym,range,interval){
   return ok;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   تحويل «بعد N جلسة» إلى تاريخ — بإزاحة مصدر البيانات
+   ──────────────────────────────────────────────────────────────────────
+   🛠️ عطل صامت: barsAhead مقاس من **آخر شمعة في السلسلة**، بينما التحويل
+   كان يُرسي العدّ على **اليوم**:
+       addTradingDays(new Date(), bars)
+   ومصدر البيانات متأخّر، وقد تفتح اللوحة الأحد وآخر شمعة محمّلة من
+   الخميس. فالتاريخ المعروض يسبق الحقيقي بجلسة أو جلستين بلا أي إشارة.
+
+   الآن تُحسب الإزاحة أولاً: كم جلسة مضت بين آخر شمعة واليوم، وتُطرح.
+   ومتى بلغت الإزاحة جلستين فأكثر تُعرض للمستخدم بدل ابتلاعها. */
+function barsAheadToDate(cs,bars){
+  if(bars==null||!isFinite(bars))return null;
+  try{
+    const SM=KSAEngine.SaudiMarket;
+    let drift=0;
+    if(cs&&cs.length){
+      const lastT=new Date(cs[cs.length-1].time*1000);
+      drift=Math.max(0,SM.tradingDaysBetween(lastT,new Date()));
+    }
+    const eff=Math.round(bars)-drift;
+    return{date:SM.addTradingDays(new Date(),Math.max(0,eff)),drift,effBars:eff,stale:drift>=2};
+  }catch(e){return null;}
+}
+function barsAheadDateText(cs,bars){
+  const r=barsAheadToDate(cs,bars);
+  if(!r||!r.date)return '';
+  return r.date.toLocaleDateString('ar-SA')+(r.stale?` (بيانات متأخّرة ${r.drift} جلسة — التاريخ مصحَّح)`:'');
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   فحص ثبات الدورة — مصدر واحد مُذاكَر
+   ──────────────────────────────────────────────────────────────────────
+   🛠️ كان يُستدعى بثلاث طرق: مرّة بتمرير الطيف المحسوب ونافذته (ddTiming)،
+   ومرّتين بلا طيف (whenActiveLine و smartTimingAnalysis). وبلا تمرير الطيف
+   تعيد الدالة حسابه — وربما على نافذة مختلفة. فيمكن للسهم نفسه أن يُعلَن
+   «دورته ثابتة» في عمود الجدول و«غير ثابتة» في صندوق «متى ينشط» داخل
+   التقرير، في اللحظة نفسها.
+
+   وهذا نقيض القاعدة المعلنة في هذه المنصة: الأصل الزمني واحد في كل مكان.
+   الآن غلاف واحد بمفتاح sym|طول|آخر إغلاق — فتتغيّر النتيجة حين تتغيّر
+   البيانات فعلاً، لا حين يتغيّر من يسأل. */
+let _stabCache={};
+function cycleStabilityFor(cs,opt){
+  if(!window.KSATiming||!cs||!cs.length)return null;
+  const key=((opt&&opt.sym)||'?')+'|'+cs.length+'|'+cs[cs.length-1].close;
+  if(_stabCache[key]!==undefined)return _stabCache[key];
+  let r=null;
+  try{
+    r=KSATiming.cycleStability(cs,(opt&&opt.spectral)
+      ?{spectral:opt.spectral,spectralBars:Math.min(cs.length,750)}:undefined);
+  }catch(e){r=null;}
+  _stabCache[key]=r;
+  return r;
+}
+
 /** عدد الأسهم التي ما زالت على بيانات تجريبية — يُعرض في شريط الحالة. */
 function demoCount(){return G.demo.size;}
 
@@ -2206,10 +2262,24 @@ function gannSquareOfNine(pivotPrice,currentPrice,calendarDays){
   }
   const angleDiff=Math.abs(priceAngle-timeAngle);
   const normDiff=Math.min(angleDiff,360-angleDiff);
-  /* "Squared" = price-angle and time-angle land within 10° of the SAME
-     cardinal/diagonal — this is the actual Gann price=time confluence. */
-  const squared=normDiff<=10;
-  return{squared,angleDiff:+normDiff.toFixed(1),priceAngle:+priceAngle.toFixed(1),timeAngle:+timeAngle.toFixed(1),cardinal:bestCardinal};
+
+  /* 🛠️ التعليق كان يصف شرطاً والكود يفحص غيره: قال «الزاويتان تقعان ضمن
+     10° من **نفس** الزاوية الأساسية» بينما squared=normDiff<=10 يقارن
+     الزاويتين ببعضهما فقط، و bestCardinal يُحسب ويُعاد للعرض ولا يدخل
+     الشرط إطلاقاً. والفرق ليس تجميلياً: تقارب الزاويتين وحده يتحقّق
+     بالصدفة بنحو 20/360 ≈ 5.6٪ لكل مرساة، وهو يُعدّ دليلاً مستقلاً في
+     evidenceCount. والتربيع عند غان اقتران السعر والزمن عند **محور** من
+     محاور المربع، لا مجرّد تساويهما في الهواء.
+     الآن الشرطان معاً: تقارب الزاويتين **و** وقوعهما قرب نفس المحور. */
+  const CARD_TOL=10;
+  let sameCardinal=null;
+  for(const c of cardinals){
+    const dp=Math.min(Math.abs(priceAngle-c),360-Math.abs(priceAngle-c));
+    const dt=Math.min(Math.abs(timeAngle-c),360-Math.abs(timeAngle-c));
+    if(dp<=CARD_TOL&&dt<=CARD_TOL){sameCardinal=c;break;}
+  }
+  const squared=normDiff<=CARD_TOL&&sameCardinal!==null;
+  return{squared,sameCardinal,angleDiff:+normDiff.toFixed(1),priceAngle:+priceAngle.toFixed(1),timeAngle:+timeAngle.toFixed(1),cardinal:bestCardinal};
 }
 
 /**
@@ -2248,6 +2318,16 @@ function priceTimeConvergence(cs,pivot){
   const range=legHigh-legLow;
   if(range<=0)return{confirmed:false,level:null,reason:'لا توجد حركة سعرية كافية'};
   const cur=cs[n-1].close;
+  /* 🛠️ الساق تُقاس من الارتكاز إلى الآن، والارتكاز قريب دائماً (وسيط 5
+     جلسات). فساق من خمس شمعات تجعل مستويات فيبوناتشي الأربعة متلاصقة،
+     والسعر «عندها» بالتعريف. القياس: هذا الشرط وحده كان يتحقّق في 76٪
+     من الأسهم، ويرفع بوابة strongSR كلها إلى 91٪ — بوابة تمرّ تسعة من
+     كل عشرة لا تفصل شيئاً.
+     شرطان جديدان: ساق لا تقلّ عن ضعفَي ATR (وإلّا فهي ضجيج لا حركة)،
+     ونافذة القرب بمقياس التذبذب لا نسبة ثابتة من السعر. */
+  const _atr=(window.KSAEngine&&KSAEngine.atr)?KSAEngine.atr(cs,14):null;
+  if(_atr>0&&range<2*_atr)
+    return{confirmed:false,level:null,reason:`مدى الحركة ${range.toFixed(2)} دون ضعفَي ATR — ساق أقصر من أن تُقاس عليها ارتدادات`};
   const levels=[
     {pct:38.2,price:pivot.type==='L'?legHigh-range*0.382:legLow+range*0.382},
     {pct:50.0,price:pivot.type==='L'?legHigh-range*0.5:legLow+range*0.5},
@@ -2259,18 +2339,21 @@ function priceTimeConvergence(cs,pivot){
     const dist=Math.abs(cur-lv.price)/cur*100;
     if(dist<bestDist){bestDist=dist;best=lv;}
   }
-  const confirmed=bestDist<=1.2;/* within 1.2% of price = genuinely "at" the level */
+  const _tolPct=_atr>0?Math.max(0.4,(0.35*_atr)/cur*100):1.2;
+  const confirmed=bestDist<=_tolPct;
   return{confirmed,level:best?.pct||null,levelPrice:best?+best.price.toFixed(2):null,distPct:+bestDist.toFixed(2),
     reason:confirmed?`السعر عند تصحيح فيبوناتشي ${best.pct}% (${best.price.toFixed(2)})`:`أقرب مستوى فيبوناتشي ${best?.pct}% يبعد ${bestDist.toFixed(1)}%`};
 }
 
 /**
  * ⏱ SHARED DOMINANT-CYCLE DETECTOR — single source of truth used by BOTH
- * timeAlignmentTrigger (the live filter) and the backtest engine below.
- * Previously the backtest had its own "FFT-labeled" cycle logic
- * (analyzeFrequencySpectrum) that the live filter never consulted at all —
- * so the badge users saw live and the methodology the backtest validated
- * were two different things. This unifies them.
+ * timeAlignmentTrigger (the live filter) only.
+ *
+ * 🛠️ تصحيح تعليق قديم: كان يقول إن هذه الدالة «توحّد» الفلتر الحيّ مع
+ * الاختبار التاريخي. لم يعد ذلك صحيحاً — backtestSpectralSignal يفوّض إلى
+ * KSAEngine.backtestSpectral الذي يستعمل التحليل الطيفي الحقيقي (دورية
+ * فورييه واختبار فيشر) لا تباعد محاور الزيجزاج. منهجان مختلفان عمداً:
+ * هذا وصف سريع لإيقاع المحاور، وذاك اختبار دلالة إحصائية.
  *
  * Not a true FFT (unnecessary weight for this use-case) — instead it
  * measures the spacing between confirmed ZigZag swing pivots (peaks AND
@@ -2633,10 +2716,32 @@ function timeAlignmentTrigger(cs,ind){
      a time window without real price support is discarded as a false signal). */
   const distToPivot=Math.abs(cur-pivot.p)/pivot.p*100;
   const nearPivot=distToPivot<=1.5;
-  const nearMA=!!(ind&&((ind.ma20&&Math.abs(cur-ind.ma20)/cur*100<=1)||(ind.ma50&&Math.abs(cur-ind.ma50)/cur*100<=1)));
-  const nearBB=!!(ind?.boll&&(Math.abs(cur-ind.boll.u)/cur*100<=1||Math.abs(cur-ind.boll.l)/cur*100<=1));
+  /* 🛠️ نافذة 1٪ ثابتة: وهمية على سهم تذبذبه اليومي 3٪، ومفرطة على سهم
+     تذبذبه 0.4٪. صارت 0.35×ATR كما في بقية المنصة. */
+  const _a=(window.KSAEngine&&KSAEngine.atr)?KSAEngine.atr(cs,14):null;
+  const _near=(lvl)=>lvl!=null&&Math.abs(cur-lvl)<=(_a>0?0.35*_a:cur*0.01);
+  const nearMA=!!(ind&&(_near(ind.ma20)||_near(ind.ma50)));
+  const nearBB=!!(ind?.boll&&(_near(ind.boll.u)||_near(ind.boll.l)));
   const ptConv=priceTimeConvergence(cs,pivot);
-  const strongSR=nearPivot||nearMA||nearBB||ptConv.confirmed;
+  /* ══ بوابة القرب من مستوى — شرط لازم لا كافٍ ═══════════════════════
+     🛠️ كانت «أو» بين أربعة شروط بنوافذ ثابتة، فتتحقّق في **91٪** من
+     الأسهم. بوابة تمرّ تسعةً من كل عشرة لا تفصل شيئاً.
+
+     أوّل ما عولج: النوافذ نفسها. صارت بمقياس التذبذب (0.35×ATR بدل 1٪
+     ثابتة)، واشتُرط أن تكون الساق المقيسة عليها الارتدادات ≥ ضعفَي ATR
+     وإلّا فهي ضجيج لا حركة. النتيجة 91٪ ← 69٪، وشرط تقارب السعر/الزمن
+     وحده 76٪ ← 30٪.
+
+     ثم جُرِّب اشتراط دليلين بنيويين: نزلت البوابة إلى 21٪ — لكن المكافأة
+     النهائية سقطت إلى **1 من 420** سلسلة. بوابة لا تُطلَق أبداً عديمة
+     النفع كبوابة تُطلَق دائماً، فلم تُعتمد.
+
+     المعتمد: القرب من مستوى شرط **لازم لا كافٍ**، والتمييز يأتي من الجانب
+     الزمني (عتبة دليلين مستقلَّين) ومن تأكيد الارتداد. وعدد الأدلة
+     البنيوية يُعرض في نصّ السبب فيعرف القارئ أهو قربٌ من مستوى واحد أم
+     اجتماع مستويات. */
+  const _srHits=[nearPivot,nearMA,nearBB,ptConv.confirmed].filter(Boolean).length;
+  const strongSR=_srHits>=1;
   const srReason=nearPivot?`إعادة اختبار نقطة الارتكاز ${pivot.p.toFixed(2)}`:ptConv.confirmed?ptConv.reason:nearMA?'قرب متوسط متحرك (MA20/50)':nearBB?'قرب حافة بولينجر':'بدون دعم/مقاومة واضح';
 
   /* ── 3b) Momentum confirmation ──
@@ -2658,7 +2763,13 @@ function timeAlignmentTrigger(cs,ind){
   /* عدد الأدلة الزمنية المستقلة المتوافقة معاً (فيبوناتشي وقت + غان شموع +
      غان تقويمي + دورة السهم + مربع جان) — كلما زاد العدد زادت قوة الإشارة،
      هذا أساس التصنيف النصي (قوي/متوسط/ضعيف) بدل أي نسبة % مصطنعة. */
-  const evidenceCount=[!!fibMatch,!!gannMatch,!!gannCal,!!dcMatch,sq9.squared].filter(Boolean).length;
+  /* 🛠️ غان-بالجلسات وغان-بالأيام يقيسان **الزمن نفسه** بوحدتين، على
+     المرساة نفسها، وبالأرقام نفسها (30/45/90). و30 جلسة تداول ≈ 42 يوماً
+     تقويمياً، وهو داخل نافذة 45±4 — فيقع اجتماعهما بالإنشاء لا بالدليل.
+     عدّهما دليلين مستقلَّين يجعل عتبة «دليلان» عتبةَ دليل واحد مكرَّر.
+     يُعدّان الآن دليلاً واحداً. */
+  const gannAny=!!gannMatch||!!gannCal;
+  const evidenceCount=[!!fibMatch,gannAny,!!dcMatch,sq9.squared].filter(Boolean).length;
   const strength=evidenceCount>=3?'قوي':evidenceCount===2?'متوسط':evidenceCount===1?'ضعيف':'—';
 
   /* 🛠️ عتبة الدليل: كان يكفي تطابق زمني **واحد** لمنح المكافأة. ومع
@@ -2675,7 +2786,7 @@ function timeAlignmentTrigger(cs,ind){
     timeBonus=dirUp?20:-20;
     active=true;sniperBonus=true;
     badge='⏱ Time Confluence Active';
-    reason=`توافق ${strength} (${cycleType} ${cycleNum}${sq9.squared?' + مربع غان مُربَّع':''}) + ${srReason} + ${dirUp?'ارتداد صعودي مؤكد':'ارتداد هبوطي مؤكد'} — العدّ ${candleDistance} جلسة${calDays!=null?` ≈ ${calDays} يوماً`:''} من ${anchorLabel} ← مكافأة قناص زمنية`;
+    reason=`توافق ${strength} (${cycleType} ${cycleNum}${sq9.squared?' + مربع غان مُربَّع':''}) + ${srReason} + ${dirUp?'ارتداد صعودي مؤكد':'ارتداد هبوطي مؤكد'} (${_srHits} ${_srHits===1?'دليل بنيوي':'أدلة بنيوية'}) — العدّ ${candleDistance} جلسة${calDays!=null?` ≈ ${calDays} يوماً`:''} من ${anchorLabel} ← مكافأة قناص زمنية`;
   }else if(strongSR&&cycleStrong&&!momentumConfirms){
     /* Cycle + level line up, but price hasn't actually turned yet — watch, don't count it as a fired signal */
     timeBonus=0;active=false;
@@ -2702,7 +2813,8 @@ function timeAlignmentTrigger(cs,ind){
      window.KSA_DEBUG_TIME = true */
   if(window.KSA_DEBUG_TIME&&typeof console!=='undefined'&&console.debug)console.debug(`[TimeAlignment] pivot=${pivot.type}@${pivot.p.toFixed(2)} dist=${candleDistance}c/${calDays}d fib=${fibMatch||'-'} gann=${gannMatch||'-'} gannCal=${gannCal?.cycle||'-'} sq9=${sq9.squared} SR=${strongSR} → bonus=${timeBonus}`);
 
-  return{active,candleDistance,calendarDays:calDays,pivotPrice:+pivot.p.toFixed(2),pivotType:pivot.type,pivotIdx:pivot.i,
+  return{active,strongSR,srHits:_srHits,evidenceCount,anchorLabel,nearPivot,nearMA,nearBB,ptConfirmed:!!ptConv.confirmed,
+    candleDistance,calendarDays:calDays,pivotPrice:+pivot.p.toFixed(2),pivotType:pivot.type,pivotIdx:pivot.i,
     fibMatch,gannMatch,gannCalMatch:gannCal,dcMatch,squareOfNine:sq9,priceTimeConvergence:ptConv,
     detectedCycle:dc,cycleType,cycleNum,strength,evidenceCount,strongSR,srReason,timeBonus,sniperBonus,penalty,badge,reason,dirUp};
 }
@@ -3781,7 +3893,12 @@ function buildRadar(){
     if(e.state==='unstable'){_radarDiag.unstable++;continue;}
     if(e.state==='none'){_radarDiag.noCycle++;continue;}
     if(e.tier!=='cycle'){_radarDiag.noCycle++;continue;}
-    if(e.stabilityTested===false)_radarDiag.untested++;
+    /* 🛠️ عدّ مزدوج: كان السهم غير المفحوص الثبات يُعدّ في untested ثم
+       يسقط في cycleStable بلا continue، و passedFisher يجمع الثلاثة —
+       فيُحسب مرّتين. وهو الرقم الذي يُقارَن بما تنتجه الصدفة وتُبنى عليه
+       خلاصة اللوحة كلها، فكان التضخيم يجعل الأداة تبدو أقوى من الصدفة
+       أكثر ممّا هي. الآن ثلاث فئات متنافية تماماً. */
+    if(e.stabilityTested===false){_radarDiag.untested++;continue;}
     _radarDiag.cycleStable++;
     if(e.bars>horizon)_radarDiag.beyondHorizon++;
     else if(src==='verified'&&!(e.coherent&&e.usable&&e.stabilityTested!==false))_radarDiag.filteredBySrc++;
@@ -3941,17 +4058,26 @@ function _timeEntry(sym){
   /* ② المصدر المفروض: نوافذ غان/فيبوناتشي. تُحسب وتُعرض، لكنها تُوسَم
      صراحةً بأنها أرقام لم يثبت انطباقها على هذا السهم. الفصل بين المصدرين
      هو جوهر المسألة: بدونه يبدو تاريخ مفروض بقوة تاريخ مقاس. */
+  /* 🛠️ نظامان زمنيان متوازيان كانا يُبنيان على مرساتين مختلفتين: تبويب
+     «⏱ توافق زمني» يعدّ من ثلاث مراسٍ (_timeAnchors) بينما هذا المسار
+     يعدّ من آخر ارتكاز وحده. فيظهر السهم «توافق زمني قوي» في تبويب و«لا
+     دورة» في العمود — لا لاختلاف المنهج بل لاختلاف نقطة البداية.
+     الآن المرساتان واحدة: تُجرَّب كل مرساة وتُؤخذ أقرب نافذة قادمة، مع
+     تسمية المرساة في التفصيل. */
   try{
-    const pv=findLastConfirmedPivot(cs);
-    if(pv){
-      const w=buildUpcomingTimeWindows(cs,{i:pv.i,p:pv.p,type:pv.type},null);
+    const anchors=(typeof _timeAnchors==='function')?_timeAnchors(cs):[];
+    let bestW=null,bestA=null;
+    for(const a of anchors){
+      let w=null;
+      try{w=buildUpcomingTimeWindows(cs,{i:a.i,p:a.p,type:a.type},null);}catch(e){continue;}
       const n0=(w||[])[0];
-      if(n0)return{state:'ok',tier:'classic',
-        type:(pv.type==='L'?'valley':'peak'),bars:n0.barsAhead,sd:null,usable:false,coherent:false,
-        src:'نافذة كلاسيكية',srcDetail:n0.label,
-        p:(tm&&tm.ok&&tm.pText)?tm.pText:null,
-        why:'رقم غان/فيبوناتشي مفروض من خارج السهم — للمراقبة لا للتنفيذ'};
+      if(n0&&(!bestW||n0.barsAhead<bestW.barsAhead)){bestW=n0;bestA=a;}
     }
+    if(bestW)return{state:'ok',tier:'classic',
+      type:(bestA.type==='L'?'valley':'peak'),bars:bestW.barsAhead,sd:null,usable:false,coherent:false,
+      src:'نافذة كلاسيكية',srcDetail:`${bestW.label} — العدّ من ${bestA.label}`,
+      p:(tm&&tm.ok&&tm.pText)?tm.pText:null,
+      why:'رقم غان/فيبوناتشي مفروض من خارج السهم — للمراقبة لا للتنفيذ'};
   }catch(e){}
 
   const pTxt=(tm&&tm.ok&&tm.pText)?(' (p='+tm.pText+')'):'';
@@ -3996,7 +4122,7 @@ function timeCell(sym){
 
   const when=e.bars<=0?'اليوم':e.bars===1?'الجلسة القادمة':`${e.bars}ج`;
   let dt='';
-  try{ dt=KSAEngine.SaudiMarket.addTradingDays(new Date(),e.bars).toLocaleDateString('ar-SA'); }catch(x){}
+  try{ dt=barsAheadDateText(G.cans[sym],e.bars); }catch(x){}
 
   /* النافذة الكلاسيكية تُعرض رمادية بمعيّن ◇ لا بدائرة ملوّنة — الشكل نفسه
      يقول إنها ليست من جنس الدورة المقاسة، قبل أن يقرأ المستخدم أي نص. */
@@ -4481,9 +4607,12 @@ async function refreshLive(opt){
       if(G.fracCache)delete G.fracCache[sym];
       if(k%40===39)await new Promise(r=>setTimeout(r,0));
     }
-    /* ذاكرة التوقيت مفتاحها sym|طول السلسلة — تُمسح عند تغيّر الطول تلقائياً،
-       لكن تغيّر شمعة اليوم لا يغيّر الطول، فتُمسح صراحةً. */
-    try{ _ddTimeCache={}; }catch(e){}
+    /* ذواكر مفتاحها sym|طول السلسلة — تُمسح عند تغيّر الطول تلقائياً، لكن
+       ترقيع شمعة اليوم لا يغيّر الطول، فتُمسح صراحةً.
+       🛠️ _ddFracCache كانت منسيّة، وهي الأخطر: fractalTargets يفلتر القمم
+       الحيّة بشرط p > price، فبعد تحرّك السعر تعود أهداف محسوبة على سعر
+       قديم — وتدخل مباشرةً في غرفة القرار وبطاقة النشر وعمود الفراكتال. */
+    try{ _ddTimeCache={}; _ddFracCache={}; _stabCache={}; }catch(e){}
 
     if(LIVE.cfg.refilter&&_advData.length){
       const roc=(()=>{let t=0,c=0;for(const s of syms){const cl=G.cans[s].map(x=>x.close),n=cl.length;
@@ -4500,6 +4629,12 @@ async function refreshLive(opt){
       try{updateBadges();}catch(e){}
     }
 
+    /* 🛠️ خريطة المواعيد لم تكن تُعاد بناءها، فيبقى عمود «🕒 موعد الحركة»
+       على قيم ما قبل التحديث بلا أي إشارة. البناء ثقيل (تحليل طيفي لكل
+       سهم) فيُنفَّذ في الخلفية على دفعات كما يفعل المسح الشامل. */
+    if(typeof buildTimeMap==='function'&&Object.keys(_timeMap||{}).length){
+      try{ buildTimeMap(true); }catch(e){}
+    }
     LIVE.lastRun=Date.now();LIVE.updated=changed;LIVE.lastErr=failed?`${failed} سهماً لم يصل`:null;
     try{renderResults();}catch(e){}
     try{if(G.sel){updateHeader(G.sel);updateChart(G.sel);updateTradePlan(G.sel);}}catch(e){}
@@ -7633,7 +7768,7 @@ function whenActiveLine(opts){
   var spectral=opts.spectral, candles=opts.candles, emp=opts.emp,
       conf=opts.conf, coh=opts.coh, windows=opts.windows;
   var D=function(bars){
-    try{ return KSAEngine.SaudiMarket.addTradingDays(new Date(),bars).toLocaleDateString('ar-SA'); }
+    try{ return barsAheadDateText(candles,bars); }
     catch(e){ return '—'; }
   };
 
@@ -7641,7 +7776,7 @@ function whenActiveLine(opts){
      وسلسلة البوابات. لولا تكراره هنا لبقي هذا القسم وحده ينشر تاريخاً
      تنفيه بقية المنصة، والمستخدم يرى تناقضاً بين قسمين في التقرير نفسه. */
   var _stab=null;
-  try{ if(window.KSATiming && candles) _stab=KSATiming.cycleStability(candles); }catch(e){}
+  try{ _stab=cycleStabilityFor(candles,{sym:G.sel}); }catch(e){}
   if(spectral && spectral.isSignificant && _stab && _stab.ok && _stab.stable===false){
     return {ok:false,color:'#f5c842',
       txt:'الدورة الطيفية دالة إحصائياً (p = '+spectral.pValueText+') <b>لكنها تتغيّر بتغيّر طول التاريخ المحمّل</b>: '
@@ -7753,7 +7888,7 @@ async function smartTimingAnalysis() {
     let coh = null, emp = null, stab = null;
     /* ثبات الدورة عبر نوافذ متداخلة — الشرط الذي يفصل «دورة السهم» عن
        «دورة النافذة المحمّلة». يُحسب مرة هنا ويُستعمل في القسمين 1 و4. */
-    try { if (window.KSATiming) stab = KSATiming.cycleStability(candles); } catch (e) { }
+    try { stab = cycleStabilityFor(candles, { sym: G.sel }); } catch (e) { }
     try { if (KSAEngine.cycleCoherence) coh = KSAEngine.cycleCoherence(candles); } catch (e) { }
     try { if (KSAEngine.empiricalPivotCycles) emp = KSAEngine.empiricalPivotCycles(candles, { permutations: 300 }); } catch (e) { }
     const dc = KSAEngine.dominantPivotCycle(candles, 3);
@@ -7985,7 +8120,7 @@ async function smartTimingAnalysis() {
         const b = conf.barsSincePivot;
         const rows = emp.cycles.map(c => {
           const left = c.cycle - b;
-          const dt = left > 0 ? KSAEngine.SaudiMarket.addTradingDays(new Date(), left) : null;
+          const dt = left > 0 ? (barsAheadToDate(candles, left) || {}).date : null;
           const inWin = Math.abs(left) <= c.tolerance;
           return `<div style="${ROW}">${inWin ? '<span style="color:#0ecf7e">◉</span>' : left > 0 ? '<span style="color:#f5c842">○</span>' : '<span style="color:#3d4a5e">✗</span>'}
             دورة <b>${c.cycle} جلسة</b> (×${c.lift}، p=${c.pValue}) —
@@ -8027,7 +8162,7 @@ async function smartTimingAnalysis() {
         </div>` : ''}
         ${(stab && stab.ok && stab.stable === false) ? `<div style="margin-top:9px;${ROW};color:#f5c842">⛔ لم تُعرض الانعطافات المتوقعة: الدورة غير ثابتة، والتاريخ المشتقّ منها يخصّ النافذة لا السهم.</div>` : (() => { const tt = projectSpectralTurningPoints(spectral, candles.length - 1, 90); return tt.length ? `<div style="margin-top:9px;padding:10px 12px;background:rgba(34,211,238,.07);border:1px solid rgba(34,211,238,.25);border-radius:8px">
           <div style="font-weight:700;margin-bottom:6px">📅 الانعطافات المتوقعة — بعدم يقين معلن</div>
-          ${tt.slice(0, 5).map(x => { const dt = KSAEngine.SaudiMarket.addTradingDays(new Date(), x.candlesAhead); return `<div style="${ROW}">${x.type === 'valley' ? '🟢 قاع' : '🔴 قمة'} بعد <b>${x.candlesAhead}</b> جلسة${x.sdBars != null ? ` <span style="color:#9aa4b8">± ${x.sdBars}</span> → النافذة <b>[${x.loBars} – ${x.hiBars}]</b>` : ''} <span style="font-size:11px;color:#9aa4b8">(${dt.toLocaleDateString('ar-SA')})</span> ${x.usable ? '<span style="color:#0ecf7e">✓</span>' : '<span style="color:#f5c842">⚠ أوسع من ربع دورة</span>'}</div>`; }).join('')}
+          ${tt.slice(0, 5).map(x => { const dt = (barsAheadToDate(candles, x.candlesAhead) || {}).date || new Date(); return `<div style="${ROW}">${x.type === 'valley' ? '🟢 قاع' : '🔴 قمة'} بعد <b>${x.candlesAhead}</b> جلسة${x.sdBars != null ? ` <span style="color:#9aa4b8">± ${x.sdBars}</span> → النافذة <b>[${x.loBars} – ${x.hiBars}]</b>` : ''} <span style="font-size:11px;color:#9aa4b8">(${dt.toLocaleDateString('ar-SA')})</span> ${x.usable ? '<span style="color:#0ecf7e">✓</span>' : '<span style="color:#f5c842">⚠ أوسع من ربع دورة</span>'}</div>`; }).join('')}
           <div style="margin-top:6px;font-size:11.5px;color:#9aa4b8">النطاق محسوب من حدّ كرامر-راو على سعة الدورة وتشتّت البواقي، ويتّسع كلما بَعُد الأفق — لأنه كذلك فعلاً.</div>
         </div>` : ''; })()}
         <div style="${ROW}">${spectral.verdict}</div>
@@ -9043,7 +9178,7 @@ function ddTiming(sym) {
       let stab = null;
       /* الطيف أعلاه محسوب على آخر 750 جلسة (سقف core.js) — نمرّره كي لا
          يُعاد حسابه داخل فحص الثبات. */
-      try { if (window.KSATiming) stab = KSATiming.cycleStability(cs, { spectral: sp, spectralBars: Math.min(cs.length, 750) }); } catch (e) { }
+      try { stab = cycleStabilityFor(cs, { sym, spectral: sp }); } catch (e) { }
       /* ثلاث حالات لا اثنتان:
          • stable === true  ⇒ فُحص وثبت ⇒ تاريخ كامل الرتبة.
          • stable === false ⇒ فُحص وسقط ⇒ لا تاريخ إطلاقاً.
@@ -9071,7 +9206,12 @@ function ddTiming(sym) {
 
       /* الطور: 0٪=قمة · 50٪=قاع. المرحلة الصاعدة هي 50٪→100٪ */
       const pos = sp.cyclePosPct;
-      const risingPhase = pos >= 48 && pos <= 92;
+      /* 🛠️ المفتاح المعروض للمستخدم يقول «50→100 مرحلة صاعدة»، والشرط كان
+         48–92 فتُصنَّف الشريحة 92–100 هبوطاً وهي معروضة صعوداً. القصد
+         الدفاعي (لا تدخل قبيل القمة) مشروع لكنه كان غير مُعلن. الآن الحدّ
+         مطابق للمفتاح، والتحفّظ قبيل القمة حقل مستقلّ معروض. */
+      const risingPhase = pos >= 50;
+      const nearTop = pos >= 92;
 
       let score = 0;
       if (nextValley && nextValley.barsAhead <= 5 && nextValley.usable) score += 10;
@@ -9083,7 +9223,7 @@ function ddTiming(sym) {
         ok: true, significant: true,
         period: sp.period, cyclePos: pos, p: sp.pValue, pText: sp.pValueText,
         snr: sp.snr, nCycles: sp.nCycles, gridErrorPct: sp.gridErrorPct,
-        turns, nextTurn, nextValley, risingPhase, stability: stab, unstable: false,
+        turns, nextTurn, nextValley, risingPhase, nearTop, stability: stab, unstable: false,
         stabilityTested: !!(stab && stab.ok && stab.testable !== false),
         coherent, coh, score: Math.min(15, score)
       };
@@ -9534,7 +9674,7 @@ function ddReport2(sym) {
         : `
         <div style="${ROW}">الدورة المهيمنة: <b style="color:#FFD700">${t.period} جلسة</b> · دورات متراكبة دالة: <b>${t.nCycles}</b></div>
         <div style="${ROW}">قيمة الاحتمال: <b style="color:#0ecf7e">p = ${t.pText}</b> · نسبة الإشارة إلى الضجيج: <b>${t.snr}</b></div>
-        <div style="${ROW}">الموقع داخل الدورة: <b>${t.cyclePos}٪</b> <span style="font-size:11.5px;color:#9aa4b8">(0٪=قمة · 50٪=قاع · 50→100 مرحلة صاعدة)</span> ${t.risingPhase ? '<b style="color:#0ecf7e">↗ مرحلة صاعدة</b>' : ''}</div>
+        <div style="${ROW}">الموقع داخل الدورة: <b>${t.cyclePos}٪</b> <span style="font-size:11.5px;color:#9aa4b8">(0٪=قمة · 50٪=قاع · 50→100 مرحلة صاعدة)</span> ${t.risingPhase ? '<b style="color:#0ecf7e">↗ مرحلة صاعدة</b>' : ''}${t.nearTop ? ' <b style="color:#f5c842">⚠ فوق 92٪ — قريب من قمة الدورة</b>' : ''}</div>
 
         <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.07);border:1px solid rgba(34,211,238,.25);border-radius:8px">
           <div style="font-weight:700;margin-bottom:6px">📅 الانعطافات المتوقعة — بعدم يقين معلن</div>
@@ -10237,9 +10377,14 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
   const stkName=sym=>(typeof STKS!=='undefined'?(STKS.find(s=>s.sym===sym)?.name||''):'');
 
   /* ── تحويل عدد الجلسات إلى تاريخ تداول سعودي إن توفّر المحرك ── */
-  function barsToDate(bars){
+  function barsToDate(bars,cs){
     if(bars==null||!isFinite(bars))return null;
+    /* 🛠️ يُرسي العدّ على آخر شمعة لا على اليوم — انظر barsAheadToDate. */
     try{
+      if(typeof barsAheadToDate==='function'&&cs){
+        const r=barsAheadToDate(cs,bars);
+        if(r&&r.date)return r.date.toLocaleDateString('ar-SA',{day:'numeric',month:'long'});
+      }
       if(window.KSAEngine&&KSAEngine.SaudiMarket&&KSAEngine.SaudiMarket.addTradingDays)
         return KSAEngine.SaudiMarket.addTradingDays(new Date(),Math.round(bars))
           .toLocaleDateString('ar-SA',{day:'numeric',month:'long'});
@@ -10310,7 +10455,7 @@ window.addEventListener('load',function(){setTimeout(boot,500);});
         bars:b,sd:sd,
         lo:sd!=null?Math.max(0,Math.round(b-sd)):null,
         hi:sd!=null?Math.round(b+sd):null,
-        date:barsToDate(b),
+        date:barsToDate(b,cs),
         src:tRow.src||'—',
         usable:!!tRow.usable
       };

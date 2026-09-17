@@ -314,6 +314,69 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
     (mh.sun && !mh.fri && !mh.night) ? ok('ساعات السوق: أحد ظهراً مفتوح · جمعة مغلق · ليلاً مغلق')
       : bad('حساب ساعات السوق خاطئ: ' + JSON.stringify(mh));
 
+    /* ── مراجعة خارجية: أحد عشر بنداً، هذه أكثرها قابليةً للعودة صامتة ── */
+    const rev = await pg.evaluate(() => {
+      const o = {};
+      /* ① تشخيص الرادار: الفئات يجب أن تكون متنافية */
+      try {
+        buildTimeMap(true);
+        const syms = Object.keys(G.cans).filter(x => !G.demo.has(x));
+        for (const s of syms) _timeMap[s] = _timeEntry(s);
+        const seen = { unstable: 0, untested: 0, stable: 0 };
+        for (const s of syms) {
+          const e = _timeMap[s];
+          if (!e || e.state === 'na' || e.state === 'none') continue;
+          if (e.state === 'unstable') seen.unstable++;
+          else if (e.tier === 'cycle') { e.stabilityTested === false ? seen.untested++ : seen.stable++; }
+        }
+        o.buckets = seen;
+        o.bucketSum = seen.unstable + seen.untested + seen.stable;
+        o.classified = syms.filter(s => {
+          const e = _timeMap[s];
+          return e && e.state !== 'na' && e.state !== 'none' && (e.state === 'unstable' || e.tier === 'cycle');
+        }).length;
+      } catch (e) { o.err1 = e.message; }
+
+      /* ⑤ نافذة المرحلة الصاعدة تطابق المفتاح المعروض */
+      try {
+        const s = Object.keys(G.cans).filter(x => !G.demo.has(x))[0];
+        const tm = ddTiming(s);
+        o.risingFieldExists = tm && ('nearTop' in tm || tm.significant === false);
+      } catch (e) { o.err5 = e.message; }
+
+      /* ⑥ مصدر واحد لفحص الثبات */
+      o.stabWrapper = typeof cycleStabilityFor === 'function';
+
+      /* ⑦ التاريخ مُرسى على آخر شمعة لا على اليوم */
+      try {
+        const s = Object.keys(G.cans).filter(x => !G.demo.has(x))[0];
+        const cs = G.cans[s];
+        const fake = cs.map(c => ({ ...c }));
+        /* نُرجِع آخر شمعة عشر جلسات إلى الوراء ونرى هل يُصحَّح التاريخ */
+        fake[fake.length - 1] = { ...fake[fake.length - 1], time: fake[fake.length - 1].time - 14 * 86400 };
+        const a = barsAheadToDate(cs, 5), b = barsAheadToDate(fake, 5);
+        o.driftAware = !!(a && b && b.drift > a.drift);
+        o.driftFlagged = !!(b && b.stale);
+      } catch (e) { o.err7 = e.message; }
+
+      /* ② ذاكرة الفراكتال تُمسح مع البقية */
+      o.fracCacheCleared = /_ddFracCache\s*=\s*\{\}/.test(String(window.refreshLive));
+      /* ③ خريطة المواعيد تُعاد بناؤها بعد التحديث الحيّ */
+      o.timeMapRebuilt = /buildTimeMap\(true\)/.test(String(window.refreshLive));
+      return o;
+    });
+
+    if (rev.err1) bad('تشخيص الرادار: ' + rev.err1);
+    else rev.bucketSum === rev.classified
+      ? ok(`تشخيص الرادار: الفئات متنافية (${rev.bucketSum} = ${rev.classified}) — لا عدّ مزدوج`)
+      : bad(`عدّ مزدوج: مجموع الفئات ${rev.bucketSum} ≠ المصنَّف ${rev.classified}`);
+    rev.stabWrapper ? ok('فحص الثبات له مصدر واحد مُذاكَر') : bad('cycleStabilityFor غير موجودة — الفحص ما زال يُستدعى بطرق مختلفة');
+    rev.driftAware && rev.driftFlagged
+      ? ok('التاريخ مُرسى على آخر شمعة، وتأخّر البيانات يُصحَّح ويُعلَن')
+      : bad(`التاريخ ما زال مُرسى على اليوم (drift=${rev.driftAware} flag=${rev.driftFlagged})`);
+    rev.fracCacheCleared ? ok('ذاكرة أهداف الفراكتال تُمسح بعد التحديث الحيّ') : bad('_ddFracCache لا تُمسح — أهداف على سعر قديم');
+    rev.timeMapRebuilt ? ok('خريطة المواعيد تُعاد بناؤها بعد التحديث الحيّ') : bad('عمود موعد الحركة يبقى قديماً بعد التحديث');
+
     errs.length ? bad('استثناءات في الصفحة: ' + errs.slice(0, 3).join(' | ')) : ok('لا استثناءات في المتصفّح');
   } finally {
     await browser.close();
