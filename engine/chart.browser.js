@@ -72,10 +72,21 @@ function synth(sym) {
     t += 86400;
   }
   if (DRIFT) { const k = c.length - 1; c[k] = +(c[k] * (1 + DRIFT)).toFixed(2); h[k] = Math.max(h[k], c[k]); l[k] = Math.min(l[k], c[k]); }
-  return { chart: { result: [{ meta: { regularMarketPrice: c[c.length - 1], previousClose: c[c.length - 2], symbol: sym }, timestamp: ts, indicators: { quote: [{ open: o, high: h, low: l, close: c, volume: v }] } }], error: null } };
+  /* QUOTE يحاكي حالة ما بعد الإغلاق: المصدر يعلن رقماً يخالف إغلاق الشمعة */
+  const quoted = QUOTE ? +(c[c.length - 1] * (1 + QUOTE)).toFixed(2) : c[c.length - 1];
+  return { chart: { result: [{ meta: { regularMarketPrice: quoted, regularMarketTime: ts[ts.length - 1] + 5 * 3600, previousClose: c[c.length - 2], symbol: sym }, timestamp: ts, indicators: { quote: [{ open: o, high: h, low: l, close: c, volume: v }] } }], error: null } };
 }
 const NOTIFIED = [];
+/** هل السوق السعودي مغلق الآن؟ يحدّد أي فرع من قاعدة السعر يُتوقَّع. */
+function marketClosedNow(d) {
+  d = d || new Date();
+  const r = new Date(d.getTime() + (3 * 60 + d.getTimezoneOffset()) * 60000);
+  const day = r.getDay(); if (day === 5 || day === 6) return true;
+  const m = r.getHours() * 60 + r.getMinutes();
+  return !(m >= 600 && m <= 910);
+}
 let DRIFT = 0;          /* يحرّك آخر شمعة لمحاكاة تحرّك السوق بين دورتين */
+let QUOTE = 0;          /* يباعد رقم المصدر عن إغلاق الشمعة — حالة ما بعد الإغلاق */
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   /* بديل عن /api/notify: الدالة الحقيقية تحتاج رمز بوت حيّاً، والمقصود
@@ -92,6 +103,7 @@ const server = http.createServer((req, res) => {
     });
   }
   if (u.pathname === '/__drift') { DRIFT = +(u.searchParams.get('v') || 0); res.writeHead(200); return res.end('ok'); }
+  if (u.pathname === '/__quote') { QUOTE = +(u.searchParams.get('v') || 0); res.writeHead(200); return res.end('ok'); }
   if (u.pathname === '/api/stock') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(synth(u.searchParams.get('symbol') || '2222')));
@@ -305,6 +317,36 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
       : bad(`السعر ثابت رغم تحرّك السوق (${b4.price})`);
     af.bars === b4.bars ? ok(`تاريخ التحليل لم يتمدّد بالتحديث (${af.bars} شمعة) — المخرجات تبقى حتمية`)
       : bad(`طول التاريخ تغيّر ${b4.bars} ← ${af.bars} — التحديث يلوّث عيّنة التحليل`);
+
+    /* ── سعر واحد: ما يُعرض هو ما يُرسم، ولو خالفه المصدر بعد الإغلاق ── */
+    await fetch(`http://localhost:${port2}/__quote?v=0.035`);
+    await pg.evaluate(async () => await window.refreshLive());
+    await fetch(`http://localhost:${port2}/__quote?v=0`);
+    const pz = await pg.evaluate(() => {
+      const syms = Object.keys(G.cans).filter(x => !G.demo.has(x));
+      const out = { n: 0, mismatch: [], gapped: 0, header: null, headerTxt: '' };
+      for (const s of syms) {
+        const cs = G.cans[s]; if (!cs || !cs.length) continue;
+        out.n++;
+        const drawn = cs[cs.length - 1].close;
+        if (Math.abs(G.pr[s] - drawn) > 1e-9) out.mismatch.push(`${s}: رأس ${G.pr[s]} · شارت ${drawn}`);
+        if (G.prGap[s]) out.gapped++;
+      }
+      /* والرأس المعروض فعلاً على الصفحة، لا القيمة في الذاكرة فقط */
+      selectStock(syms[0]); updateHeader(syms[0]);
+      out.header = parseFloat(document.getElementById('cprc').textContent);
+      out.headerTxt = (document.getElementById('cprc-src') || {}).textContent || '';
+      out.drawn0 = G.cans[syms[0]][G.cans[syms[0]].length - 1].close;
+      return out;
+    });
+    pz.mismatch.length === 0 ? ok(`السعر المعروض = إغلاق الشمعة المرسومة على ${pz.n} سهماً رغم مخالفة المصدر`)
+      : bad(`السعر يفارق الشارت: ${pz.mismatch.slice(0, 3).join(' | ')}`);
+    (marketClosedNow() ? pz.gapped > 0 : true) ? ok(`فرق المصدر مُعلَن لا مخفيّ (${pz.gapped} سهماً موسوماً)`)
+      : bad('المصدر خالف الشمعة ولم يُعلَن الفرق في أي سهم');
+    Math.abs(pz.header - pz.drawn0) < 0.011 ? ok(`رقم الرأس على الصفحة يطابق الشمعة (${pz.header})`)
+      : bad(`رقم الرأس ${pz.header} ≠ إغلاق الشمعة ${pz.drawn0}`);
+    pz.headerTxt ? ok(`مصدر السعر مُصرَّح به في الرأس: «${pz.headerTxt}»`)
+      : bad('الرأس لا يصرّح بمصدر السعر');
 
     const mh = await pg.evaluate(() => ({
       sun: marketOpen(new Date(Date.UTC(2026, 8, 14, 9, 0))),

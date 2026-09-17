@@ -24,6 +24,16 @@ const INTERVALS = new Set(['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '
 
 const HOSTS = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com'];
 
+/** هل السوق السعودي مفتوح الآن؟ أحد–خميس، 10:00–15:10 بتوقيت الرياض. */
+function marketOpenNow(d) {
+  d = d || new Date();
+  const riyadh = new Date(d.getTime() + (3 * 60 + d.getTimezoneOffset()) * 60000);
+  const day = riyadh.getDay();            /* 5=الجمعة 6=السبت */
+  if (day === 5 || day === 6) return false;
+  const mins = riyadh.getHours() * 60 + riyadh.getMinutes();
+  return mins >= 600 && mins <= 910;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -59,7 +69,14 @@ export default async function handler(req, res) {
       if (!r.ok) continue;
       const d = await r.json();
       if (!d?.chart?.result?.[0]) continue;
-      res.setHeader('Cache-Control', 's-maxage=900,stale-while-revalidate=1800');
+      /* 🛠️ إصلاح: التخزين الوسيط كان 15 دقيقة + 30 دقيقة "قديم أثناء التجديد".
+         أثران سيّئان: (1) التحديث الحيّ كل خمس دقائق كان يُخدَم من الذاكرة
+         نفسها فلا يأتي بجديد — لوحة "حيّة" ساكنة فعلياً، (2) كل نطاق
+         (5d، 5y) مفتاح مستقل يُملأ في لحظة مختلفة، فيحمل أحدهما لقطة ما قبل
+         الإغلاق والآخر ما بعده — وهذا مصدر مباشر لاختلاف السعر بين الشارت
+         والرأس. الآن: مهلة قصيرة أثناء الجلسة، وأطول بعد إغلاقها حيث
+         البيانات شبه ثابتة، وبلا تقديم نسخة قديمة. */
+      res.setHeader('Cache-Control', marketOpenNow() ? 's-maxage=120' : 's-maxage=600');
       return res.status(200).json(d);
     } catch (e) { continue; }
   }

@@ -439,6 +439,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <span id="csym">2222 — أرامكو</span>
       <span id="cprc">—</span>
       <span id="cchg">—</span>
+      <span id="cprc-src" style="display:none;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap"></span>
       <div class="tfs">
         <button class="tf" onclick="setTF('1d','5m',this)">يوم</button>
         <button class="tf" onclick="setTF('5d','15m',this)">أسبوع</button>
@@ -1143,7 +1144,7 @@ const fK=n=>n>=1e9?(n/1e9).toFixed(1)+'B':n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(
 const Tm=()=>{const d=new Date();return`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`};
 
 /* ══ STATE ══ */
-const G={sel:'2222',tf:'3mo',tfi:'1d',pr:{},op:{},hi:{},lo:{},vo:{},ch:{},pc:{},cans:{},ind:{},sc:{},ld:new Set(),ldg:new Set(),demo:new Set(),failed:new Map(),lwChart:null,cSeries:null,vSeries:null,series:{},view:{}};
+const G={sel:'2222',tf:'3mo',tfi:'1d',pr:{},prSrc:{},prGap:{},op:{},hi:{},lo:{},vo:{},ch:{},pc:{},cans:{},ind:{},sc:{},ld:new Set(),ldg:new Set(),demo:new Set(),failed:new Map(),lwChart:null,cSeries:null,vSeries:null,series:{},view:{}};
 let _filter='all',_buyOnly=false,_sellOnly=false,_alertOnly=false,_sortCol='master',_sortDir=-1,_showBearish=false;
 let _visibleSyms=[],_focusedIdx=-1,_pinnedSym=null;
 const TAB_ORDER=['decision','all','vz','ma','rs','sq','ab','fg','hidden','pregap','fvgr','elliott','harmonic','hunter','time','sniper','whale','fib618','falsebreak','master','macd','instvol','revcandle'];
@@ -1166,7 +1167,7 @@ function initDemo(sym){
   G.demo.add(sym);
   _seedRnd(sym);
   const b=gBase(sym),p=+(b*(1+rnd(-0.015,0.015))).toFixed(2),pv=+(p*(1+rnd(-0.02,0.02))).toFixed(2);
-  G.pr[sym]=p;G.op[sym]=+(p*(1+rnd(-0.01,0.01))).toFixed(2);G.hi[sym]=+(p*(1+rnd(0.003,0.015))).toFixed(2);G.lo[sym]=+(p*(1-rnd(0.003,0.015))).toFixed(2);G.vo[sym]=rI(50000,3000000);G.ch[sym]=+(p-pv).toFixed(2);G.pc[sym]=+((p-pv)/pv*100).toFixed(2);
+  G.pr[sym]=p;G.prSrc[sym]='demo';delete G.prGap[sym];G.op[sym]=+(p*(1+rnd(-0.01,0.01))).toFixed(2);G.hi[sym]=+(p*(1+rnd(0.003,0.015))).toFixed(2);G.lo[sym]=+(p*(1-rnd(0.003,0.015))).toFixed(2);G.vo[sym]=rI(50000,3000000);G.ch[sym]=+(p-pv).toFixed(2);G.pc[sym]=+((p-pv)/pv*100).toFixed(2);
   const cs=[];let cp=b;const now=Math.floor(Date.now()/1000);
   for(let i=0;i<90;i++){const o=+cp.toFixed(2),dr=rnd(-0.013,0.014),c=+(o*(1+dr)).toFixed(2),spread=Math.abs(c-o)*(1+rnd(0.3,0.9));cs.push({time:now-(90-i)*86400,open:o,close:c,high:+(Math.max(o,c)+spread*rnd(0.1,0.5)).toFixed(2),low:+(Math.min(o,c)-spread*rnd(0.1,0.5)).toFixed(2),volume:rI(20000,700000)});cp=c;}
   G.cans[sym]=cs;calcInd(sym);
@@ -1188,10 +1189,57 @@ function parseY(res,sym){
   }
   const cs=(window.KSAEngine?KSAEngine.sanitizeCandles(raw):raw);
   if(cs.length<10)return null;
-  const last=cs[cs.length-1],pv=+(m.previousClose||m.chartPreviousClose||cs[cs.length-2]?.close||last.open).toFixed(2);
-  return{sym,cs,price:+(m.regularMarketPrice||last.close).toFixed(2),pv,hi:last.high,lo:last.low,op:last.open,vo:last.volume};
+  const last=cs[cs.length-1];
+  /* 🛠️ إصلاح: السعر المعروض والشارت كانا من مصدرين مختلفين.
+     كان السعر يُؤخذ من meta.regularMarketPrice بينما يرسم الشارت إغلاق
+     آخر شمعة، ويُبنى عليه كل التحليل (منطقة الدخول، الوقف، الأهداف).
+     بعد الإغلاق يفترق الرقمان: المصدر يُعلن آخر صفقة أو قيمة مُعدَّلة،
+     والشمعة تحمل الإغلاق الرسمي — فيرى المستخدم سعراً لا وجود له على
+     الشارت، ويُقاس الحكم على رقم ليس في السلسلة.
+     القاعدة الآن صريحة وواحدة:
+       • جلسة قائمة  → السعر المعلن هو الأحدث، و**تُزامَن عليه آخر شمعة**
+         (هي ناقصة أصلاً) فيتطابق الرأس والشارت بالبناء لا بالمصادفة.
+       • السوق مغلق  → إغلاق الشمعة هو المصدر الوحيد: هو ما يرسمه الشارت
+         وما يُحسب عليه التحليل. وإن خالفه المصدر يُعرض الفرق صراحةً
+         بدل إخفائه. */
+  const metaPrice=(m.regularMarketPrice!=null&&isFinite(m.regularMarketPrice))?+(+m.regularMarketPrice).toFixed(2):null;
+  const metaTime=(m.regularMarketTime>0)?m.regularMarketTime:null;
+  const sameSession=(metaTime==null)||(riyadhDayKey(metaTime)===riyadhDayKey(last.time));
+  const openNow=marketOpen();
+  let price,priceSrc;
+  if(metaPrice!=null&&metaPrice>0&&sameSession&&openNow){
+    last.close=metaPrice;
+    if(metaPrice>last.high)last.high=metaPrice;
+    if(metaPrice<last.low)last.low=metaPrice;
+    price=metaPrice;priceSrc='live';
+  }else{
+    price=+(+last.close).toFixed(2);priceSrc=openNow?'close_open_session':'close';
+  }
+  /* الإغلاق السابق من السلسلة نفسها، لا من meta: هكذا يطابق التغيّر
+     المعروض فرق الشمعتين الأخيرتين على الشارت بالضبط.
+     استثناء الفواصل داخل اليوم: شمعة سابقة هناك تعني الساعة الماضية لا
+     الجلسة الماضية، فيصير «التغيّر» ساعيّاً — وهو ليس ما يقرؤه المستخدم.
+     فيُؤخذ الإغلاق اليومي السابق من المصدر في هذه الحالة وحدها. */
+  const gran=String(m.dataGranularity||'1d');
+  const dailyBars=/^(1d|5d|1wk|1mo|3mo)$/.test(gran);
+  const seriesPrev=(cs.length>=2)?cs[cs.length-2].close:null;
+  const metaPrev=m.previousClose||m.chartPreviousClose||null;
+  const pv=+(+(dailyBars?(seriesPrev??metaPrev??last.open):(metaPrev??seriesPrev??last.open))).toFixed(2);
+  /* فجوة مُعلنة: رقم المصدر حين يخالف ما يرسمه الشارت. لا يُستعمل في أي
+     حساب — يُعرض فقط ليعرف المستخدم أن الفرق معروف ومقصود. */
+  const gap=(metaPrice!=null&&priceSrc!=='live'&&Math.abs(metaPrice-price)>=0.01)
+    ?{quote:metaPrice,at:metaTime,sameSession}:null;
+  return{sym,cs,price,priceSrc,gap,pv,candleTime:last.time,
+         hi:last.high,lo:last.low,op:last.open,vo:last.volume};
 }
-function applyY(sym,d){G.demo.delete(sym);G.failed.delete(sym);G.cans[sym]=d.cs;G.pr[sym]=d.price;G.op[sym]=d.op;G.hi[sym]=d.hi;G.lo[sym]=d.lo;G.vo[sym]=d.vo;G.ch[sym]=+(d.price-d.pv).toFixed(2);G.pc[sym]=+((d.price-d.pv)/d.pv*100).toFixed(2);calcInd(sym);if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];if(G.fracCache)delete G.fracCache[sym];}
+
+/** مفتاح اليوم التقويمي بتوقيت الرياض من طابع زمني بالثواني. */
+function riyadhDayKey(ts){
+  const d=new Date(ts*1000);
+  const r=new Date(d.getTime()+(3*60+d.getTimezoneOffset())*60000);
+  return r.getFullYear()*10000+(r.getMonth()+1)*100+r.getDate();
+}
+function applyY(sym,d){G.demo.delete(sym);G.failed.delete(sym);G.cans[sym]=d.cs;G.pr[sym]=d.price;G.prSrc[sym]=d.priceSrc;if(d.gap)G.prGap[sym]=d.gap;else delete G.prGap[sym];G.op[sym]=d.op;G.hi[sym]=d.hi;G.lo[sym]=d.lo;G.vo[sym]=d.vo;G.ch[sym]=+(d.price-d.pv).toFixed(2);G.pc[sym]=+((d.price-d.pv)/d.pv*100).toFixed(2);calcInd(sym);if(G.harmCache)delete G.harmCache[sym];if(G.ewCache)delete G.ewCache[sym];if(G.wolfeCache)delete G.wolfeCache[sym];if(G.chanCache)delete G.chanCache[sym];if(G.fracCache)delete G.fracCache[sym];}
 /* 🛠️ إصلاح: حُذف الاعتماد على وسطاء CORS عامّين (allorigins / corsproxy).
    ثلاثة أسباب: (1) أطراف ثالثة غير موثوقة تتوسّط كل طلبات السوق،
    (2) لا ضمان توفّر ولا اتفاقية خدمة — تسقط بلا إنذار فتبقى المنصة على
@@ -4511,9 +4559,13 @@ function alRenderPanel() {
    شمعة في السلسلة المحفوظة: التاريخ يبقى كما هو، واليوم وحده يتغيّر.
    وبهذا تبقى مخرجات التحليل حتمية (نفس التاريخ) وتتحرّك الأسعار.
 
-   ⏱️ مصدر البيانات متأخّر ~15 دقيقة، ووسيط المنصة يخزّن 15 دقيقة أيضاً
-   (s-maxage=900). فالتحديث الأسرع من ذلك لن يأتي بجديد غالباً — لكنه
-   لا يضرّ لأن الطلب يُخدَم من الذاكرة الوسيطة. الافتراضي 5 دقائق.
+   ⏱️ مصدر البيانات متأخّر ~15 دقيقة. ووسيط المنصة كان يخزّن 15 دقيقة
+   أيضاً (s-maxage=900) فكان التحديث الحيّ يُخدَم من الذاكرة نفسها ولا يأتي
+   بجديد — لوحة «حيّة» ساكنة فعلياً. صار التخزين دقيقتين أثناء الجلسة،
+   فالحدّ الفعلي للتأخّر هو تأخّر المصدر وحده. الافتراضي 5 دقائق.
+
+   🔗 والسعر المعروض هو نفسه إغلاق الشمعة الأخيرة (انظر parseY): الشمعة
+   والسعر يأتيان من الاستجابة الواحدة نفسها، فلا يفترق الشارت عن الرأس.
 
    القياس على 259 سهماً: calcInd 1.8 ثانية · calcAllFilters 1.5 · 
    tradeLevels 3.6 — أي نحو 7 ثوانٍ معالجة لكل دورة، تُنفَّذ على دفعات
@@ -4586,7 +4638,8 @@ async function refreshLive(opt){
               const n=mergeCandles(sym,p.cs);
               if(n){changed++;}
               /* السعر الحيّ ونسبة التغيّر تُحدَّثان دائماً ولو لم تتغيّر الشمعة */
-              G.pr[sym]=p.price;G.op[sym]=p.op;G.hi[sym]=p.hi;G.lo[sym]=p.lo;G.vo[sym]=p.vo;
+              G.pr[sym]=p.price;G.prSrc[sym]=p.priceSrc;if(p.gap)G.prGap[sym]=p.gap;else delete G.prGap[sym];
+              G.op[sym]=p.op;G.hi[sym]=p.hi;G.lo[sym]=p.lo;G.vo[sym]=p.vo;
               G.ch[sym]=+(p.price-p.pv).toFixed(2);G.pc[sym]=+((p.price-p.pv)/p.pv*100).toFixed(2);
             }else failed++;
           }
@@ -5539,6 +5592,38 @@ function updateHeader(sym){
     } else dw.style.display='none';
   }
   document.getElementById('cprc').textContent=p>0?`${p.toFixed(2)} ر.س`:'—';
+  /* 🛠️ الإفصاح عن مصدر السعر: الرقم المعروض هو نفسه إغلاق آخر شمعة على
+     الشارت — لا رقم ثانٍ من مسار آخر. وإن أعلن المصدر رقماً مخالفاً بعد
+     الإغلاق يُعرض الرقمان معاً مع سببه، بدل أن يظهر أحدهما في الرأس
+     والآخر على الشارت بلا تفسير. */
+  const srcEl=document.getElementById('cprc-src');
+  if(srcEl){
+    const src=G.prSrc[sym],gap=G.prGap[sym];
+    if(isDemo||!p){srcEl.style.display='none';}
+    else if(gap){
+      const when=gap.at?new Date(gap.at*1000).toLocaleString('ar-SA',{timeZone:'Asia/Riyadh',hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}):'';
+      srcEl.style.display='';srcEl.style.color='#f5c842';srcEl.style.background='rgba(245,200,66,.14)';
+      srcEl.textContent=`إغلاق الشمعة · المصدر يعلن ${gap.quote.toFixed(2)}`;
+      srcEl.title=`المعروض ${p.toFixed(2)} ر.س = إغلاق آخر شمعة على الشارت، وعليه يُحسب كل التحليل.\n`
+        +`المصدر يعلن ${gap.quote.toFixed(2)} ر.س${when?` (بتاريخ ${when})`:''} — `
+        +(gap.sameSession
+            ?'آخر صفقة أو قيمة معدَّلة بعد الإغلاق الرسمي، والإغلاق الرسمي هو ما ترسمه الشمعة.'
+            :'من جلسة غير جلسة آخر شمعة — أي أن شمعة الجلسة الأخيرة لم تُنشر بعد لدى المصدر.');
+    }
+    else if(src==='live'){
+      srcEl.style.display='';srcEl.style.color='var(--up)';srcEl.style.background='var(--ubg)';
+      srcEl.textContent='حيّ — الجلسة قائمة';
+      srcEl.title='السوق مفتوح: السعر المعلن أحدث من الشمعة الناقصة، وقد زُومنت عليه آخر شمعة فالرأس والشارت متطابقان.';
+    }
+    else{
+      const inSession=(src==='close_open_session');
+      srcEl.style.display='';srcEl.style.color='var(--tx3,#8b93a7)';srcEl.style.background='rgba(139,147,167,.12)';
+      srcEl.textContent=inSession?'آخر شمعة — لا سعر أحدث':'إغلاق رسمي';
+      srcEl.title=inSession
+        ?'السوق مفتوح لكن المصدر لم يُعلن سعراً أحدث من آخر شمعة، فالمعروض هو إغلاقها — وهو ما يرسمه الشارت.'
+        :'السوق مغلق: المعروض هو إغلاق آخر شمعة على الشارت نفسه، وعليه تُحسب مناطق الدخول والوقف والأهداف.';
+    }
+  }
   const ce=document.getElementById('cchg');
   if(ch!==0){ce.textContent=`${ch>=0?'+':''}${ch.toFixed(2)} (${pc.toFixed(2)}%)`;ce.style.color=ch>=0?'var(--up)':'var(--dn)';ce.style.background=ch>=0?'var(--ubg)':'var(--dbg)';}
   else{ce.textContent='—';ce.style.background='transparent';}
@@ -5987,10 +6072,12 @@ function genTrade(sym){
   const cs=G.cans[sym];if(!cs||cs.length<20)return null;
   const ind=G.ind[sym];if(!ind)return null;
   const n=cs.length;
-  /* Price: prefer G.pr (set by Yahoo API), fallback to last candle */
+  /* 🛠️ لم يعد هنا مصدران للسعر: G.pr صار هو نفسه إغلاق آخر شمعة
+     (انظر parseY)، فالفرق أدناه لا يظهر إلا على البيانات التجريبية
+     حيث تُولَّد السلسلة والسعر من مسارين مختلفين. أُبقي الحارس لهذا
+     السبب وحده، ولم يعد يعني أن السعر الحقيقي يفارق الشارت. */
   const candleClose=cs[n-1].close;
   const apiPrice=G.pr[sym];
-  /* Use API price if it exists; if candle price differs >30% from API, candles are synthetic/wrong */
   let cur=apiPrice||candleClose;
   const priceOK=!apiPrice||Math.abs(apiPrice-candleClose)/apiPrice<0.3;
   if(!priceOK){/* Candles have wrong prices (from gBase), skip this stock for precision entry */
