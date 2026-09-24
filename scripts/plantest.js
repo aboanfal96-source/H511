@@ -29,6 +29,8 @@ const LIMIT = parseInt(val('limit', '0'), 10) || 0;
 const STEP = parseInt(val('step', '10'), 10);
 const MAXB = parseInt(val('maxbars', '60'), 10);
 const log = (...a) => console.log(...a);
+/* منتصف الفترة المختبَرة تقريباً (5 سنوات تنتهي سبتمبر 2026، والاختبار يبدأ بعد 260 جلسة) */
+const SPLIT_DATE = new Date(val('split', '2024-09-01') + 'T00:00:00Z');
 
 /** يمشي إلى الأمام: 1 = الهدف أولاً، −1 = الوقف أولاً، 0 = لا هذا ولا ذاك. */
 function walk(cs, t, stop, target, maxb) {
@@ -92,8 +94,13 @@ const q = (arr, p) => { const v = arr.slice().sort((a, b) => a - b); if (!v.leng
       const Rrand = rn ? (rw * rr - rl) / rn : 0;       /* المتوقَّع بوضع عشوائي (بلا المفتوحة) */
       const tr = { R, Rrand, win: res.r > 0, loss: res.r < 0, rr, bars: res.bars, randWin: rn ? rw / rn : 0 };
       add('الكل', sym, tr);
-      add(Lv.verdict === 'enter_now' ? 'ادخل الآن (عند بنية)' : 'ادخل عند السعر (بلا بنية)', sym, tr);
+      const vk = Lv.verdict === 'enter_now' ? 'ادخل الآن (عند بنية)' : 'ادخل عند السعر (بلا بنية)';
+      add(vk, sym, tr);
       add('المنطقة: ' + (Lv.zoneKind || '?'), sym, tr);
+      /* المتانة: هل تصمد النتيجة في نصفي الفترة كلٌّ وحده؟ نتيجة تظهر في نصف
+         وتختفي في الآخر فترةٌ محظوظة لا أفضلية. التاريخ من السهم نفسه. */
+      const half = new Date(cs[t].time * 1000) < SPLIT_DATE ? 'النصف الأول' : 'النصف الثاني';
+      add(vk + ' · ' + half, sym, tr);
     }
   }
   delete G.cans.__p; delete G.ind.__p; delete G.pr.__p;
