@@ -1,0 +1,35 @@
+# ══════════════════════════════════════════════════════════════════════════
+# تشخيص المنصّة على السوق الحقيقي — يدوي فقط
+# ──────────────────────────────────────────────────────────────────────────
+# يشغّل scripts/diag.js على كل أسهم السوق ويطبع لكل طبقة كم سهماً مرّ
+# وكم سقط. ويحفظ لقطة البيانات الخام كملحق (artifact) لإعادة القياس عليها
+# بلا شبكة: node scripts/diag.js --from snapshot.json.gz
+# لا يرسل شيئاً ولا يكتب في المستودع.
+# ══════════════════════════════════════════════════════════════════════════
+name: تشخيص المنصّة
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: تشخيص
+        run: node scripts/diag.js --snapshot snapshot.json.gz --json diag.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: market-snapshot
+          path: |
+            snapshot.json.gz
+            diag.json
+          retention-days: 14
