@@ -10,6 +10,15 @@ name: تشخيص المنصّة
 
 on:
   workflow_dispatch:
+    inputs:
+      timetest:
+        description: 'دراسة الحدث الزمنية (بطيئة، ~30 دقيقة)'
+        type: boolean
+        default: true
+      timeargs:
+        description: 'خيارات إضافية لدراسة الحدث (مثل --tat-only)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -17,7 +26,7 @@ permissions:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -25,6 +34,9 @@ jobs:
           node-version: '22'
       - name: تشخيص
         run: node scripts/diag.js --snapshot snapshot.json.gz --json diag.json
+      - name: دراسة حدث — هل للفلتر الزمني قيمة؟
+        if: ${{ inputs.timetest }}
+        run: node scripts/timetest.js --from snapshot.json.gz --json timetest.json ${{ inputs.timeargs }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -32,4 +44,5 @@ jobs:
           path: |
             snapshot.json.gz
             diag.json
+            timetest.json
           retention-days: 14

@@ -387,7 +387,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <select id="radar-src" onchange="buildRadar()" style="width:190px;background:var(--c3);border:1px solid var(--bd2);color:var(--t1);border-radius:4px;padding:3px;font-size:10px;font-family:inherit">
         <option value="cycle" selected>الدورات المقاسة فقط</option>
         <option value="verified">المؤكدة خارج العيّنة فقط</option>
-        <option value="all">المقاسة + النوافذ الكلاسيكية</option>
+        <option value="all" title="النوافذ الكلاسيكية قيست على 246 سهماً × 5 سنوات: رفع 0.98 — لا تتنبأ بالانعطاف">المقاسة + الكلاسيكية (قيست: بلا قيمة)</option>
       </select>
       <span id="radar-status" style="font-size:10px;color:var(--t2);margin-right:auto">اضغط «احسب الرادار» — يفحص كل سهم عن أقرب انعطاف زمني متوقع</span>
     </div>
@@ -1440,38 +1440,74 @@ function calcVolumeZScore(cs){
 }
 
 /* 2. تسارع الزخم */
+/** انحراف العائد اليومي (كنسبة) على آخر `w` جلسة — مقياس التذبذب الذي
+   تُقاس به عتبات الفلاتر بدل أرقام مئوية ثابتة لا تعني الشيء نفسه لسهم
+   هادئ وسهم متقلّب. */
+function dailySigma(cl,w){
+  w=w||60;const n=cl.length,from=Math.max(1,n-w),r=[];
+  for(let i=from;i<n;i++)if(cl[i-1]>0&&cl[i]>0)r.push(Math.log(cl[i]/cl[i-1]));
+  if(r.length<5)return 0.015;
+  const m=r.reduce((a,b)=>a+b,0)/r.length;
+  return Math.sqrt(r.reduce((a,b)=>a+(b-m)*(b-m),0)/(r.length-1))||0.015;
+}
 function calcMomentumAccel(cs){
   if(!cs||cs.length<15) return{accel:0,sig:'—',color:'na',why:''};
   const cl=cs.map(c=>c.close),n=cl.length;
-  const roc=d=>n>d?((cl[n-1]-cl[n-1-d])/cl[n-1-d]*100):0;
-  const r3=roc(3),r5=roc(5),r10=roc(10);
-  const accel=r5-r10;
-  const jerk=r3-r5;
+  /* 🛠️ إصلاح تعريفي: «التسارع» كان ROC(5)−ROC(10). وبما أن ROC(10) يضمّ
+     ROC(5)، فالفرق يساوي تقريباً سالب عائد الجلسات t−10…t−5 وحدها —
+     أي أنه يقيس هل هبطت النافذة *السابقة*، لا هل تسارع الزخم. سهم هبط 3٪
+     ثم ثبت كان يُوسَم «تسارع قوي ↑». والعتبة 2٪ ثابتة بينما التشتّت
+     الطبيعي لهذا الفرق نحو 4٪ في السوق السعودي، فأطلق على 73.5٪ من
+     السوق الحقيقي. الآن: التسارع = زخم آخر 5 جلسات − زخم الخمس قبلها،
+     والعتبة بوحدات تذبذب السهم نفسه (انحراف الفرق = σ·√10). */
+  const ret=(a,b)=>(cl[b]-cl[a])/cl[a]*100;
+  const r5now=ret(n-6,n-1),r5prev=n>11?ret(n-11,n-6):0;
+  const r3now=ret(n-4,n-1),r3prev=n>7?ret(n-7,n-4):0;
+  const accel=r5now-r5prev;
+  const jerk=r3now-r3prev;
+  const sd=dailySigma(cl)*Math.sqrt(10)*100;
+  const z=sd>0?accel/sd:0;
   let sig='—',color='na',why='';
-  if(accel>2&&jerk>0.5){sig='تسارع قوي ↑';color='s4';why=`ROC(5)=${r5.toFixed(1)}% − ROC(10)=${r10.toFixed(1)}% = تسارع +${accel.toFixed(1)}% مع معدل تغير +${jerk.toFixed(1)}% ← الزخم يتسارع بقوة`;}
-  else if(accel>1){sig='تسارع ↑';color='s2';why=`تسارع إيجابي +${accel.toFixed(1)}% — الزخم يزداد`;}
-  else if(accel<-2&&jerk<-0.5){sig='تباطؤ قوي ↓';color='s1';why=`تباطؤ حاد ${accel.toFixed(1)}% مع تسارع سلبي ${jerk.toFixed(1)}% ← فقدان الزخم`;}
-  else if(accel<-1){sig='تباطؤ ↓';color='s5';why=`الزخم يتباطأ بمقدار ${accel.toFixed(1)}%`;}
-  else{sig='محايد';why='لا تسارع ملحوظ';}
-  return{accel:+accel.toFixed(2),jerk:+jerk.toFixed(2),sig,color,alert:Math.abs(accel)>2,why};
+  const fmt=v=>(v>0?'+':'')+v.toFixed(1);
+  /* التسارع موجب حين يتوقّف هبوطٌ أيضاً (من −3٪ إلى 0٪). ذلك ليس سهماً
+     صاعداً، وعدّه إشارة شراء تضليل؛ فالوسم الصاعد يشترط زخماً حالياً
+     موجباً، والهابط زخماً حالياً سالباً. وما سوى ذلك انحسارٌ لا تنبيه. */
+  const up=r5now>0,dn=r5now<0;
+  if(z>=1.5&&up&&jerk>0){sig='تسارع قوي ↑';color='s4';why=`زخم 5 جلسات ${fmt(r5now)}% مقابل ${fmt(r5prev)}% قبلها — تسارع ${fmt(accel)}% = ${z.toFixed(1)}σ من تذبذب السهم، والجلسات الثلاث الأخيرة أقوى من سابقتها`;}
+  else if(z>=0.75&&up){sig='تسارع ↑';color='s2';why=`الزخم يزداد: ${fmt(r5now)}% بعد ${fmt(r5prev)}% (${z.toFixed(1)}σ)`;}
+  else if(z<=-1.5&&dn&&jerk<0){sig='تباطؤ قوي ↓';color='s1';why=`زخم 5 جلسات ${fmt(r5now)}% مقابل ${fmt(r5prev)}% قبلها — تسارع هبوطي ${z.toFixed(1)}σ`;}
+  else if(z<=-0.75&&dn){sig='تباطؤ ↓';color='s5';why=`الزخم الهابط يشتدّ: ${fmt(r5now)}% بعد ${fmt(r5prev)}% (${z.toFixed(1)}σ)`;}
+  else if(z>=0.75){sig='انحسار الهبوط';why=`الهبوط توقّف (${fmt(r5prev)}% ثم ${fmt(r5now)}%) — تغيّر في الزخم لا صعود بعد`;}
+  else if(z<=-0.75){sig='انحسار الصعود';why=`الصعود توقّف (${fmt(r5prev)}% ثم ${fmt(r5now)}%) — تغيّر في الزخم لا هبوط بعد`;}
+  else{sig='محايد';why='لا تغيّر في الزخم يتجاوز تذبذب السهم المعتاد';}
+  return{accel:+accel.toFixed(2),jerk:+jerk.toFixed(2),z:+z.toFixed(2),sig,color,alert:(z>=1.5&&up)||(z<=-1.5&&dn),why};
 }
-
-/* 3. القوة النسبية ضد السوق */
 function calcRelativeStrength(cs,marketROC){
-  if(!cs||cs.length<20) return{rs:1,sig:'—',color:'na',why:''};
+  if(!cs||cs.length<20) return{rs:1,z:0,excess:0,sig:'—',color:'na',why:''};
   const cl=cs.map(c=>c.close),n=cl.length;
   const stockROC=n>20?((cl[n-1]-cl[n-21])/cl[n-21]*100):0;
-  const rs=marketROC!==0?stockROC/Math.abs(marketROC):stockROC>0?1.5:0.5;
+  /* 🛠️ إصلاح: كانت rs = عائد السهم ÷ |عائد السوق|. قسمة عائدين معرّفة
+     بشكل سيّئ قرب الصفر: سوق عند −0.5٪ يجعل أي حركة ±1٪ «أقوى/أضعف
+     بكثير»، فأطلق الفلتر على 94.6٪ من السوق الحقيقي. والإشارة تنقلب:
+     سهم −0.3٪ وسوق −1٪ (تفوّق بـ0.7٪) كان يأخذ rs = −0.3 ⇒ «أضعف
+     بكثير». الآن: rs نسبة نموّ (1+سهم)/(1+سوق) — التعريف القياسي
+     للقوة النسبية، أكبر من 1 ⟺ تفوّق — والتنبيه على الفارق مقيساً
+     بتذبذب السهم نفسه على 20 جلسة. */
+  const m=marketROC||0;
+  const rs=(1+stockROC/100)/(1+m/100);
+  const excess=stockROC-m;
+  const sd=dailySigma(cl)*Math.sqrt(20)*100;
+  const z=sd>0?excess/sd:0;
+  const f=v=>(v>0?'+':'')+v.toFixed(1);
   let sig='—',color='na',why='';
-  if(rs>1.8){sig='أقوى بكثير ↑↑';color='s4';why=`أداء السهم (${stockROC.toFixed(1)}%) يفوق السوق (${marketROC.toFixed(1)}%) بنسبة RS=${rs.toFixed(1)} ← تفوق واضح`;}
-  else if(rs>1.2){sig='أقوى ↑';color='s2';why=`السهم يتفوق على السوق — RS=${rs.toFixed(1)}`;}
-  else if(rs<0.5){sig='أضعف ↓↓';color='s1';why=`أداء السهم (${stockROC.toFixed(1)}%) أضعف بكثير من السوق (${marketROC.toFixed(1)}%) — RS=${rs.toFixed(1)}`;}
-  else if(rs<0.8){sig='أضعف ↓';color='s5';why=`السهم أضعف من السوق — RS=${rs.toFixed(1)}`;}
-  else{sig='مماثل ↔';why=`أداء مشابه للسوق`;}
-  return{rs:+rs.toFixed(2),stockROC:+stockROC.toFixed(2),sig,color,alert:rs>1.8||rs<0.5,why};
+  const base=`السهم ${f(stockROC)}% مقابل السوق ${f(m)}% في 20 جلسة — فارق ${f(excess)}% = ${z.toFixed(1)}σ من تذبذب السهم`;
+  if(z>=1.5){sig='أقوى بكثير ↑↑';color='s4';why=base+' ← تفوّق واضح';}
+  else if(z>=0.75){sig='أقوى ↑';color='s2';why=base;}
+  else if(z<=-1.5){sig='أضعف ↓↓';color='s1';why=base+' ← ضعف واضح';}
+  else if(z<=-0.75){sig='أضعف ↓';color='s5';why=base;}
+  else{sig='مماثل ↔';why=base+' — ضمن التذبذب المعتاد';}
+  return{rs:+rs.toFixed(3),z:+z.toFixed(2),excess:+excess.toFixed(2),stockROC:+stockROC.toFixed(2),sig,color,alert:Math.abs(z)>=1.5,why};
 }
-
-/* 4. ضغط الانفجار الوشيك (BB Squeeze) */
 function calcBBSqueeze(cs){
   if(!cs||cs.length<25) return{squeeze:false,sig:'—',color:'na',why:''};
   const cl=cs.map(c=>c.close),n=cl.length,p=20;
@@ -1482,17 +1518,30 @@ function calcBBSqueeze(cs){
   const atrArr=calcATR(cs,14),atr14=atrArr[atrArr.length-1]||cl[n-1]*.01;
   const kcU=kc_mid+1.5*atr14,kcL=kc_mid-1.5*atr14;
   const squeeze=bbU<kcU&&bbL>kcL;
+  /* 🛠️ إصلاح: كان fired = !squeeze — أي «ليس في ضغط الآن» يُعدّ «انطلق
+     من ضغط». فكل سهم خارج الضغط بعيد عن منتصف كيلتنر بعُشر ATR يطلق
+     تنبيهاً: 96.5٪ من السوق الحقيقي. الانطلاق الحقيقي انتقال: كان في
+     ضغط خلال الجلسات الخمس السابقة، وخرج منه الآن. */
+  const sqAt=k=>{
+    if(k<p)return false;
+    const w=cl.slice(k-p+1,k+1),m=w.reduce((a,b)=>a+b,0)/p;
+    const sd=Math.sqrt(w.map(v=>(v-m)**2).reduce((a,b)=>a+b,0)/p);
+    const a=atrArr[atrArr.length-1-(n-1-k)];
+    if(!(a>0))return false;
+    return (m+2*sd)<(ema20arr[k]+1.5*a)&&(m-2*sd)>(ema20arr[k]-1.5*a);
+  };
+  let wasSq=false;for(let k=n-6;k<=n-2;k++)if(sqAt(k)){wasSq=true;break;}
   const mid=(kcU+kcL)/2;
   const diffs=cl.slice(-5).map(v=>v-mid);
   const hist=diffs.reduce((a,b)=>a+b,0)/diffs.length;
-  const fired=!squeeze;
+  const fired=!squeeze&&wasSq;
   let sig='—',color='na',why='';
   if(squeeze){sig='ضغط نشط 🔴';color='s1';why=`بولنجر (${bbW.toFixed(2)}) داخل كيلتنر (${(kcU-kcL).toFixed(2)}) ← طاقة مضغوطة جاهزة للانفجار — انتظر الاتجاه`;}
   else if(fired&&hist>0){sig='انطلاق ↑ 🚀';color='s4';why=`انتهى الضغط مع زخم إيجابي (${hist.toFixed(3)}) ← انفجار صعودي محتمل`;}
   else if(fired&&hist<0){sig='انطلاق ↓ 📉';color='s5';why=`انتهى الضغط مع زخم سلبي (${hist.toFixed(3)}) ← انفجار هبوطي محتمل`;}
-  else{sig='طبيعي';why='لا ضغط حالياً';}
+  else{sig='طبيعي';why='لا ضغط حالياً ولا انطلاق من ضغط حديث';}
   const ratio=bbW/(kcU-kcL||1);
-  return{squeeze,hist:+hist.toFixed(3),ratio:+ratio.toFixed(3),sig,color,alert:squeeze||(fired&&Math.abs(hist)>atr14*.1),why};
+  return{squeeze,fired,hist:+hist.toFixed(3),ratio:+ratio.toFixed(3),sig,color,alert:squeeze||(fired&&Math.abs(hist)>atr14*.1),why};
 }
 
 /* 5. امتصاص العروض والتجميع */
@@ -1519,12 +1568,22 @@ function calcVolumeAbsorption(cs){
 }
 
 /* 6. فجوات صانع السوق FVG */
+/** 🛠️ إصلاح: كانت الفجوة «ممتلئة» إذا كان إغلاق اليوم *داخلها* — أي أن
+   الفجوة التي يختبرها السعر الآن (أهمّ لحظاتها) تُحذف، والفجوة التي عبرها
+   السعر كلياً ومضى تبقى «نشطة» للأبد. الامتلاء الصحيح: جلسة لاحقة تداولت
+   حتى الحافة البعيدة للفجوة. */
+function _fvgFilled(cs,i,type,farEdge){
+  for(let j=i+1;j<cs.length;j++){
+    if(type==='bu'?cs[j].low<=farEdge:cs[j].high>=farEdge)return true;
+  }
+  return false;
+}
 function calcFVG(cs){
   if(!cs||cs.length<10) return{gaps:[],nearest:null,sig:'—',color:'na',why:''};
   const n=cs.length,gaps=[];
   for(let i=2;i<n;i++){
-    if(cs[i].low>cs[i-2].high){const size=(cs[i].low-cs[i-2].high)/cs[i].close*100;if(size>0.2)gaps.push({type:'bu',top:cs[i].low,bot:cs[i-2].high,idx:i,size:+size.toFixed(2),filled:cs[n-1].close<=cs[i].low&&cs[n-1].close>=cs[i-2].high});}
-    if(cs[i].high<cs[i-2].low){const size=(cs[i-2].low-cs[i].high)/cs[i].close*100;if(size>0.2)gaps.push({type:'be',top:cs[i-2].low,bot:cs[i].high,idx:i,size:+size.toFixed(2),filled:cs[n-1].close>=cs[i].high&&cs[n-1].close<=cs[i-2].low});}
+    if(cs[i].low>cs[i-2].high){const size=(cs[i].low-cs[i-2].high)/cs[i].close*100;if(size>0.2)gaps.push({type:'bu',top:cs[i].low,bot:cs[i-2].high,idx:i,size:+size.toFixed(2),filled:_fvgFilled(cs,i,'bu',cs[i-2].high)});}
+    if(cs[i].high<cs[i-2].low){const size=(cs[i-2].low-cs[i].high)/cs[i].close*100;if(size>0.2)gaps.push({type:'be',top:cs[i-2].low,bot:cs[i].high,idx:i,size:+size.toFixed(2),filled:_fvgFilled(cs,i,'be',cs[i-2].low)});}
   }
   const cur=cs[n-1].close;
   const active=gaps.filter(g=>!g.filled&&n-g.idx<=30);
@@ -2719,6 +2778,28 @@ function _timeAnchors(cs){
   return out;
 }
 
+/* ══ ما قيس فعلاً عن «⏱ التوافق الزمني» ════════════════════════════════
+   دراسة حدث بلا تسرّب (scripts/timetest.js --tat-only) على 240 سهماً حقيقياً
+   × 5 سنوات، 24 سبتمبر 2026. عند كل نقطة يُحسب الفلتر من البيانات المعروفة
+   حتى تلك النقطة فقط.
+   • القنّاص: انعطاف (قمة/قاع ±10) خلال ±2 جلسة في 30.1٪ [26.7–33.7] مقابل
+     25.3٪ حين يصمت (n=652) — رفع 1.18، أي أنه يرصد «شيئاً ينعطف هنا»
+     أكثر من الصدفة. لكن الاتجاه الذي يعلنه صدق بعد 10 جلسات في 50.6٪
+     مقابل 51.4٪ متوقَّعة بالصدفة من السهم نفسه — رفع 0.98: لا يعرف أيّ
+     اتجاه.
+   • كسر الدورة: انعطاف 24.1٪ (رفع 0.95) واتجاه 51.1٪ مقابل 55.0٪ (رفع
+     0.93) — لا معلومة فيه على أيّ من المقياسين.
+   لذلك لا يُصوّت الفلتر لاتجاه في أي سكور بعد الآن (كان ±20 في السكور، و±14
+   في الموحّد، وصوت شراء/بيع، و«دليل مؤكَّد» في غرفة القرار). يبقى معروضاً
+   علامةً على «انعطاف محتمل — الاتجاه غير معلوم» بأرقامه. */
+const TIME_TRIGGER_EVIDENCE={
+  measured:'2026-09-24',stocks:240,
+  sniper:{n:652,turn:30.1,turnCI:[26.7,33.7],baseTurn:25.3,turnLift:1.18,dirHit:50.6,dirExpected:51.4,dirLift:0.98},
+  penalty:{n:1038,turn:24.1,turnLift:0.95,dirHit:51.1,dirExpected:55.0,dirLift:0.93},
+  sniperText:'قيس على 240 سهماً × 5 سنوات: يسبق انعطافاً خلال جلستين في 30٪ مقابل 25٪ بالصدفة، لكن اتجاهه المعلن صدق في 50.6٪ مقابل 51.4٪ بالصدفة — انعطاف محتمل، الاتجاه غير معلوم',
+  penaltyText:'قيس على 240 سهماً × 5 سنوات: لا يرصد انعطافاً ولا اتجاهاً أكثر من الصدفة (رفع 0.95 و0.93)'
+};
+
 function timeAlignmentTrigger(cs,ind){
   const n=cs?.length||0;
   if(n<20)return{active:false,candleDistance:0,timeBonus:0,sniperBonus:false,penalty:false,badge:null,reason:'بيانات غير كافية'};
@@ -2861,6 +2942,8 @@ function timeAlignmentTrigger(cs,ind){
      window.KSA_DEBUG_TIME = true */
   if(window.KSA_DEBUG_TIME&&typeof console!=='undefined'&&console.debug)console.debug(`[TimeAlignment] pivot=${pivot.type}@${pivot.p.toFixed(2)} dist=${candleDistance}c/${calDays}d fib=${fibMatch||'-'} gann=${gannMatch||'-'} gannCal=${gannCal?.cycle||'-'} sq9=${sq9.squared} SR=${strongSR} → bonus=${timeBonus}`);
 
+  if(sniperBonus)reason+=' — '+TIME_TRIGGER_EVIDENCE.sniperText;
+  else if(penalty)reason+=' — '+TIME_TRIGGER_EVIDENCE.penaltyText;
   return{active,strongSR,srHits:_srHits,evidenceCount,anchorLabel,nearPivot,nearMA,nearBB,ptConfirmed:!!ptConv.confirmed,
     candleDistance,calendarDays:calDays,pivotPrice:+pivot.p.toFixed(2),pivotType:pivot.type,pivotIdx:pivot.i,
     fibMatch,gannMatch,gannCalMatch:gannCal,dcMatch,squareOfNine:sq9,priceTimeConvergence:ptConv,
@@ -3122,20 +3205,41 @@ function calcSupportResistance(cs,ind,cur){
     if(ind.boll?.l)cands.push({price:ind.boll.l,source:'حافة بولينجر السفلية',weight:1});
     if(ind.vwap)cands.push({price:ind.vwap,source:'VWAP',weight:1.2});
   }
-  cands.sort((a,b)=>a.price-b.price);
-  const merged=[];
-  for(const c of cands){
-    const last=merged[merged.length-1];
-    if(last&&Math.abs(c.price-last.price)/last.price*100<0.6){
-      last.weight+=c.weight;
-      if(!last.sources.includes(c.source))last.sources.push(c.source);
-      last.price=+((last.price+c.price)/2).toFixed(2);
-    }else{
-      merged.push({price:+c.price.toFixed(2),weight:c.weight,sources:[c.source]});
+  /* 🛠️ إصلاح: التجميع كان «متسلسلاً» ينجرف. كل مرشّح يُقارَن بالسعر الجاري
+     للعنقود، والسعر الجاري متوسط زوجي (السابق+الجديد)/2 يميل إلى آخر عضو.
+     ففي نطاق كثيف من القمم والقيعان — وخمس سنوات من ZigZag كثيفة — تتسلسل
+     المستويات عنقوداً واحداً يمتدّ عدّة بالمئة، وينجرف سعره المعلن إلى
+     طرفه البعيد. قيس على السوق الحقيقي: 35 سهماً بهدف أول فوق 1:5 وحتى
+     1:18، والوسم يكشف السبب — عنقود واحد يضمّ «MA20 + VWAP + MA50 + MA200
+     + حافة بولنجر العلوية + قمة + قاع»، فيبتلع MA20 القريب من السعر ويُعلَن
+     هدفاً على بعد 9٪. وكان العنقود يعبر السعر الحالي نفسه، فظهرت «حافة
+     بولنجر السفلية» داخل هدف فوق السعر.
+     القاعدة الآن: (١) كل جانب يُجمَّع وحده — لا عنقود يعبر السعر، (٢) المرشّح
+     يدخل العنقود فقط إن بقي امتداد العنقود كله ضمن التسامح (ربط كامل لا
+     متسلسل)، (٣) سعر العنقود متوسط أعضائه الموزون بثقلهم. */
+  const TOL=0.006;
+  const clusterSide=(list,asc)=>{
+    const sorted=list.slice().sort((a,b)=>asc?a.price-b.price:b.price-a.price);
+    const out=[];
+    for(const c of sorted){
+      const g=out[out.length-1];
+      if(g&&Math.abs(c.price-g.anchor)/g.anchor<TOL){
+        g.members.push(c);
+        if(!g.sources.includes(c.source))g.sources.push(c.source);
+      }else out.push({anchor:c.price,members:[c],sources:[c.source]});
     }
-  }
-  const supports=merged.filter(m=>m.price<cur).sort((a,b)=>b.price-a.price).slice(0,3);
-  const resistances=merged.filter(m=>m.price>=cur).sort((a,b)=>a.price-b.price).slice(0,3);
+    return out.map(g=>{
+      const w=g.members.reduce((a,m)=>a+m.weight,0);
+      const px=g.members.reduce((a,m)=>a+m.price*m.weight,0)/w;
+      const ps=g.members.map(m=>m.price);
+      return{price:+px.toFixed(2),weight:w,sources:g.sources,
+        lo:+Math.min(...ps).toFixed(2),hi:+Math.max(...ps).toFixed(2),n:g.members.length};
+    });
+  };
+  /* العنقود يبدأ من المرشّح الأقرب إلى السعر ويمتدّ مبتعداً، فمرساته هي
+     حافته القريبة — أول ما يلمسه السعر. */
+  const supports=clusterSide(cands.filter(c=>c.price<cur),false).slice(0,3);
+  const resistances=clusterSide(cands.filter(c=>c.price>=cur),true).slice(0,3);
   return{supports,resistances};
 }
 
@@ -3167,7 +3271,7 @@ function calcTradePlan(sym){
   /* ── classify plan type from active filters (if the stock has been scanned) ── */
   let planType='watch',planWhy='لا توجد بيانات فلاتر كافية بعد — يُعرض للمرجعية الهيكلية فقط';
   if(advD){
-    const bounceConfirmed=(advD.fib618?.confirmed)||(advD.snp?.level==='high'&&advD.snp?.dirUp)||(advD.tat?.sniperBonus&&advD.tat?.dirUp);
+    const bounceConfirmed=(advD.fib618?.confirmed)||(advD.snp?.level==='high'&&advD.snp?.dirUp);
     const breakoutConfirmed=advD.hunter?.alert||advD.pregap?.alert||(advD.macdX?.active&&advD.macdX?.bullish&&advD.macdX?.fresh);
     if(advD.masterScore>=65&&bounceConfirmed){planType='bounce';planWhy='ارتداد مؤكد من دعم/مستوى فيبوناتشي/توافق زمني ← الدخول عند السعر الحالي مباشرة';}
     else if(advD.masterScore>=65&&breakoutConfirmed){planType='breakout';planWhy='إشارة اختراق (صيد نسبة/فجوة سعرية/ماكد جديد) ← الدخول ينتظر تأكيد كسر المقاومة';}
@@ -3410,13 +3514,25 @@ function tradeLevels(sym){
   const rrOf=px=>riskOk?+((px-entryRef)/risk).toFixed(2):null;
   const targets=(tp.targets||[]).map(t=>({price:t.price,source:t.source,kind:'structural',rr:rrOf(t.price)}));
   let filled=false;
-  if(targets.length<2&&window.KSAEngine){
+  /* 🛠️ العقد أعلاه: «وإن نقص الثاني يُكمَّل». لكن الشرط كان targets.length<2
+     فيشمل الصفر: خطة بلا أي هدف بنيوي — أي خطة تعلنها المنصة نفسها غير
+     مجدية — كانت تأخذ قمة فراكتالية هدفاً *أول* وتعرض «1:7». قيس على السوق
+     الحقيقي: كل الحالات الثماني فوق 1:5 كانت من هذا النوع. التكملة الآن
+     للهدف الثاني وحده، فوق هدف بنيوي قائم. */
+  if(targets.length===1&&window.KSAEngine){
     try{
       const fr=KSAEngine.fractalTargets(cs);
+      /* 🛠️ سقف الوصول: الهدف الفراكتالي تكملة لا مستوى بنيوي، و«حيّة» تعني
+         لم تُكسر منذ تكوّنها — على خمس سنوات قد تكون قمة من 2022 على بعد
+         80٪. قيس: هدف أول 136.79 لسهم عند 74.71 (1:26.87). ما فوق أعلى
+         سعر في 250 جلسة اكتشاف سعري، والمنصة تمتنع أصلاً عن اختراع هدف
+         هناك؛ فالتكملة لا تتجاوز المدى السنوي للسهم نفسه. */
+      const reach=Math.max(...cs.slice(-250).map(c=>c.high));
       if(fr&&fr.ok){
         for(const cand of [fr.target1,fr.target2,fr.measuredMove]){
           if(targets.length>=2)break;
           if(cand==null)continue;
+          if(cand>reach)continue;
           if(!riskOk||cand<entryRef+risk*MIN_RR)continue;
           if(targets.some(t=>Math.abs(t.price-cand)<0.25*atr))continue;
           targets.push({price:f2(cand),source:'قمة فراكتالية حيّة (ليست مستوى بنيوياً)',
@@ -3435,7 +3551,11 @@ function tradeLevels(sym){
      عنوان «لا هدف دون 1:1.5». الحدّ يجب أن يُقاس على الأرقام التي تُعرض
      فعلاً، لا على أرقام وسيطة حُذفت قبل العرض. وإسقاط كل الأهداف يجعل
      الخطة غير مجدية — وهو الحكم الصحيح لا خسارة. */
-  const kept=targets.filter(t=>t.rr==null||t.rr>=MIN_RR);
+  let kept=targets.filter(t=>t.rr==null||t.rr>=MIN_RR);
+  /* التكملة الفراكتالية تُبنى فوق هدف بنيوي قائم؛ فإن سقط البنيوي هنا (دون
+     1:1.5 بعد إنزال الوقف) لا تصعد التكملة لتصير هدفاً أول بلا بنية تحته.
+     قيس على السوق الحقيقي بعد إصلاح شرط التكملة: 9 خطط بقيت كذلك. */
+  if(!kept.some(t=>t.kind==='structural'))kept=[];
   const dropped=targets.length-kept.length;
   targets.length=0; kept.forEach(t=>targets.push(t));
 
@@ -3571,7 +3691,12 @@ function calcAllFilters(sym,marketROC){
   const pregap=calcPreGap(cs);
   const fvgr=calcFVGRebalance(cs);
   const ew=detectElliott(cs);
-  const harm=detectHarmonic(cs);
+  /* 🛠️ detectHarmonic يعود لآخر نموذج مكتمل في التاريخ كله إن لم يوجد
+     نموذج حيّ — ويسمه stale («للمرجع التاريخي فقط»). وكان يُعدّ هنا
+     إشارة شراء/بيع حيّة كأي نموذج آخر؛ وعلى خمس سنوات يوجد دائماً نموذج
+     ما، فأطلق الفلتر على 90.7٪ من السوق الحقيقي. القديم لا يُعدّ. */
+  const harmAny=detectHarmonic(cs);
+  const harm=(harmAny&&!harmAny.stale)?harmAny:null;
   const hunter=calcLimitUpHunter(cs,sym);
   const fib618=calcFib618Bounce(cs);
   const falseBreak=calcFalseBreakout(cs);
@@ -3603,10 +3728,13 @@ function calcAllFilters(sym,marketROC){
   if(hidden.alert)bullAlerts++;
   if(pregap.alert)bullAlerts++;
   if(fvgr.alert){fvgr.rebalance?.type==='bu'?bullAlerts++:bearAlerts++;}
-  if(ew.sig==='شراء')bullAlerts++;else if(ew.sig==='بيع')bearAlerts++;
+  /* 🛠️ إليوت لا يُصوّت: وحدته نفسها تقيس أن عدّاً «صالحاً» يظهر في 54٪ من
+     سلاسل المشي العشوائي، وتقول «استعمله وصفاً للبنية لا سبباً للدخول». وعلى
+     السوق الحقيقي أطلق على 43٪ من الأسهم — بمعدّل الصدفة. فعدّه صوتاً في
+     الإشارة يناقض قياسها. يبقى معروضاً في تبويبه وعلى الشارت وفي المدارس. */
   if(harm?.sig==='شراء')bullAlerts++;else if(harm?.sig==='بيع')bearAlerts++;
   if(hunter.alert)bullAlerts++;
-  if(tat.sniperBonus){tat.dirUp?bullAlerts++:bearAlerts++;}/* 🎯 Sniper Time Bonus counts as a direction alert too */
+  /* ⏱ الفلتر الزمني لا يصوّت لاتجاه — اتجاهه قيس بلا قيمة (TIME_TRIGGER_EVIDENCE) */
   if(snp.level==='high'){snp.dirUp?bullAlerts++:bearAlerts++;}/* 🎯 Pre-Breakout confluence (3+/4) counts as a strong alert */
   if(fib618.confirmed)bullAlerts++;/* 📐 confirmed 61.8% bounce — bullish only by definition */
   if(macdX.active){macdX.bullish?bullAlerts++:bearAlerts++;}
@@ -3624,7 +3752,7 @@ function calcAllFilters(sym,marketROC){
   else if(bullAlerts===1){sig='◎ رصد';cls='sig-watch';}
 
   let score=bullAlerts*10-bearAlerts*8+50;
-  score+=tat.timeBonus;/* 🎯 +20 Sniper Bonus | ⚠ -10 Cycle Break | 0 Neutral */
+  /* مكافأة الوقت (±20) وعقوبة كسر الدورة (−10) أُزيلتا من السكور: انظر TIME_TRIGGER_EVIDENCE */
   if(snp.level==='high')score+=snp.dirUp?15:-15;/* Pre-Breakout confluence bonus */
   if(fib618.confirmed)score+=12;/* 📐 confirmed 61.8% retracement bounce bonus */
   score=Math.max(0,Math.min(100,score));
@@ -3648,7 +3776,7 @@ function calcAllFilters(sym,marketROC){
   masterScore+=hidden.alert?5:0;
   masterScore+=pregap.alert?6:0;
   masterScore+=fvgr.alert?(fvgr.rebalance?.type==='bu'?5:-5):0;
-  masterScore+=ew.sig==='شراء'?6:ew.sig==='بيع'?-6:0;
+  /* إليوت وصفي لا يدخل السكور — انظر التعليق في عدّ الإشارات أعلاه */
   masterScore+=harm?.sig==='شراء'?6:harm?.sig==='بيع'?-6:0;
   masterScore+=hunter.alert?8:0;
   masterScore+=macdX.active?(macdX.bullish?(macdX.strengthening?7:5):-6):0;
@@ -3656,13 +3784,13 @@ function calcAllFilters(sym,marketROC){
   masterScore+=revCandle.active?(revCandle.bullish?6:-6):0;
   masterScore+=sb.alert?13:0;
   masterScore+=falseBreak.active?(falseBreak.bullish?12:-12):0;
-  masterScore+=tat.sniperBonus?(tat.dirUp?14:-14):0;
+  /* ±14 للقنّاص الزمني أُزيل — اتجاهه قيس بلا قيمة */
   masterScore+=snp.level==='high'?(snp.dirUp?16:-16):0;
   masterScore+=fib618.confirmed?15:0;
   /* Bonus for genuine STACKED confluence — when 3+ heavy-weight
      confirmations line up together, that's rare and deserves to visibly
      rank above everything else, not just add linearly. */
-  const heavyConfirmCount=(tat.sniperBonus&&tat.dirUp?1:0)+(snp.level==='high'&&snp.dirUp?1:0)+(fib618.confirmed?1:0)+(hunter.alert?1:0);
+  const heavyConfirmCount=(snp.level==='high'&&snp.dirUp?1:0)+(fib618.confirmed?1:0)+(hunter.alert?1:0);
   if(heavyConfirmCount>=3)masterScore+=10;
   masterScore=Math.max(0,Math.min(100,Math.round(masterScore)));
 
@@ -4075,6 +4203,18 @@ function renderRadarTable(){
    ══════════════════════════════════════════════════════════════════════ */
 let _timeMap={},_timeMapBuilding=false,_timeMapDone=0;
 
+/* ══ ما قيس فعلاً عن النوافذ الكلاسيكية ══════════════════════════════
+   دراسة حدث بلا تسرّب (scripts/timetest.js) على 246 سهماً حقيقياً × 5 سنوات،
+   24 سبتمبر 2026: عند كل نقطة تُبنى النوافذ من البيانات المعروفة حتى تلك
+   النقطة فقط، ثم يُسأل التاريخ اللاحق هل وقع انعطاف (قمة/قاع ±10 جلسات)
+   خلال ±1 من الموعد. الرقم هنا ليُعرض لا ليُستعمل في أي حساب. */
+const CLASSIC_WINDOW_EVIDENCE={
+  measured:'2026-09-24',stocks:246,observations:22188,
+  nearestHit:15.5,baseline:15.8,lift:0.98,
+  fibLift:1.01,gannLift:1.05,confluenceLift:1.03,
+  text:'قيست على 246 سهماً × 5 سنوات بلا تسرّب: الانعطاف وقع عند أقرب نافذة بنسبة 15.5٪ مقابل 15.8٪ في أي جلسة (رفع 0.98) — أي لا معلومة فيها عن التوقيت'
+};
+
 function _timeEntry(sym){
   const cs=G.cans[sym];
   if(G.demo.has(sym)||!cs||cs.length<80)return{state:'na',why:'أقل من 80 جلسة أو بيانات تجريبية'};
@@ -4086,7 +4226,7 @@ function _timeEntry(sym){
      لا سقوط صامت إلى نافذة غان. السقوط الصامت كان سيستبدل تاريخاً كاذباً
      بتاريخ كاذب آخر، والفرق أن الثاني لا يقول للمستخدم ما الذي حدث. */
   if(tm&&tm.ok&&tm.unstable){
-    return{state:'unstable',tier:'cycle',period:tm.period,p:tm.pText,
+    return{state:'unstable',tier:'cycle',period:tm.period,p:tm.pText,pNum:tm.p,
       spreadPct:tm.stability?tm.stability.spreadPct:null,
       periods:tm.stability?tm.stability.periods:null,
       why:tm.reason||'الدورة تتغيّر بتغيّر النافذة المحمّلة — لا يُشتقّ منها تاريخ'};
@@ -4099,7 +4239,7 @@ function _timeEntry(sym){
       stabilityNote:(tm.stability&&tm.stability.note)||null,
       type:t.type,bars:t.barsAhead,sd:t.sdBars,lo:t.loBars,hi:t.hiBars,usable:!!t.usable,
       valleyBars:v?v.barsAhead:null,valleySd:v?v.sdBars:null,
-      period:tm.period,p:tm.pText,coherent:!!tm.coherent,cyclePos:tm.cyclePos,
+      period:tm.period,p:tm.pText,pNum:tm.p,coherent:!!tm.coherent,cyclePos:tm.cyclePos,
       src:'دورة طيفية '+tm.period+' جلسة',srcDetail:'p = '+tm.pText+' · إشارة/ضجيج '+tm.snr};
   }
 
@@ -4124,15 +4264,44 @@ function _timeEntry(sym){
     if(bestW)return{state:'ok',tier:'classic',
       type:(bestA.type==='L'?'valley':'peak'),bars:bestW.barsAhead,sd:null,usable:false,coherent:false,
       src:'نافذة كلاسيكية',srcDetail:`${bestW.label} — العدّ من ${bestA.label}`,
-      p:(tm&&tm.ok&&tm.pText)?tm.pText:null,
-      why:'رقم غان/فيبوناتشي مفروض من خارج السهم — للمراقبة لا للتنفيذ'};
+      p:(tm&&tm.ok&&tm.pText)?tm.pText:null,pNum:(tm&&tm.ok&&isFinite(tm.p))?tm.p:null,
+      why:'رقم غان/فيبوناتشي مفروض من خارج السهم — '+CLASSIC_WINDOW_EVIDENCE.text};
   }catch(e){}
 
   const pTxt=(tm&&tm.ok&&tm.pText)?(' (p='+tm.pText+')'):'';
-  return{state:'none',p:(tm&&tm.pText)||null,
+  return{state:'none',p:(tm&&tm.pText)||null,pNum:(tm&&tm.ok&&isFinite(tm.p))?tm.p:null,
     why:'لا دورة دالة إحصائياً'+pTxt+' ولا نافذة قادمة — توقيت هذا السهم لا يُشتق من الدورات'};
 }
 
+/* ══ تصحيح الاختبارات المتعددة على خريطة المواعيد ═════════════════════
+   🛠️ كل سهم كان يُختبر وحده عند p < 0.05. وعلى 257 سهماً تُنتج الصدفة
+   وحدها نحو 13 «دورة دالة». قيس على السوق الحقيقي: 15 من 257 تحت 0.05 —
+   أي بمعدّل الصدفة تماماً (5.8٪). تبويب المسح الطيفي كان يطبّق تصحيح
+   Benjamini-Hochberg، والرادار لا — فالنتيجة نفسها «دالة» في مكان
+   و«صدفة» في آخر. الآن تُصحَّح الخريطة كلها كعائلة واحدة بعد اكتمالها،
+   وبالعتبة نفسها (q = 0.10). الدورة التي لا تجتاز التصحيح لا تحمل تاريخاً. */
+const TIME_FDR_Q=0.10;
+function applyTimeMapFDR(map){
+  map=map||_timeMap;
+  const syms=Object.keys(map).filter(s=>map[s]&&isFinite(map[s].pNum));
+  if(syms.length<20||!window.KSAEngine||!KSAEngine.Stats||!KSAEngine.Stats.benjaminiHochberg)
+    return{applied:false,tested:syms.length};
+  const pass=KSAEngine.Stats.benjaminiHochberg(syms.map(s=>map[s].pNum),TIME_FDR_Q);
+  let kept=0,demoted=0;
+  syms.forEach((s,k)=>{
+    const e=map[s];
+    e.fdrPass=!!pass[k];
+    if(e.tier==='cycle'&&!e.fdrPass){
+      map[s]={state:'none',p:e.p,pNum:e.pNum,fdrPass:false,wasCycle:e.state,period:e.period,
+        why:`دورة ${e.period} جلسة بـ p = ${e.p} منفردةً، لكنها لا تجتاز تصحيح الاختبارات المتعددة عبر ${syms.length} سهماً `
+          +`(Benjamini-Hochberg، q = ${TIME_FDR_Q}) — عددٌ كهذا من «الدورات» تُنتجه الصدفة وحدها عند فحص السوق كله، فلا يُشتقّ منها تاريخ.`};
+      demoted++;
+    }else if(e.tier==='cycle')kept++;
+  });
+  return{applied:true,tested:syms.length,kept,demoted,q:TIME_FDR_Q};
+}
+window.applyTimeMapFDR=applyTimeMapFDR;
+
 function buildTimeMap(force){
   if(_timeMapBuilding)return;
   if(!_advData.length)return;
@@ -4151,7 +4320,7 @@ function buildTimeMap(force){
     }
     st();
     if(list.length){ setTimeout(step,0); }
-    else{ _timeMapBuilding=false;st();
+    else{ _timeMapBuilding=false;try{applyTimeMapFDR(_timeMap);}catch(e){}st();
       if(_filter==='all'||_filter==='time')renderResults(); }
   };
   setTimeout(step,0);
@@ -4791,8 +4960,8 @@ function renderResults(){
   if(_filter!=='all'){
     data=data.filter(d=>{
       if(_filter==='vz')return d.vz.alert||d.vz.z>=1.5;
-      if(_filter==='ma')return d.ma.alert||Math.abs(d.ma.accel)>0.8;
-      if(_filter==='rs')return d.rs.alert||d.rs.rs>1.3||d.rs.rs<0.7;
+      if(_filter==='ma')return d.ma.alert||Math.abs(d.ma.z||0)>=0.75;
+      if(_filter==='rs')return d.rs.alert||Math.abs(d.rs.z||0)>=0.75;
       if(_filter==='sq')return d.sq.alert||d.sq.squeeze;
       if(_filter==='ab')return d.ab.alert||Math.abs(d.ab.score)>30;
       if(_filter==='fg')return d.fg.alert||d.fg.count>0;
@@ -4879,9 +5048,9 @@ function renderResults(){
     }else if(_filter==='vz'){
       midCols=`<td style="font-family:monospace;font-weight:600;color:${d.vz.z>=3?'var(--up)':d.vz.z>=2?'var(--gd)':'var(--t2)'}">${d.vz.z}</td><td>${tag(d.vz.color,d.vz.sig)}</td><td style="font-family:monospace">${fK(G.vo[d.sym]||0)}</td>`;
     }else if(_filter==='ma'){
-      midCols=`<td style="font-family:monospace;font-weight:600;color:${d.ma.accel>1?'var(--up)':d.ma.accel<-1?'var(--dn)':'var(--t2)'}">${d.ma.accel>0?'+':''}${d.ma.accel}%</td><td style="font-family:monospace">${d.ma.jerk>0?'+':''}${d.ma.jerk}%</td><td>${tag(d.ma.color,d.ma.sig)}</td>`;
+      midCols=`<td style="font-family:monospace;font-weight:600;color:${(d.ma.z||0)>=0.75?'var(--up)':(d.ma.z||0)<=-0.75?'var(--dn)':'var(--t2)'}">${d.ma.accel>0?'+':''}${d.ma.accel}%</td><td style="font-family:monospace">${d.ma.jerk>0?'+':''}${d.ma.jerk}%</td><td>${tag(d.ma.color,d.ma.sig)}</td>`;
     }else if(_filter==='rs'){
-      midCols=`<td style="font-family:monospace;font-weight:600;color:${d.rs.rs>1.5?'var(--up)':d.rs.rs<0.7?'var(--dn)':'var(--t2)'}">${d.rs.rs}</td><td style="font-family:monospace">${d.rs.stockROC>0?'+':''}${d.rs.stockROC}%</td><td>${tag(d.rs.color,d.rs.sig)}</td>`;
+      midCols=`<td style="font-family:monospace;font-weight:600;color:${(d.rs.z||0)>=0.75?'var(--up)':(d.rs.z||0)<=-0.75?'var(--dn)':'var(--t2)'}">${d.rs.rs}</td><td style="font-family:monospace">${d.rs.stockROC>0?'+':''}${d.rs.stockROC}%</td><td>${tag(d.rs.color,d.rs.sig)}</td>`;
     }else if(_filter==='sq'){
       midCols=`<td>${d.sq.squeeze?tag('s1','🔴 ضغط نشط'):tag('na','—')}</td><td style="font-family:monospace">${d.sq.hist}</td><td style="font-family:monospace">${d.sq.ratio}</td>`;
     }else if(_filter==='ab'){
@@ -4944,8 +5113,8 @@ function renderResults(){
           ${d.snp.vdu.score>=40?`<div class="why-item bull"><b>🔇 نضوب الحجم:</b> <span class="val">${d.snp.vdu.why}</span></div>`:''}
           ${d.snp.obv.divergence?`<div class="why-item ${d.snp.obv.bullDiv?'bull':'bear'}"><b>📊 تباعد OBV:</b> <span class="val">${d.snp.obv.why}</span></div>`:''}
           ${d.vz.z>=1.5?`<div class="why-item ${d.vz.bullish?'bull':'bear'}"><b>💧 السيولة:</b> <span class="val">${d.vz.why}</span></div>`:''}
-          ${Math.abs(d.ma.accel)>0.8?`<div class="why-item ${d.ma.accel>0?'bull':'bear'}"><b>🚀 الزخم:</b> <span class="val">${d.ma.why}</span></div>`:''}
-          ${(d.rs.rs>1.3||d.rs.rs<0.7)?`<div class="why-item ${d.rs.rs>1?'bull':'bear'}"><b>💪 القوة النسبية:</b> <span class="val">${d.rs.why}</span></div>`:''}
+          ${Math.abs(d.ma.z||0)>=0.75?`<div class="why-item ${d.ma.accel>0?'bull':'bear'}"><b>🚀 الزخم:</b> <span class="val">${d.ma.why}</span></div>`:''}
+          ${Math.abs(d.rs.z||0)>=0.75?`<div class="why-item ${d.rs.rs>1?'bull':'bear'}"><b>💪 القوة النسبية:</b> <span class="val">${d.rs.why}</span></div>`:''}
           ${d.sq.squeeze||d.sq.alert?`<div class="why-item ${d.sq.hist>0?'bull':'bear'}"><b>💥 الضغط:</b> <span class="val">${d.sq.why}</span></div>`:''}
           ${Math.abs(d.ab.score)>25?`<div class="why-item ${d.ab.score>0?'bull':'bear'}"><b>🧲 الامتصاص:</b> <span class="val">${d.ab.why}</span></div>`:''}
           ${d.fg.count>0?`<div class="why-item ${d.fg.nearest?.type==='bu'?'bull':'bear'}"><b>🎯 FVG:</b> <span class="val">${d.fg.why}</span></div>`:''}
@@ -6163,13 +6332,9 @@ function genTrade(sym){
   /* ⏱ TIME ALIGNMENT TRIGGER — same Price-Time Confluence engine used by
      the filter scan, now powering Market Brain too (full-platform link) */
   const tat=timeAlignmentTrigger(cs,ind);
+  /* الفلتر الزمني يُذكر ولا يرجّح كفّة: اتجاهه قيس بلا قيمة (TIME_TRIGGER_EVIDENCE) */
   if(tat.sniperBonus){
-    if(tat.dirUp){bu+=20;}else{be+=20;}
-    R.push({t:`⏱ ${tat.badge} (${tat.cycleType} ${tat.cycleNum})`});
-  }else if(tat.penalty){
-    /* Cycle break = caution, trims whichever side is currently leading */
-    if(bu>be)bu=Math.max(0,bu-10);else if(be>bu)be=Math.max(0,be-10);
-    R.push({t:`⚠ ${tat.badge}`});
+    R.push({t:`⏱ انعطاف محتمل — الاتجاه غير معلوم (${tat.cycleType} ${tat.cycleNum})`});
   }
 
   /* 🎯 PRE-BREAKOUT SNIPER SCORE — VCP + Volume Dry-up + OBV divergence +
@@ -8538,7 +8703,7 @@ function ddEvidence(d) {
   if (spec) A.push({ t: 'تفوّق طيفي مقاس تاريخياً', x: `+${spec.edgeWinRate} نقطة في نسبة الربح على ${spec.signalCount} إشارة، p = ${spec.pValueText}، اجتاز تصحيح Benjamini-Hochberg`, key: 'spectral' });
   if (d.snp?.level === 'high' && d.snp?.dirUp) A.push({ t: 'قناص ما قبل الانطلاق (تأكيد عالٍ)', x: `تقاطع VCP + جفاف حجم + تباعد OBV + توافق زمني — درجة ${d.snp.score ?? '—'}`, key: 'sniper' });
   if (d.fib618?.confirmed) A.push({ t: 'ارتداد فيبوناتشي ٦١.٨٪ مؤكَّد', x: 'ارتداد فعلي من المستوى، لا مجرد مرور به', key: 'fib' });
-  if (d.tat?.sniperBonus && d.tat?.dirUp) A.push({ t: 'توافق زمني متعدد الأدلة', x: 'تقاطع دورات غان/فيبوناتشي/دورة السهم الذاتية عند نفس المسافة الزمنية', key: 'time' });
+  /* «توافق زمني متعدد الأدلة» كان في الفئة (أ) «المؤكَّدة» — واتجاهه قيس بلا قيمة (TIME_TRIGGER_EVIDENCE)، فأُخرج منها. */
   if (d.sb?.alert) A.push({ t: 'رادار قاع الحيتان', x: `بصمة تجميع مؤسسي عند القاع — درجة ${d.sb.score ?? '—'}`, key: 'whale' });
 
   /* ── الفئة (ب) — الداعمة ── */
