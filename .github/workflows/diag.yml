@@ -19,6 +19,10 @@ on:
         description: 'بطاقة أداء كل فلتر (~5 دقائق)'
         type: boolean
         default: true
+      plantest:
+        description: 'اختبار خطط الدخول/الوقف/الهدف (~5 دقائق)'
+        type: boolean
+        default: true
       timeargs:
         description: 'خيارات إضافية لدراسة الحدث (مثل --tat-only)'
         type: string
@@ -44,6 +48,9 @@ jobs:
       - name: بطاقة أداء الفلاتر — هل يتنبأ أيّها بشيء؟
         if: ${{ inputs.filtertest }}
         run: node scripts/filtertest.js --from snapshot.json.gz --json filtertest.json
+      - name: اختبار الخطط — هل للدخول والوقف والهدف أفضلية؟
+        if: ${{ inputs.plantest }}
+        run: node scripts/plantest.js --from snapshot.json.gz --json plantest.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -53,4 +60,5 @@ jobs:
             diag.json
             timetest.json
             filtertest.json
+            plantest.json
           retention-days: 14
