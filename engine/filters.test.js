@@ -154,6 +154,21 @@ H('الفلتر الزمني — لا يصوّت لاتجاه قيس بلا قي
   delete G.cans.__z; delete G.ind.__z;
 }
 
+H('مفاجأة الحجم — الجلسة لا تُقاس بنافذة تضمّها');
+{
+  const cs = fromCloses(walk(60, 17, 0, 0.01));
+  let s2 = 5; const r = () => { s2 = (s2 * 16807) % 2147483647; return (s2 - 1) / 2147483646; };
+  cs.forEach(c => { c.volume = Math.round(1e5 * (0.8 + 0.4 * r())); });
+  cs[cs.length - 1].volume = 6e5;                       /* 6× الحجم المعتاد */
+  const v = ctx.calcVolumeZScore(cs);
+  ok('حجم 6× المعتاد يُرصد شاذاً (z ≥ 3)', v.z >= 3 && v.alert, `z=${v.z}`);
+  const last = cs[cs.length - 1]; last.open = last.close * 0.97; last.high = last.close * 1.0005; last.low = last.open * 0.999;
+  const h = ctx.calcLimitUpHunter(cs, '__none');
+  ok('مكوّن الحجم في صائد النسبة صار قابلاً للتحقّق', h.alerts.some(a => a.t === 'انحراف الفوليوم'), JSON.stringify(h.alerts.map(a => a.t)));
+  /* الحدّ النظري القديم: نقطة بين 5 لا يتجاوز z لها (5−1)/√5 */
+  ok('النافذة الذاتية القديمة لم تكن تبلغ 3 (حدّها 1.79)', (5 - 1) / Math.sqrt(5) < 3);
+}
+
 H('التوافقي — القديم لا يُعدّ إشارة حيّة');
 {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
