@@ -3122,20 +3122,41 @@ function calcSupportResistance(cs,ind,cur){
     if(ind.boll?.l)cands.push({price:ind.boll.l,source:'حافة بولينجر السفلية',weight:1});
     if(ind.vwap)cands.push({price:ind.vwap,source:'VWAP',weight:1.2});
   }
-  cands.sort((a,b)=>a.price-b.price);
-  const merged=[];
-  for(const c of cands){
-    const last=merged[merged.length-1];
-    if(last&&Math.abs(c.price-last.price)/last.price*100<0.6){
-      last.weight+=c.weight;
-      if(!last.sources.includes(c.source))last.sources.push(c.source);
-      last.price=+((last.price+c.price)/2).toFixed(2);
-    }else{
-      merged.push({price:+c.price.toFixed(2),weight:c.weight,sources:[c.source]});
+  /* 🛠️ إصلاح: التجميع كان «متسلسلاً» ينجرف. كل مرشّح يُقارَن بالسعر الجاري
+     للعنقود، والسعر الجاري متوسط زوجي (السابق+الجديد)/2 يميل إلى آخر عضو.
+     ففي نطاق كثيف من القمم والقيعان — وخمس سنوات من ZigZag كثيفة — تتسلسل
+     المستويات عنقوداً واحداً يمتدّ عدّة بالمئة، وينجرف سعره المعلن إلى
+     طرفه البعيد. قيس على السوق الحقيقي: 35 سهماً بهدف أول فوق 1:5 وحتى
+     1:18، والوسم يكشف السبب — عنقود واحد يضمّ «MA20 + VWAP + MA50 + MA200
+     + حافة بولنجر العلوية + قمة + قاع»، فيبتلع MA20 القريب من السعر ويُعلَن
+     هدفاً على بعد 9٪. وكان العنقود يعبر السعر الحالي نفسه، فظهرت «حافة
+     بولنجر السفلية» داخل هدف فوق السعر.
+     القاعدة الآن: (١) كل جانب يُجمَّع وحده — لا عنقود يعبر السعر، (٢) المرشّح
+     يدخل العنقود فقط إن بقي امتداد العنقود كله ضمن التسامح (ربط كامل لا
+     متسلسل)، (٣) سعر العنقود متوسط أعضائه الموزون بثقلهم. */
+  const TOL=0.006;
+  const clusterSide=(list,asc)=>{
+    const sorted=list.slice().sort((a,b)=>asc?a.price-b.price:b.price-a.price);
+    const out=[];
+    for(const c of sorted){
+      const g=out[out.length-1];
+      if(g&&Math.abs(c.price-g.anchor)/g.anchor<TOL){
+        g.members.push(c);
+        if(!g.sources.includes(c.source))g.sources.push(c.source);
+      }else out.push({anchor:c.price,members:[c],sources:[c.source]});
     }
-  }
-  const supports=merged.filter(m=>m.price<cur).sort((a,b)=>b.price-a.price).slice(0,3);
-  const resistances=merged.filter(m=>m.price>=cur).sort((a,b)=>a.price-b.price).slice(0,3);
+    return out.map(g=>{
+      const w=g.members.reduce((a,m)=>a+m.weight,0);
+      const px=g.members.reduce((a,m)=>a+m.price*m.weight,0)/w;
+      const ps=g.members.map(m=>m.price);
+      return{price:+px.toFixed(2),weight:w,sources:g.sources,
+        lo:+Math.min(...ps).toFixed(2),hi:+Math.max(...ps).toFixed(2),n:g.members.length};
+    });
+  };
+  /* العنقود يبدأ من المرشّح الأقرب إلى السعر ويمتدّ مبتعداً، فمرساته هي
+     حافته القريبة — أول ما يلمسه السعر. */
+  const supports=clusterSide(cands.filter(c=>c.price<cur),false).slice(0,3);
+  const resistances=clusterSide(cands.filter(c=>c.price>=cur),true).slice(0,3);
   return{supports,resistances};
 }
 
@@ -3413,10 +3434,17 @@ function tradeLevels(sym){
   if(targets.length<2&&window.KSAEngine){
     try{
       const fr=KSAEngine.fractalTargets(cs);
+      /* 🛠️ سقف الوصول: الهدف الفراكتالي تكملة لا مستوى بنيوي، و«حيّة» تعني
+         لم تُكسر منذ تكوّنها — على خمس سنوات قد تكون قمة من 2022 على بعد
+         80٪. قيس: هدف أول 136.79 لسهم عند 74.71 (1:26.87). ما فوق أعلى
+         سعر في 250 جلسة اكتشاف سعري، والمنصة تمتنع أصلاً عن اختراع هدف
+         هناك؛ فالتكملة لا تتجاوز المدى السنوي للسهم نفسه. */
+      const reach=Math.max(...cs.slice(-250).map(c=>c.high));
       if(fr&&fr.ok){
         for(const cand of [fr.target1,fr.target2,fr.measuredMove]){
           if(targets.length>=2)break;
           if(cand==null)continue;
+          if(cand>reach)continue;
           if(!riskOk||cand<entryRef+risk*MIN_RR)continue;
           if(targets.some(t=>Math.abs(t.price-cand)<0.25*atr))continue;
           targets.push({price:f2(cand),source:'قمة فراكتالية حيّة (ليست مستوى بنيوياً)',

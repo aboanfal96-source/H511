@@ -94,6 +94,26 @@ test('الترتيب بالأولوية لا بالأبجدية', () => {
   ok(r.alerts[0].kind === A.KIND.READY, 'الأهمّ ليس أولاً');
 });
 
+test('داخل النوع الواحد: الأقرب وقفاً بوحدات ATR أولاً، لا الأصغر رمزاً', () => {
+  /* قيس على السوق الحقيقي: الثمانية المرسلة في كل تشغيل كانت أصغر الرموز
+     (1010، 1020، 1060…) لأن الترتيب كان أبجدياً وسقف الدفعة يقطع الباقي. */
+  const r = A.evaluate([
+    item('1010', { levels: plan({ riskATR: 2.9, rr1: 1.6 }) }),
+    item('4321', { levels: plan({ riskATR: 1.05, rr1: 2.4 }) }),
+    item('2222', { levels: plan({ riskATR: 1.05, rr1: 3.1 }) })
+  ]);
+  ok(r.alerts.map(a => a.sym).join(',') === '2222,4321,1010', 'الترتيب ' + r.alerts.map(a => a.sym).join(','));
+});
+
+test('سقف الدفعة يقطع الأضعف لا الأكبر رمزاً', () => {
+  const al = A.evaluate([
+    item('1010', { levels: plan({ riskATR: 2.9 }) }),
+    item('9999', { levels: plan({ riskATR: 1.0 }) })
+  ]).alerts;
+  const d = A.dedupe(al, {}, { max: 1 });
+  ok(d.send.length === 1 && d.send[0].sym === '9999', 'أُرسل ' + (d.send[0] && d.send[0].sym));
+});
+
 test('مدخل فارغ أو مشوّه لا يرمي استثناءً', () => {
   ok(A.evaluate(null).alerts.length === 0);
   ok(A.evaluate([null, {}, { sym: 'x' }]).alerts.length === 0);

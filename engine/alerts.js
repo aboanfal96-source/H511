@@ -120,7 +120,18 @@
       }
     }
 
-    out.sort((a, b) => (PRIORITY[a.kind] - PRIORITY[b.kind]) || String(a.sym).localeCompare(String(b.sym)));
+    /* 🛠️ الترتيب داخل النوع الواحد كان برمز السهم: سقف الدفعة (8) يأخذ
+       أوّل ثمانية رموز، فتفوز البنوك (1010، 1020…) بكل المقاعد في كل
+       تشغيل مهما كانت جودة غيرها — وقيس ذلك على السوق الحقيقي: الثمانية
+       المرسلة في كل تشغيل كانت أصغر الرموز. الآن يُقدَّم الأقرب وقفاً
+       بوحدات التذبذب (أرخص مخاطرة لكل وحدة ATR)، ثم الأعلى عائداً للهدف
+       الأول، والرمز أخيراً لكسر التعادل فقط. */
+    const riskOf = a => (a.levels && isNum(a.levels.riskATR)) ? a.levels.riskATR : Infinity;
+    const rrOf = a => (a.levels && isNum(a.levels.rr1)) ? a.levels.rr1 : -Infinity;
+    out.sort((a, b) => (PRIORITY[a.kind] - PRIORITY[b.kind])
+      || (riskOf(a) - riskOf(b))
+      || (rrOf(b) - rrOf(a))
+      || String(a.sym).localeCompare(String(b.sym)));
     return { ok: true, alerts: out, stats };
   }
 
@@ -197,6 +208,9 @@
     lines.push(`${ICON[a.kind] || '🔔'} ${a.sym} — ${a.name}`);
     lines.push(LABEL[a.kind] || a.kind);
     if (isNum(a.price)) lines.push(`السعر ${a.price}`);
+    /* جدولة غيت هَب تتأخّر حتى ساعات، فبعض التشغيلات تقع بعد الإغلاق.
+       التنبيه حينها صحيح لكنه يخصّ الجلسة القادمة، ويجب أن يقول ذلك. */
+    if (opt.sessionClosed) lines.push('⏸ السوق مغلق — السعر إغلاق آخر جلسة، والتنفيذ يخصّ الجلسة القادمة');
 
     if (L && L.viable && L.riskOk) {
       lines.push(`منطقة الدخول ${L.entryLo} – ${L.entryHi}`);

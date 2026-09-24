@@ -124,7 +124,7 @@ const { loadInto, writeSnapshot, sleep } = require('./fetch.js');
 
   let sent = 0, sendError = null;
   for (const a of dd.send) {
-    const text = A.format(a, { url: SITE_URL });
+    const text = A.format(a, { url: SITE_URL, sessionClosed: !ctx.marketOpen() });
     if (DRY || !TG_TOKEN || !TG_CHAT) {
       log('\n--- ' + (DRY ? 'تجربة جافّة' : 'بلا رمز بوت — لم يُرسل') + ' ---\n' + text);
       continue;
@@ -150,5 +150,24 @@ const { loadInto, writeSnapshot, sleep } = require('./fetch.js');
   }
 
   log(`\n✓ انتهى — أُرسل ${sent} تنبيهاً${sendError ? ` (توقّف عند: ${sendError})` : ''}`);
+
+  /* 🛠️ قيس على السوق الحقيقي: 19 تشغيلاً خلال 12 يوماً، كلّها «نجح»
+     بعلامة خضراء، وكلّها أُرسل 0 — لأن الرمزين فارغان. من يرى العلامة
+     الخضراء يظنّ أن التنبيهات تعمل وأن السوق لم يعطِ شيئاً. فغياب الرمز
+     حين يوجد ما يُرسل صار فشلاً ظاهراً بسببه، لا نجاحاً صامتاً. */
+  const missingBot = !DRY && (!TG_TOKEN || !TG_CHAT);
+  const summary = [
+    `### تنبيهات السوق — ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+    `- السوق: ${ctx.marketOpen() ? 'مفتوح' : 'مغلق'}`,
+    `- فُحص ${s.scanned} · مرشّح ${ev.alerts.length} · للإرسال ${dd.send.length} · مكتوم ${dd.suppressed.length} · أُرسل ${sent}`,
+    missingBot ? `- ⛔ **لم يُرسل شيء: ${!TG_TOKEN ? 'TELEGRAM_BOT_TOKEN' : ''}${!TG_TOKEN && !TG_CHAT ? ' و' : ''}${!TG_CHAT ? 'TELEGRAM_CHAT_ID' : ''} غير مضبوط** — Settings → Secrets and variables → Actions` : '',
+    sendError ? `- ✗ فشل الإرسال: ${sendError}` : ''
+  ].filter(Boolean).join('\n');
+  if (process.env.GITHUB_STEP_SUMMARY) { try { fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n'); } catch (e) { } }
+
   if (sendError) process.exit(1);
+  if (missingBot && dd.send.length) {
+    console.log(`::error title=التنبيهات لا تُرسل::${dd.send.length} تنبيهاً جاهزاً ولم يُرسل أيّ منها — أضف TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID في Settings → Secrets and variables → Actions`);
+    process.exit(2);
+  }
 })().catch(e => { console.error('✗ ' + (e && e.stack || e)); process.exit(1); });

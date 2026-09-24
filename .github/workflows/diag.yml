@@ -17,7 +17,7 @@ permissions:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -25,6 +25,8 @@ jobs:
           node-version: '22'
       - name: تشخيص
         run: node scripts/diag.js --snapshot snapshot.json.gz --json diag.json
+      - name: دراسة حدث — هل للفلتر الزمني قيمة؟
+        run: node scripts/timetest.js --from snapshot.json.gz --json timetest.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -32,4 +34,5 @@ jobs:
           path: |
             snapshot.json.gz
             diag.json
+            timetest.json
           retention-days: 14
