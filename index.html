@@ -4505,7 +4505,8 @@ function timeCell(sym){
    يُبنى لاحقاً إن أردت، وهو شغل مستقلّ لا إضافة سطر.
    ══════════════════════════════════════════════════════════════════════ */
 const AL = {
-  cfg: null, store: null, log: [], timer: null, running: false, lastRun: 0, tgState: 'unknown'
+  cfg: null, store: null, log: [], timer: null, running: false, lastRun: 0, tgState: 'unknown',
+  server: { items: [], fetchedAt: 0, err: null, updatedAt: null }
 };
 const AL_CFG_KEY = 'ksaAlertsCfg', AL_STORE_KEY = 'ksaAlertsStore', AL_LOG_KEY = 'ksaAlertsLog';
 const AL_DEFAULTS = {
@@ -4533,6 +4534,41 @@ function alSave() {
   try { localStorage.setItem(AL_LOG_KEY, JSON.stringify(AL.log.slice(0, 60))); } catch (e) { }
 }
 alLoad();
+
+/* ══ تنبيهات فاحص الخادم — بلا أي مفتاح ═════════════════════════════════
+   الفاحص على GitHub Actions يكتب ما يجده في alerts-feed.json داخل المستودع
+   نفسه. تُقرأ النسخة من المستودع مباشرةً (لا من نسخة النشر) لأنها تتحدّث مع
+   كل تشغيل دون انتظار إعادة نشر. الجديد منذ آخر زيارة يُطلق إشعار المتصفّح؛
+   وأول زيارة لا تُغرق بما مضى. */
+const ALERT_FEED_URL = 'https://raw.githubusercontent.com/aboanfal96-source/H511/main/alerts-feed.json';
+const ALERT_ISSUES_URL = 'https://github.com/aboanfal96-source/H511/issues';
+const AL_FEED_SEEN_KEY = 'ksaFeedSeen';
+async function alFetchServerFeed() {
+  try {
+    const r = await fetch(ALERT_FEED_URL + '?t=' + Math.floor(Date.now() / 60000), { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    if (r.status === 404) { AL.server.items = []; AL.server.err = null; AL.server.fetchedAt = Date.now(); return AL.server; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const items = Array.isArray(d && d.items) ? d.items.filter(x => x && x.sym && x.at) : [];
+    AL.server.items = items; AL.server.updatedAt = d.updatedAt || null; AL.server.err = null; AL.server.fetchedAt = Date.now();
+    let seen = null; try { seen = localStorage.getItem(AL_FEED_SEEN_KEY); } catch (e) { }
+    const fresh = seen ? items.filter(x => x.at > seen) : [];
+    if (items.length) { try { localStorage.setItem(AL_FEED_SEEN_KEY, items[0].at); } catch (e) { } }
+    if (fresh.length && AL.cfg && AL.cfg.browser && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      for (const x of fresh.slice(0, 5)) {
+        try {
+          new Notification(`${(window.KSAAlerts && KSAAlerts.ICON[x.kind]) || '🔔'} ${x.sym} — ${x.name || ''}`,
+            { body: String(x.text || '').split('\n').slice(1, 4).join(' · '), tag: 'feed-' + x.key });
+        } catch (e) { }
+      }
+    }
+    alRefreshBadge();
+    if (document.getElementById('al-box')) alRenderPanel();
+  } catch (e) { AL.server.err = e.message || String(e); }
+  return AL.server;
+}
+window.alFetchServerFeed = alFetchServerFeed;
+try { setTimeout(alFetchServerFeed, 2500); setInterval(alFetchServerFeed, 10 * 60000); } catch (e) { }
 
 /** يجمع لكل سهم محمّل حالته الثلاثية التي يقرأها المحرّك. */
 function alCollect() {
@@ -4647,7 +4683,8 @@ window.runAlertScan = runAlertScan;
 function alRefreshBadge() {
   const b = document.getElementById('alerts-badge'); if (!b) return;
   const dayAgo = Date.now() - 86400000;
-  const n = AL.log.filter(x => x.t > dayAgo).length;
+  const srv = ((AL.server && AL.server.items) || []).filter(x => Date.parse(x.at) > dayAgo).length;
+  const n = AL.log.filter(x => x.t > dayAgo).length + srv;
   b.textContent = n; b.style.display = n ? 'inline-block' : 'none';
 }
 
@@ -4775,11 +4812,20 @@ function alRenderPanel() {
       <button onclick="document.getElementById('al-modal').remove()" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#c8d0e0;border-radius:6px;padding:5px 12px;cursor:pointer;font-family:inherit">✕ إغلاق</button>
     </div>
     <div style="font-size:11.5px;color:#9aa4b8;line-height:1.85;margin-bottom:13px;padding:9px 11px;background:rgba(245,200,66,.07);border:1px solid rgba(245,200,66,.25);border-radius:8px">
-      ⚠️ <b style="color:#f5c842">اقرأ هذا أولاً:</b> التنبيهات تعمل <b>ما دامت هذه الصفحة مفتوحة</b>. المنصة صفحة ثابتة بلا خادم دائم،
-      فلا شيء يفحص السوق نيابةً عنك وأنت مغلق. رسالة تلقرام تصل إلى هاتفك، لكن مَن أطلقها هو متصفّحك.
-      أبقِ التبويب مفتوحاً في جلسة التداول. (التنبيه والمتصفّح مغلق يحتاج مسحاً على الخادم بجدولة وتخزين حالة — شغل مستقلّ يُبنى عند الطلب.)
+      📡 <b style="color:#2dd4bf">التنبيهات تصلك بطريقتين، بلا أي مفتاح:</b><br>
+      ① <b>فاحص الخادم</b> على GitHub يعمل والمتصفّح مغلق (كل ربع ساعة تقريباً في الجلسة — جدولة GitHub تقريبية). ما يجده يظهر هنا أدناه، ويُنشر في
+      <a href="${ALERT_ISSUES_URL}" target="_blank" rel="noopener" style="color:#2dd4bf">مسألة «تنبيهات السوق» في المستودع</a> فيُشعرك GitHub بالبريد وفي تطبيقه على الجوال.<br>
+      ② <b>هذه الصفحة</b> وهي مفتوحة: تفحص الأسهم المحمّلة بالإعدادات أدناه، وتُطلق إشعار المتصفّح.
     </div>
 
+    ${(()=>{const S=AL.server||{items:[]};const it=(S.items||[]).slice(0,8);
+      const when=x=>{try{return new Date(x.at).toLocaleString('ar-SA',{timeZone:'Asia/Riyadh',hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});}catch(e){return x.at;}};
+      const row=x=>`<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05)"><span style="color:#7a8ba8;font-size:10.5px;white-space:nowrap">${when(x)}</span><b style="color:#e6ecf7;cursor:pointer" onclick="selectStock('${x.sym}')">${x.sym}</b><span style="color:#9aa4b8;font-size:11px">${x.name||''} · ${(window.KSAAlerts&&KSAAlerts.LABEL[x.kind])||x.kind}${x.price!=null?' · '+x.price:''}</span></div>`;
+      return `<div style="font-weight:700;color:#e6ecf7;margin:4px 0 7px">📥 آخر ما وجده فاحص الخادم</div>
+        <div style="border:1px solid rgba(45,212,191,.2);border-radius:8px;padding:6px 10px;margin-bottom:12px;font-size:12px">
+        ${S.err?`<div style="color:#f5c842">تعذّر جلب ملف التنبيهات: ${S.err}</div>`:''}
+        ${it.length?it.map(row).join(''):'<div style="color:#7a8ba8;padding:4px 0">لا تنبيهات من الخادم بعد — يظهر هنا ما يجده الفاحص في الجلسة القادمة.</div>'}
+        <div style="color:#7a8ba8;font-size:10.5px;margin-top:5px">${S.updatedAt?'آخر تحديث للملف: '+when({at:S.updatedAt}):''} <a href="#" onclick="event.preventDefault();alFetchServerFeed()" style="color:#2dd4bf">↻ تحديث</a></div></div>`;})()}
     <div style="font-weight:700;color:#e6ecf7;margin:4px 0 7px">متى أُنبِّهك؟</div>
     ${chk('k-ready', has(K.READY), '✅ الشروط مكتملة', 'كل بوابات المحرّك مرّت، والخطة مجدية بوقف خارج ضجيج الجلسة. أقوى ما تصل إليه المنصة.', `alSetKind('${K.READY}',this.checked)`)}
     ${chk('k-zone', has(K.ZONE), '🎯 السعر دخل منطقة الدخول', 'خطة قابلة للتنفيذ والسعر وصل نطاقها الآن. هذا هو التنبيه العملي الذي يُتصرَّف به.', `alSetKind('${K.ZONE}',this.checked)`)}

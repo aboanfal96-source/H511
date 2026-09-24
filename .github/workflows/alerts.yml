@@ -16,10 +16,9 @@
 # ⚠️ وغيت هَب يوقف المهامّ المجدولة تلقائياً إذا مرّ 60 يوماً بلا أي نشاط
 # في المستودع. أعِد تفعيلها من تبويب Actions إن حدث.
 #
-# الضبط المطلوب مرّة واحدة:
-#   Settings → Secrets and variables → Actions → New repository secret
-#     TELEGRAM_BOT_TOKEN
-#     TELEGRAM_CHAT_ID
+# لا ضبط مطلوب: التنبيهات تُكتب في alerts-feed.json (تقرؤه المنصة)، وتُنشر
+# تعليقاتٍ في مسألة بالمستودع فيُشعرك GitHub بالبريد وفي تطبيقه على الجوال.
+# تلقرام اختياري: TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID في Secrets إن أردته.
 # ══════════════════════════════════════════════════════════════════════════
 name: تنبيهات السوق
 
@@ -38,9 +37,11 @@ on:
         type: boolean
         default: false
 
-# صلاحية الكتابة لازمة لحفظ ملف الحالة في المستودع
+# الكتابة لحفظ ملف الحالة وملف التنبيهات، والمسائل لنشر التنبيهات تعليقاتٍ
+# (إشعار GitHub). كلاهما بمفتاح Actions المدمج — لا مفتاح يضبطه المستخدم.
 permissions:
   contents: write
+  issues: write
 
 # تشغيلان متزامنان قد يرسلان التنبيه نفسه مرّتين ويتصادمان على ملف الحالة
 concurrency:
@@ -61,6 +62,7 @@ jobs:
       # لا تثبيت حزم: المستودع بلا اعتماديات npm إطلاقاً
       - name: فحص التنبيهات
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SITE_URL: https://h511-alpha.vercel.app
@@ -69,10 +71,10 @@ jobs:
       - name: حفظ حالة منع التكرار
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry) }}
         run: |
-          if [ -n "$(git status --porcelain .alerts-state.json)" ]; then
+          if [ -n "$(git status --porcelain .alerts-state.json alerts-feed.json)" ]; then
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add .alerts-state.json
+            git add .alerts-state.json alerts-feed.json 2>/dev/null || git add .alerts-state.json
             git commit -m "حالة التنبيهات [skip ci]"
             # إعادة المحاولة: تشغيل آخر قد يكون دفع بين الفحص والدفع
             for i in 1 2 3; do

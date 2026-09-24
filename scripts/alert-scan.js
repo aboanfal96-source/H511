@@ -38,6 +38,12 @@ const FROM = val('from', '');          /* تشغيل على لقطة محفوظ�
 const SNAPSHOT = val('snapshot', '');  /* حفظ الاستجابات الخام في لقطة */
 const STATE_PATH = path.join(ROOT, val('state', '.alerts-state.json'));
 const CONFIG_PATH = path.join(ROOT, 'alerts.config.json');
+const FEED_PATH = path.join(ROOT, val('feed', 'alerts-feed.json'));
+const FEED_MAX = 150;
+/* مفتاح GitHub المدمج — يمنحه Actions تلقائياً لكل تشغيل، لا يضبطه المستخدم */
+const GH_TOKEN = process.env.GITHUB_TOKEN || '';
+const GH_REPO = process.env.GITHUB_REPOSITORY || '';
+const ISSUE_TITLE = '🔔 تنبيهات السوق — المنصة';
 
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
@@ -55,7 +61,8 @@ const DEFAULT_CONFIG = {
   range: '5y',
   concurrency: 5,
   minBars: 120,
-  symbols: null            /* null = كل الأسهم؛ أو مصفوفة رموز لمتابعة مختارة */
+  symbols: null,           /* null = كل الأسهم؛ أو مصفوفة رموز لمتابعة مختارة */
+  githubIssue: true        /* نشر التنبيهات تعليقاتٍ في مسألة بالمستودع ⇒ إشعار GitHub */
 };
 
 const log = (...a) => console.log(...a);
@@ -65,6 +72,22 @@ function readJSON(p, fallback) {
 }
 
 const { loadInto, writeSnapshot, sleep } = require('./fetch.js');
+
+/** ينشر تعليقاً على مسألة التنبيهات، وينشئها إن لم توجد. يعيد رقمها. */
+async function postIssueComment(body) {
+  /* GITHUB_API_URL يضبطه Actions تلقائياً؛ وتغييره يتيح اختبار هذه القناة على خادم محلّي */
+  const api = `${process.env.GITHUB_API_URL || 'https://api.github.com'}/repos/${GH_REPO}`;
+  const h = { authorization: `Bearer ${GH_TOKEN}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': 'ksa-alerts' };
+  const j = async (r) => { const b = await r.json().catch(() => null); if (!r.ok) throw new Error((b && b.message) || `HTTP ${r.status}`); return b; };
+  const list = await j(await fetch(`${api}/issues?state=open&per_page=100`, { headers: h, signal: AbortSignal.timeout(15000) }));
+  let issue = (list || []).find(i => i.title === ISSUE_TITLE && !i.pull_request);
+  if (!issue) {
+    issue = await j(await fetch(`${api}/issues`, { method: 'POST', headers: h, signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({ title: ISSUE_TITLE, body: 'تنبيهات فاحص الخادم تُنشر هنا تعليقاتٍ. GitHub يُشعرك بكل تعليق بالبريد وفي تطبيق GitHub على الجوال — بلا أي مفتاح.\n\nلإيقاف الإشعارات: زر Unsubscribe في هذه الصفحة. لإيقاف النشر هنا: "githubIssue": false في alerts.config.json.' }) }));
+  }
+  await j(await fetch(`${api}/issues/${issue.number}/comments`, { method: 'POST', headers: h, signal: AbortSignal.timeout(15000), body: JSON.stringify({ body }) }));
+  return issue.number;
+}
 
 (async () => {
   const cfg = Object.assign({}, DEFAULT_CONFIG, readJSON(CONFIG_PATH, {}));
@@ -131,52 +154,86 @@ const { loadInto, writeSnapshot, sleep } = require('./fetch.js');
 
   if (!dd.send.length) { log('لا جديد يستحق الإرسال.'); }
 
-  let sent = 0, sendError = null;
-  for (const a of dd.send) {
-    const text = A.format(a, { url: SITE_URL, sessionClosed: !ctx.marketOpen() });
-    if (DRY || !TG_TOKEN || !TG_CHAT) {
-      log('\n--- ' + (DRY ? 'تجربة جافّة' : 'بلا رمز بوت — لم يُرسل') + ' ---\n' + text);
-      continue;
+  /* ══ القنوات ══════════════════════════════════════════════════════════
+     بلا أي مفتاح يضبطه المستخدم: كل شيء داخل المستودع نفسه.
+     ① ملف alerts-feed.json في المستودع — تقرؤه المنصة عند فتحها فترى ما
+        صدر وأنت غائب، ويُطلق إشعار المتصفّح لما هو جديد منذ آخر زيارة.
+     ② تعليق على مسألة (issue) واحدة في المستودع بمفتاح GitHub المدمج
+        (GITHUB_TOKEN — يمنحه Actions تلقائياً، لا يُضبط). GitHub يُشعر مالك
+        المستودع بالبريد وفي تطبيق GitHub على الجوال.
+     ③ تلقرام — اختياري، إن وُجد مفتاحاه فقط. */
+  const now = new Date().toISOString();
+  const texts = dd.send.map(a => ({ a, text: A.format(a, { url: SITE_URL, sessionClosed: !ctx.marketOpen() }) }));
+  const delivered = { feed: 0, issue: 0, telegram: 0 };
+  let sendError = null;
+
+  if (DRY) {
+    texts.forEach(x => log('\n--- تجربة جافّة ---\n' + x.text));
+  } else if (texts.length) {
+    /* ① الملف */
+    try {
+      const feed = readJSON(FEED_PATH, { items: [] });
+      const fresh = texts.map(x => ({ at: now, key: x.a.key, sym: x.a.sym, name: x.a.name, kind: x.a.kind, price: x.a.price, text: x.text }));
+      feed.items = fresh.concat(feed.items || []).slice(0, FEED_MAX);
+      feed.updatedAt = now;
+      fs.writeFileSync(FEED_PATH, JSON.stringify(feed, null, 1) + '\n');
+      delivered.feed = fresh.length;
+      log(`▸ سُجّل ${fresh.length} تنبيهاً في ${path.basename(FEED_PATH)}`);
+    } catch (e) { log('✗ تعذّرت كتابة ملف التنبيهات: ' + e.message); }
+
+    /* ② المسألة */
+    if (GH_TOKEN && GH_REPO && cfg.githubIssue !== false) {
+      try {
+        /* الإشارة (@) تُشعر المالك حتى لو لم يكن «يراقب» المستودع */
+        const owner = process.env.GITHUB_REPOSITORY_OWNER ? `@${process.env.GITHUB_REPOSITORY_OWNER} ` : '';
+        const body = owner + `**${texts.length} تنبيهاً — ${ctx.marketOpen() ? 'السوق مفتوح' : 'السوق مغلق'}** · ${now.slice(0, 16).replace('T', ' ')} UTC\n\n`
+          + texts.map(x => '```\n' + x.text + '\n```').join('\n');
+        const n = await postIssueComment(body.slice(0, 60000));
+        delivered.issue = texts.length;
+        log(`▸ نُشر في المسألة #${n} — يصلك إشعار GitHub`);
+      } catch (e) { log('✗ تعذّر النشر في مسألة GitHub: ' + e.message); }
     }
-    try { await sendTelegram(text); sent++; await sleep(400); }
-    catch (e) { sendError = e.message; log('✗ فشل الإرسال: ' + e.message); break; }
+
+    /* ③ تلقرام — اختياري */
+    if (TG_TOKEN && TG_CHAT) {
+      for (const x of texts) {
+        try { await sendTelegram(x.text); delivered.telegram++; await sleep(400); }
+        catch (e) { sendError = e.message; log('✗ فشل إرسال تلقرام: ' + e.message); break; }
+      }
+    }
+    texts.forEach(x => log('\n---\n' + x.text));
   }
 
-  /* الحالة تُحفظ فقط لما أُرسل فعلاً: لو سقط الإرسال في المنتصف يجب أن
-     تُعاد محاولة الباقي في التشغيل التالي لا أن يُعدّ مُرسَلاً. */
+  /* الحالة: المفتاح يُسجَّل حين وصل التنبيه إلى قناة واحدة على الأقل —
+     وإلا يُعاد في التشغيل التالي لا أن يُعدّ مُرسَلاً. */
+  const reached = Math.max(delivered.feed, delivered.issue, delivered.telegram);
   if (!DRY) {
     const confirmed = {};
-    const keysSent = dd.send.slice(0, (TG_TOKEN && TG_CHAT) ? sent : 0).map(a => a.key);
+    const keysSent = dd.send.slice(0, reached).map(a => a.key);
     for (const k of Object.keys(dd.store)) {
       if (keysSent.indexOf(k) >= 0 || (state.store && state.store[k] != null)) confirmed[k] = dd.store[k];
     }
     fs.writeFileSync(STATE_PATH, JSON.stringify({
-      updatedAt: new Date().toISOString(),
-      lastRun: { scanned: s.scanned, candidates: ev.alerts.length, sent, suppressed: dd.suppressed.length, failedFetch: failed.length },
+      updatedAt: now,
+      lastRun: { scanned: s.scanned, candidates: ev.alerts.length, sent: reached, delivered, suppressed: dd.suppressed.length, failedFetch: failed.length },
       store: confirmed
     }, null, 1) + '\n');
     log(`▸ حُفظت الحالة (${Object.keys(confirmed).length} مفتاحاً)`);
   }
 
-  log(`\n✓ انتهى — أُرسل ${sent} تنبيهاً${sendError ? ` (توقّف عند: ${sendError})` : ''}`);
-
-  /* 🛠️ قيس على السوق الحقيقي: 19 تشغيلاً خلال 12 يوماً، كلّها «نجح»
-     بعلامة خضراء، وكلّها أُرسل 0 — لأن الرمزين فارغان. من يرى العلامة
-     الخضراء يظنّ أن التنبيهات تعمل وأن السوق لم يعطِ شيئاً. فغياب الرمز
-     حين يوجد ما يُرسل صار فشلاً ظاهراً بسببه، لا نجاحاً صامتاً. */
-  const missingBot = !DRY && (!TG_TOKEN || !TG_CHAT);
+  log(`\n✓ انتهى — ملف ${delivered.feed} · مسألة ${delivered.issue} · تلقرام ${delivered.telegram}${sendError ? ` (توقّف تلقرام عند: ${sendError})` : ''}`);
   const summary = [
-    `### تنبيهات السوق — ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+    `### تنبيهات السوق — ${now.slice(0, 16).replace('T', ' ')} UTC`,
     `- السوق: ${ctx.marketOpen() ? 'مفتوح' : 'مغلق'}`,
-    `- فُحص ${s.scanned} · مرشّح ${ev.alerts.length} · للإرسال ${dd.send.length} · مكتوم ${dd.suppressed.length} · أُرسل ${sent}`,
-    missingBot ? `- ⛔ **لم يُرسل شيء: ${!TG_TOKEN ? 'TELEGRAM_BOT_TOKEN' : ''}${!TG_TOKEN && !TG_CHAT ? ' و' : ''}${!TG_CHAT ? 'TELEGRAM_CHAT_ID' : ''} غير مضبوط** — Settings → Secrets and variables → Actions` : '',
-    sendError ? `- ✗ فشل الإرسال: ${sendError}` : ''
+    `- فُحص ${s.scanned} · مرشّح ${ev.alerts.length} · للإرسال ${dd.send.length} · مكتوم ${dd.suppressed.length}`,
+    `- وصل: ملف المنصة ${delivered.feed} · مسألة GitHub ${delivered.issue} · تلقرام ${TG_TOKEN && TG_CHAT ? delivered.telegram : '— (غير مستعمل)'}`,
+    sendError ? `- ✗ فشل تلقرام: ${sendError}` : ''
   ].filter(Boolean).join('\n');
   if (process.env.GITHUB_STEP_SUMMARY) { try { fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n'); } catch (e) { } }
 
-  if (sendError) process.exit(1);
-  if (missingBot && dd.send.length) {
-    console.log(`::error title=التنبيهات لا تُرسل::${dd.send.length} تنبيهاً جاهزاً ولم يُرسل أيّ منها — أضف TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID في Settings → Secrets and variables → Actions`);
+  /* الفشل الظاهر فقط حين لم يصل تنبيهٌ جاهز إلى أي قناة */
+  if (!DRY && texts.length && !reached) {
+    console.log(`::error title=التنبيهات لم تصل::${texts.length} تنبيهاً جاهزاً ولم يصل أيّ منها إلى أي قناة`);
     process.exit(2);
   }
 })().catch(e => { console.error('✗ ' + (e && e.stack || e)); process.exit(1); });

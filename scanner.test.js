@@ -40,8 +40,22 @@ function synth(sym) {
 }
 
 let requests = 0;
+/* بديل محلّي لواجهة GitHub: يسجّل المسائل والتعليقات المنشورة */
+const GH = { issues: [], comments: [], auth: [] };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  if (u.pathname.startsWith('/gh/repos/')) {
+    GH.auth.push(req.headers.authorization || '');
+    let body = ''; req.on('data', c => body += c);
+    return req.on('end', () => {
+      const j = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+      if (req.method === 'GET' && /\/issues$/.test(u.pathname)) return j(200, GH.issues);
+      if (req.method === 'POST' && /\/issues$/.test(u.pathname)) { const b = JSON.parse(body); const i = { number: GH.issues.length + 1, title: b.title, body: b.body }; GH.issues.push(i); return j(201, i); }
+      const m = /\/issues\/(\d+)\/comments$/.exec(u.pathname);
+      if (req.method === 'POST' && m) { GH.comments.push({ issue: +m[1], body: JSON.parse(body).body }); return j(201, { id: GH.comments.length }); }
+      return j(404, { message: 'not found' });
+    });
+  }
   if (u.pathname === '/api/stock') {
     requests++;
     const sym = u.searchParams.get('symbol') || '2222';
@@ -57,17 +71,19 @@ const server = http.createServer((req, res) => {
    الأولى من هذا الاختبار سقطت بهذا السبب: ثمانية فحوص «فشلت» والكود
    سليم. التشغيل لا بدّ أن يكون لا تزامنياً. */
 function run(extraArgs, env) {
-  const state = path.join(os.tmpdir(), 'alerts-state-test-' + Math.random().toString(36).slice(2) + '.json');
+  const tag = Math.random().toString(36).slice(2);
+  const state = path.join(os.tmpdir(), 'alerts-state-test-' + tag + '.json');
+  const feed = path.join(os.tmpdir(), 'alerts-feed-test-' + tag + '.json');
   return new Promise((resolve) => {
-    const ch = spawn(process.execPath, [path.join(ROOT, 'scripts/alert-scan.js'), '--limit', '25', '--state', path.relative(ROOT, state), ...extraArgs], {
+    const ch = spawn(process.execPath, [path.join(ROOT, 'scripts/alert-scan.js'), '--limit', '25', '--state', path.relative(ROOT, state), '--feed', path.relative(ROOT, feed), ...extraArgs], {
       cwd: ROOT,
-      env: Object.assign({}, process.env, { STOCK_API_BASE: BASE, TELEGRAM_BOT_TOKEN: '', TELEGRAM_CHAT_ID: '' }, env || {})
+      env: Object.assign({}, process.env, { STOCK_API_BASE: BASE, TELEGRAM_BOT_TOKEN: '', TELEGRAM_CHAT_ID: '', GITHUB_TOKEN: '', GITHUB_REPOSITORY: '' }, env || {})
     });
     let out = '';
     ch.stdout.on('data', d => out += d);
     ch.stderr.on('data', d => out += d);
     const killer = setTimeout(() => ch.kill('SIGKILL'), 180000);
-    ch.on('close', code => { clearTimeout(killer); resolve({ r: { status: code }, state, out }); });
+    ch.on('close', code => { clearTimeout(killer); resolve({ r: { status: code }, state, feed, out }); });
   });
 }
 
@@ -91,6 +107,7 @@ server.listen(0, async () => {
 
   test('التجربة الجافّة لا تكتب ملف حالة ولا ترسل', () => {
     ok(!fs.existsSync(a.state), 'كُتب ملف حالة في تجربة جافّة');
+    ok(!fs.existsSync(a.feed), 'كُتب ملف تنبيهات في تجربة جافّة');
     ok(/تجربة جافّة/.test(a.out), 'لا وسم للتجربة الجافّة');
   });
 
@@ -122,21 +139,44 @@ server.listen(0, async () => {
     ok(fs.existsSync(b.state), 'لم يُكتب ملف الحالة');
   });
 
-  test('غياب رمز البوت مع وجود ما يُرسل ⇒ فشل ظاهر لا نجاح صامت', () => {
-    /* قيس في الإنتاج: 19 تشغيلاً «ناجحاً» بعلامة خضراء، أُرسل في كلٍّ منها 0
-       لأن الرمزين فارغان. العلامة الخضراء كانت تقول إن كل شيء يعمل. */
+  test('بلا أي مفتاح: التشغيل ينجح والتنبيهات تُكتب في ملف المنصة', () => {
+    /* لا تلقرام ولا GitHub: ملف alerts-feed.json هو القناة التي لا تحتاج ضبطاً */
     const st = JSON.parse(fs.readFileSync(b.state, 'utf8'));
-    if (!st.lastRun || !st.lastRun.candidates) return;   /* لا شيء يُرسل ⇒ لا فشل */
-    ok(b.r.status === 2, `رمز الخروج ${b.r.status} — يجب أن يفشل التشغيل ظاهراً`);
-    ok(/::error title=التنبيهات لا تُرسل::/.test(b.out), 'لا تعليق خطأ يظهر في واجهة Actions');
+    ok(b.r.status === 0, `رمز الخروج ${b.r.status}\n${b.out.slice(-300)}`);
+    if (!st.lastRun || !st.lastRun.candidates) return;
+    ok(fs.existsSync(b.feed), 'لم يُكتب ملف التنبيهات');
+    const f = JSON.parse(fs.readFileSync(b.feed, 'utf8'));
+    ok(f.items && f.items.length === st.lastRun.delivered.feed && f.items.length > 0, `بنود الملف ${f.items && f.items.length}`);
+    ok(f.items.every(x => x.sym && x.text && x.at && x.key), 'بند ناقص');
+    ok(!/NaN|undefined/.test(JSON.stringify(f)), 'قيمة فاسدة في الملف');
   });
 
-  test('بلا رمز بوت: لا يدّعي إرسالاً ولا يسجّل مفاتيح', () => {
+  test('ما وصل إلى الملف يُسجَّل في منع التكرار — فلا يُعاد في التشغيل التالي', () => {
     const st = JSON.parse(fs.readFileSync(b.state, 'utf8'));
-    ok(/بلا رمز بوت/.test(b.out), 'لم يُعلن غياب الرمز');
-    ok(st.lastRun && st.lastRun.sent === 0, `سجّل إرسال ${st.lastRun && st.lastRun.sent}`);
-    ok(Object.keys(st.store || {}).length === 0,
-      `سجّل ${Object.keys(st.store).length} مفتاحاً رغم أنه لم يُرسل — التشغيل التالي سيكتم تنبيهات لم تصل`);
+    if (!st.lastRun || !st.lastRun.delivered || !st.lastRun.delivered.feed) return;
+    ok(Object.keys(st.store || {}).length >= st.lastRun.delivered.feed,
+      `سُجّل ${Object.keys(st.store || {}).length} مفتاحاً لـ${st.lastRun.delivered.feed} تنبيهاً`);
+    ok(st.lastRun.delivered.telegram === 0 && st.lastRun.delivered.issue === 0, 'ادّعى وصولاً لقناة غير مضبوطة');
+  });
+
+  /* قناة GitHub: مسألة واحدة تُنشأ مرّة، وكل تشغيل تعليق واحد يذكر المالك */
+  const g1 = await run([], { GITHUB_TOKEN: 'test-token', GITHUB_REPOSITORY: 'owner/repo', GITHUB_REPOSITORY_OWNER: 'owner', GITHUB_API_URL: BASE + '/gh' });
+  const g2 = await run([], { GITHUB_TOKEN: 'test-token', GITHUB_REPOSITORY: 'owner/repo', GITHUB_REPOSITORY_OWNER: 'owner', GITHUB_API_URL: BASE + '/gh' });
+  test('بمفتاح GitHub المدمج: تُنشأ مسألة واحدة لا مسألة لكل تشغيل', () => {
+    const st = JSON.parse(fs.readFileSync(g1.state, 'utf8'));
+    if (!st.lastRun || !st.lastRun.candidates) return;
+    ok(g1.r.status === 0 && g2.r.status === 0, `رمزا الخروج ${g1.r.status} ${g2.r.status}\n${g1.out.slice(-300)}`);
+    ok(GH.issues.length === 1, `أُنشئت ${GH.issues.length} مسألة`);
+    ok(GH.comments.length === 2 && GH.comments.every(c => c.issue === 1), `تعليقات ${GH.comments.length}`);
+  });
+  test('التعليق يذكر المالك (@) ويحمل الخطة كاملة', () => {
+    if (!GH.comments.length) return;
+    const c = GH.comments[0].body;
+    ok(/^@owner /.test(c), 'بلا إشارة للمالك — قد لا يصله إشعار');
+    ok(/منطقة الدخول/.test(c) && /الوقف/.test(c) && /ليس توصية/.test(c), 'تعليق ناقص');
+    ok(GH.auth.every(a => a === 'Bearer test-token'), 'لم يُستعمل مفتاح GitHub المدمج');
+    const st = JSON.parse(fs.readFileSync(g1.state, 'utf8'));
+    ok(st.lastRun.delivered.issue > 0, 'لم يُسجَّل الوصول عبر المسألة');
   });
 
   test('ملف الحالة يحمل تشخيص آخر تشغيل', () => {

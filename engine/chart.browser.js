@@ -419,6 +419,34 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
     rev.fracCacheCleared ? ok('ذاكرة أهداف الفراكتال تُمسح بعد التحديث الحيّ') : bad('_ddFracCache لا تُمسح — أهداف على سعر قديم');
     rev.timeMapRebuilt ? ok('خريطة المواعيد تُعاد بناؤها بعد التحديث الحيّ') : bad('عمود موعد الحركة يبقى قديماً بعد التحديث');
 
+    /* ── تنبيهات فاحص الخادم: تُقرأ من ملف المستودع بلا أي مفتاح ── */
+    let FEED = { updatedAt: '2026-09-24T09:00:00Z', items: [
+      { at: '2026-09-24T09:00:00Z', key: 'k1', sym: '2222', name: 'أرامكو', kind: 'zone', price: 27.1, text: '🎯 2222 — أرامكو\nالسعر داخل منطقة الدخول\nالسعر 27.1' } ] };
+    await pg.route('**/alerts-feed.json*', r => r.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(FEED) }));
+    const f1 = await pg.evaluate(async () => {
+      try { localStorage.removeItem('ksaFeedSeen'); } catch (e) { }
+      window.__N = []; AL.cfg.browser = true;
+      await alFetchServerFeed();
+      return { n: AL.server.items.length, notes: window.__N.length, err: AL.server.err };
+    });
+    FEED = { updatedAt: '2026-09-24T09:15:00Z', items: [
+      { at: '2026-09-24T09:15:00Z', key: 'k2', sym: '1120', name: 'الراجحي', kind: 'zone', price: 98.4, text: '🎯 1120 — الراجحي\nالسعر داخل منطقة الدخول\nالسعر 98.4' } ].concat(FEED.items) };
+    const f2 = await pg.evaluate(async () => {
+      await alFetchServerFeed();
+      openAlertsPanel && openAlertsPanel();
+      const box = document.getElementById('al-box');
+      const b = document.getElementById('alerts-badge');
+      return { n: AL.server.items.length, notes: window.__N.map(x => x.t), panel: box ? /آخر ما وجده فاحص الخادم/.test(box.innerHTML) && /1120/.test(box.innerHTML) : null,
+        oldNotice: box ? /ما دامت هذه الصفحة مفتوحة/.test(box.innerHTML) : null, badge: b ? b.textContent : null };
+    });
+    await pg.unroute('**/alerts-feed.json*');
+    (f1.n === 1 && f1.notes === 0 && !f1.err) ? ok('أول زيارة: يقرأ ملف الخادم ولا يُغرق بإشعارات ما مضى')
+      : bad(`أول زيارة: بنود ${f1.n} · إشعارات ${f1.notes} · خطأ ${f1.err}`);
+    (f2.n === 2 && f2.notes.length === 1 && /1120/.test(f2.notes[0])) ? ok('الجديد منذ آخر زيارة يُطلق إشعار متصفّح واحداً')
+      : bad(`الجديد: بنود ${f2.n} · إشعارات ${JSON.stringify(f2.notes)}`);
+    f2.panel === null ? ok('(لوحة التنبيهات لا تُفتح في هذا الاختبار)') : (f2.panel && !f2.oldNotice) ? ok('اللوحة تعرض ما وجده الخادم، وأُزيل تنبيه «ما دامت الصفحة مفتوحة»')
+      : bad(`اللوحة: عرض ${f2.panel} · النصّ القديم ${f2.oldNotice}`);
+
     /* ── الترتيب الافتراضي بحالة الخطة، محسوبةً في الخلفية لا داخل الرسم ── */
     const ps = await pg.evaluate(async () => {
       /* صفوف المسح كما يبنيها runFullScan: هذا الاختبار يحمّل الأسهم بلا مسح */
