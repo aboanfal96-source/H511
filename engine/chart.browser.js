@@ -419,6 +419,22 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
     rev.fracCacheCleared ? ok('ذاكرة أهداف الفراكتال تُمسح بعد التحديث الحيّ') : bad('_ddFracCache لا تُمسح — أهداف على سعر قديم');
     rev.timeMapRebuilt ? ok('خريطة المواعيد تُعاد بناؤها بعد التحديث الحيّ') : bad('عمود موعد الحركة يبقى قديماً بعد التحديث');
 
+    /* ── إعادة الترتيب بالدليل: غرفة القرار أولاً، والزخم العكسي موسوم ── */
+    const tabs = await pg.evaluate(() => {
+      const o = {};
+      document.querySelectorAll('.ftab').forEach(t => {
+        const m = /setFilter\('([a-z0-9]+)'/.exec(t.getAttribute('onclick') || '');
+        if (m) o[m[1]] = { order: +getComputedStyle(t).order, title: t.title || '', rev: !!t.querySelector('.ev-rev') };
+      });
+      return o;
+    });
+    const orders = Object.entries(tabs).map(([k, v]) => [k, v.order]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+    (orders[0] === 'decision' && orders[1] === 'all') ? ok(`ترتيب التبويبات بالدليل: ${orders.slice(0, 5).join(' · ')} …`)
+      : bad('غرفة القرار ليست أولاً: ' + orders.slice(0, 4).join(','));
+    (tabs.ma && tabs.ma.rev && /عكسي/.test(tabs.ma.title)) ? ok('تبويب الزخم موسوم ⛔ عكسي برقمه المقيس')
+      : bad('تبويب الزخم بلا وسم عكسي');
+    (tabs.fg && /قيس على/.test(tabs.fg.title)) ? ok('كل تبويب فلتر يحمل سطر دليله') : bad('تلميح الدليل غائب');
+
     errs.length ? bad('استثناءات في الصفحة: ' + errs.slice(0, 3).join(' | ')) : ok('لا استثناءات في المتصفّح');
   } finally {
     await browser.close();

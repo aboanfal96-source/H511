@@ -154,6 +154,50 @@ H('الفلتر الزمني — لا يصوّت لاتجاه قيس بلا قي
   delete G.cans.__z; delete G.ind.__z;
 }
 
+H('مفاجأة الحجم — الجلسة لا تُقاس بنافذة تضمّها');
+{
+  const cs = fromCloses(walk(60, 17, 0, 0.01));
+  let s2 = 5; const r = () => { s2 = (s2 * 16807) % 2147483647; return (s2 - 1) / 2147483646; };
+  cs.forEach(c => { c.volume = Math.round(1e5 * (0.8 + 0.4 * r())); });
+  cs[cs.length - 1].volume = 6e5;                       /* 6× الحجم المعتاد */
+  const v = ctx.calcVolumeZScore(cs);
+  ok('حجم 6× المعتاد يُرصد شاذاً (z ≥ 3)', v.z >= 3 && v.alert, `z=${v.z}`);
+  const last = cs[cs.length - 1]; last.open = last.close * 0.97; last.high = last.close * 1.0005; last.low = last.open * 0.999;
+  const h = ctx.calcLimitUpHunter(cs, '__none');
+  ok('مكوّن الحجم في صائد النسبة صار قابلاً للتحقّق', h.alerts.some(a => a.t === 'انحراف الفوليوم'), JSON.stringify(h.alerts.map(a => a.t)));
+  /* الحدّ النظري القديم: نقطة بين 5 لا يتجاوز z لها (5−1)/√5 */
+  ok('النافذة الذاتية القديمة لم تكن تبلغ 3 (حدّها 1.79)', (5 - 1) / Math.sqrt(5) < 3);
+}
+
+H('الزخم — عكسيّ مقيس فلا يصوّت');
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+  const body = src.slice(src.indexOf('function calcAllFilters('), src.indexOf('function calcAllFilters(') + 12000);
+  ok('لا صوت شراء/بيع من الزخم', !/if\(ma\.alert\)\{ma\.accel>0\?bullAlerts\+\+/.test(body));
+  ok('لا وزن للزخم في الموحّد', !/masterScore\+=ma\.alert/.test(body));
+  const e = ctx.filterEvidenceText('ma');
+  ok('نصّ الزخم يقول إنه عكسي ويذكر رقمه', /عكسي/.test(e) && /31\.1/.test(e), e);
+  ok('كل تبويب فلتر له سطر دليل', ['fg', 'rs', 'sq', 'harmonic', 'master', 'time'].every(k => ctx.filterEvidenceText(k).length > 20));
+}
+
+H('أحكام الدخول تقول ما قيس');
+{
+  const G = ctx.G; let atr = null, now = null;
+  for (let seed = 30; seed < 70 && !(atr && now); seed++) {
+    G.cans.__v = fromCloses(walk(420, seed, 0.0004, 0.012)); G.pr.__v = G.cans.__v[G.cans.__v.length - 1].close; delete G.ind.__v;
+    ctx.calcInd('__v');
+    let L = null; try { L = ctx.tradeLevels('__v'); } catch (e) { }
+    if (L && L.verdict === 'enter_at_market' && !atr) atr = L.verdictText;
+    if (L && L.verdict === 'enter_now' && !now) now = L.verdictText;
+  }
+  delete G.cans.__v; delete G.ind.__v; delete G.pr.__v;
+  if (atr) {
+    ok('بلا بنية: لا يقول «ادخل عند السعر»', !/^ادخل عند السعر/.test(atr), atr.slice(0, 80));
+    ok('بلا بنية: يذكر أنه قيس بلا أفضلية', /لا أفضلية/.test(atr) && /33\.9/.test(atr));
+  } else ok('وُجدت حالة بلا بنية للاختبار', false);
+  if (now) ok('عند بنية: يذكر رقمه ويقول إنه غير مؤكَّد', /41\.1/.test(now) && /غير مؤكَّد/.test(now), now.slice(-120));
+}
+
 H('التوافقي — القديم لا يُعدّ إشارة حيّة');
 {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');

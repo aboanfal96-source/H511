@@ -1421,15 +1421,32 @@ function calcInd(sym){
 ══════════════════════════════════════════════════ */
 
 /* 1. انحراف السيولة اللحظي */
+/** مفاجأة الحجم: z للوغاريتم حجم آخر جلسة مقابل الجلسات `w` *السابقة* لها.
+   🛠️ ثلاثة فلاتر كانت تقيس الجلسة مقابل نافذة تضمّها هي نفسها. والنقطة
+   الشاذة ترفع المتوسط والانحراف اللذين تُقاس بهما، فتخفي نفسها: أقصى z
+   ممكن لنقطة بين n نقاط هو (n−1)/√n — أي 1.79 لنافذة 5 جلسات. فشرط
+   «صائد النسبة» volZ≥3 كان مستحيلاً رياضياً (0٪ على السوق الحقيقي)، وشرط
+   الحجم الشاذ مكبوتاً (حدّه الأقصى 4.25). واللوغاريتم لأن الحجم ذيله
+   ثقيل: بلا لوغاريتم يحكم الانحرافَ يومٌ أو يومان. */
+function volSurprise(cs,w){
+  w=w||20;const n=cs.length;
+  if(n<w+1)return{z:0,ratio:1,mean:0};
+  const lv=[];for(let i=n-1-w;i<n-1;i++){const v=cs[i].volume;if(v>0)lv.push(Math.log(v));}
+  if(lv.length<Math.max(5,w/2))return{z:0,ratio:1,mean:0};
+  const m=lv.reduce((a,b)=>a+b,0)/lv.length;
+  const sd=Math.sqrt(lv.reduce((a,b)=>a+(b-m)*(b-m),0)/(lv.length-1))||1e-9;
+  const last=cs[n-1].volume;
+  const z=last>0?(Math.log(last)-m)/sd:-Infinity;
+  return{z:isFinite(z)?z:-9,ratio:last/Math.exp(m),mean:Math.exp(m)};
+}
+
 function calcVolumeZScore(cs){
   if(!cs||cs.length<20) return{z:0,sig:'—',color:'na',why:''};
-  const vols=cs.map(c=>c.volume),n=Math.min(20,vols.length);
-  const recent=vols.slice(-n);
-  const mean=recent.reduce((a,b)=>a+b,0)/n;
-  const std=Math.sqrt(recent.map(v=>(v-mean)**2).reduce((a,b)=>a+b,0)/n)||1;
-  const lastVol=vols[vols.length-1];
+  const vols=cs.map(c=>c.volume);
+  const vs=volSurprise(cs,20);
+  const mean=vs.mean,lastVol=vols[vols.length-1];
   const lastClose=cs[cs.length-1].close,prevClose=cs[cs.length-2]?.close||lastClose;
-  const z=(lastVol-mean)/std;
+  const z=vs.z;
   const bullish=lastClose>=prevClose;
   let sig='—',color='na',why='';
   if(z>=3){sig=bullish?'سيولة شراء عنيفة':'سيولة بيع عنيفة';color=bullish?'s4':'s1';why=`الحجم (${fK(lastVol)}) تجاوز +${z.toFixed(1)} انحراف معياري عن المتوسط (${fK(Math.round(mean))}) — سيولة غير عادية ${bullish?'مع صعود السعر ← تجميع مؤسسي':'مع هبوط ← تصريف'}`;}
@@ -1440,6 +1457,38 @@ function calcVolumeZScore(cs){
 }
 
 /* 2. تسارع الزخم */
+/* ══ بطاقة أداء الفلاتر — ما قيس فعلاً ═══════════════════════════════════
+   scripts/filtertest.js على 246 سهماً حقيقياً × 5 سنوات، 24 سبتمبر 2026،
+   22,463 نقطة، أفق 10 جلسات، كل فلتر محسوب من البيانات المعروفة حينها فقط.
+   stockWin = نسبة الأسهم التي تفوّق فيها الفلتر (في اتجاهه المعلن) على
+   متوسط السهم نفسه؛ 50٪ = لا شيء. الدلالة باختبار إشارة وحدته السهم.
+   الخلاصة: لا فلتر يتفوّق بدلالة (أفضلها FVG 56.5٪، p=0.048 من بين 24
+   اختباراً)، والإشارة «شراء» 48٪، والسكور الموحّد ≥65 47.7٪. والاستثناء
+   الوحيد القوي عكسي: تسارع الزخم 31.1٪ (p≈4×10⁻⁹) — السهم بعد اندفاع 5
+   جلسات يتأخّر عن متوسطه 1.13٪ في الجلسات العشر التالية.
+   الأرقام هنا تُعرض ولا تدخل أي حساب. */
+const FILTER_EVIDENCE={
+  measured:'2026-09-24',stocks:246,points:22463,horizon:10,
+  rows:{
+    fg:{win:56.5,p:0.048,ex:0.18},harmonic:{win:55.1,p:0.13,ex:0.10},falsebreak:{win:53.7,p:0.28,ex:0.12},
+    fvgr:{win:52.4,p:0.48,ex:0.04},rs:{win:51.5,p:0.69,ex:0.11},time:{win:50.9,p:0.84,ex:-0.25},
+    hidden:{win:50.4,p:1,ex:0.34},instvol:{win:49.1,p:0.84,ex:-0.29},whale:{win:48.8,p:0.78,ex:0.29},
+    fib618:{win:48.7,p:1,ex:-0.56},revcandle:{win:48.4,p:0.69,ex:-0.17},pregap:{win:47.9,p:0.59,ex:0.27},
+    master:{win:47.7,p:0.52,ex:-0.03},sq:{win:47.6,p:0.48,ex:-0.12},vz:{win:47.1,p:0.62,ex:0.41},
+    ab:{win:46.9,p:0.37,ex:-0.16},macd:{win:44.8,p:0.12,ex:-0.29},elliott:{win:44.7,p:0.11,ex:-0.07},
+    sniper:{win:43.0,p:0.056,ex:-0.30},hunter:{win:33.3,p:1,ex:1.36,thin:true},
+    ma:{win:31.1,p:3.8e-9,ex:-1.13,reverse:true}
+  }
+};
+function filterEvidenceText(k){
+  const r=FILTER_EVIDENCE.rows[k];if(!r)return '';
+  const head=`قيس على ${FILTER_EVIDENCE.stocks} سهماً × 5 سنوات بلا تسرّب (أفق ${FILTER_EVIDENCE.horizon} جلسات): `;
+  if(r.reverse)return head+`عكسي بدلالة قوية — تفوّق في ${r.win}٪ فقط من الأسهم (p≈${r.p.toExponential(0)})، وعائده الزائد ${r.ex}٪. الاندفاع يرتدّ غالباً، فلا يُطارَد.`;
+  if(r.thin)return head+'إشاراته أقلّ من أن يُحكم عليها.';
+  return head+`تفوّق في ${r.win}٪ من الأسهم (50٪ = الصدفة، p=${r.p}) — ${r.p<0.01?'أفضلية مقيسة':'لا يختلف عن الصدفة'}.`;
+}
+window.filterEvidenceText=filterEvidenceText;
+
 /** انحراف العائد اليومي (كنسبة) على آخر `w` جلسة — مقياس التذبذب الذي
    تُقاس به عتبات الفلاتر بدل أرقام مئوية ثابتة لا تعني الشيء نفسه لسهم
    هادئ وسهم متقلّب. */
@@ -1480,7 +1529,10 @@ function calcMomentumAccel(cs){
   else if(z>=0.75){sig='انحسار الهبوط';why=`الهبوط توقّف (${fmt(r5prev)}% ثم ${fmt(r5now)}%) — تغيّر في الزخم لا صعود بعد`;}
   else if(z<=-0.75){sig='انحسار الصعود';why=`الصعود توقّف (${fmt(r5prev)}% ثم ${fmt(r5now)}%) — تغيّر في الزخم لا هبوط بعد`;}
   else{sig='محايد';why='لا تغيّر في الزخم يتجاوز تذبذب السهم المعتاد';}
-  return{accel:+accel.toFixed(2),jerk:+jerk.toFixed(2),z:+z.toFixed(2),sig,color,alert:(z>=1.5&&up)||(z<=-1.5&&dn),why};
+  const alertMa=(z>=1.5&&up)||(z<=-1.5&&dn);
+  /* try لا typeof: الثابت معرّف لاحقاً في السكربت، وtypeof لا يحمي من منطقة ما قبل التهيئة */
+  if(alertMa){try{why+=' — ⚠️ '+filterEvidenceText('ma');}catch(e){}}
+  return{accel:+accel.toFixed(2),jerk:+jerk.toFixed(2),z:+z.toFixed(2),sig,color:alertMa&&up?'s3':color,alert:alertMa,why};
 }
 function calcRelativeStrength(cs,marketROC){
   if(!cs||cs.length<20) return{rs:1,z:0,excess:0,sig:'—',color:'na',why:''};
@@ -2261,12 +2313,11 @@ function calcLimitUpHunter(cs,sym){
   const n=cs.length,alerts=[];
   let score=0;
   /* 1. Volume Anomaly: last candle vol > 3 std dev of 5-day avg */
-  const vol5=cs.slice(-5).map(c=>c.volume);
-  const vol5Mean=vol5.reduce((a,b)=>a+b,0)/5;
-  const vol5Std=Math.sqrt(vol5.map(v=>(v-vol5Mean)**2).reduce((a,b)=>a+b,0)/5)||1;
-  const lastVol=cs[n-1].volume;
-  const volZ=(lastVol-vol5Mean)/vol5Std;
-  if(volZ>=3){score+=35;alerts.push({t:'انحراف الفوليوم',d:`الحجم +${volZ.toFixed(1)}σ عن متوسط 5 أيام (${fK(Math.round(vol5Mean))}) ← حجم ${fK(lastVol)} غير عادي`,c:'bull'});}
+  /* 🛠️ كان z يُقاس على 5 جلسات تضمّ الجلسة نفسها — أقصاه 1.79، فالشرط ≥3
+     مستحيل. انظر volSurprise. */
+  const vs=volSurprise(cs,20);
+  const lastVol=cs[n-1].volume,volZ=vs.z;
+  if(volZ>=3){score+=35;alerts.push({t:'انحراف الفوليوم',d:`الحجم ${vs.ratio.toFixed(1)}× وسيط 20 جلسة سابقة (+${volZ.toFixed(1)}σ لوغاريتمياً) ← حجم ${fK(lastVol)} غير عادي`,c:'bull'});}
 
   /* 2. Liquidity Choke: Ask side thinning (simulate with candle analysis) */
   const lastC=cs[n-1];
@@ -3012,7 +3063,8 @@ function calcFib618Bounce(cs){
     if(confirmed){
       score=55;
       if(closePosition>=0.75)score+=15;
-      const vol5=cs.slice(-5).map(c=>c.volume),vol5Mean=vol5.reduce((a,b)=>a+b,0)/5||1;
+      /* المتوسط من الجلسات الخمس *السابقة* لا من نافذة تضمّ الجلسة نفسها */
+      const prev5=cs.slice(-6,-1).map(c=>c.volume),vol5Mean=prev5.reduce((a,b)=>a+b,0)/Math.max(1,prev5.length)||1;
       if(lastC.volume>vol5Mean*1.3)score+=15;
       if(distPct<=1.5)score+=15;
       score=Math.min(100,score);
@@ -3362,6 +3414,18 @@ function calcTradePlan(sym){
    ③ منطقة الدخول لا تلامس الوقف: حدّها الأدنى فوق الوقف بهامش، وإلا
      صارت الصفقة بلا مسافة مخاطرة.
    ══════════════════════════════════════════════════════════════════════ */
+/* ══ ما قيس فعلاً عن خطط الدخول ═══════════════════════════════════════
+   scripts/plantest.js على 246 سهماً حقيقياً × 5 سنوات، 24 سبتمبر 2026: عند
+   كل نقطة tradeLevels من البيانات المعروفة حينها فقط، دخول عند الإغلاق، ثم
+   أيّهما يُلمس أولاً خلال 60 جلسة: الوقف أم الهدف الأول (اللمس المزدوج =
+   وقف). «عشوائي» = المسافتان نفساهما مطبّقتين على كل نقاط السهم نفسه.
+   الأرقام تُعرض ولا تدخل أي حساب. */
+const PLAN_EVIDENCE={
+  measured:'2026-09-24',stocks:246,
+  structural:{n:1526,win:41.1,breakeven:39.4,R:0.063,randR:-0.023,stocksBeat:'120/230',p:0.55},
+  market:{n:4406,win:33.9,breakeven:35.6,R:-0.031,randR:-0.033,stocksBeat:'111/246',p:0.14}
+};
+
 function tradeLevels(sym){
   sym=sym||G.sel;
   const cs=G.cans[sym];
@@ -3488,17 +3552,21 @@ function tradeLevels(sym){
     verdict='no_trade';
     verdictText=`لا دخول: ${riskNote}`;
   }else if(!structural){
-    /* لا بنية حيّة: الدخول عند السعر والوقف من أقرب دعم. مشروع لكنه
-       أضعف من الدخول عند بنية، ويُقال ذلك بدل ادّعاء «داخل المنطقة». */
+    /* 🛠️ كان النصّ «ادخل عند السعر … وليس رفضاً». ثم قيس (PLAN_EVIDENCE):
+       الدخول بلا بنية خاسر قليلاً ومثل الوضع العشوائي تماماً. فالحكم نفسه
+       (المفتاح enter_at_market) باقٍ، لكنه لم يعد دعوة دخول. */
     verdict='enter_at_market';
-    verdictText=`ادخل عند السعر ${cur} — لا فجوة قيمة عادلة ولا كتلة أوامر حيّة قربه، `
-      +`فالمنطقة المعروضة مرسومة حول السعر من التذبذب لا من بنية مرصودة (وقوع السعر داخلها لا يعني شيئاً). `
-      +`الوقف ${stop} على بعد ${(+(cur-stop).toFixed(2))} ر.س = ${riskATR}×ATR (${(+((cur-stop)/cur*100).toFixed(2))}٪). `
-      +`وهذا دخول عند السعر بوقف بنيوي — أضعف من الدخول عند بنية، وليس رفضاً.`;
+    const E=PLAN_EVIDENCE.market;
+    verdictText=`لا بنية تبرّر الدخول عند ${cur} — لا فجوة قيمة عادلة ولا كتلة أوامر حيّة قربه، `
+      +`والنطاق المعروض مرسوم حول السعر من التذبذب. قيس على ${PLAN_EVIDENCE.stocks} سهماً × 5 سنوات: `
+      +`الدخول عند السعر بلا بنية أصاب الهدف الأول في ${E.win}٪ مقابل تعادل ${E.breakeven}٪ (${E.R}R للصفقة، مثل الدخول العشوائي ${E.randR}R) — لا أفضلية. `
+      +`الأفضل انتظار وصول السعر إلى بنية. المستويات للمرجع: وقف ${stop} (${riskATR}×ATR، ${(+((cur-stop)/cur*100).toFixed(2))}٪).`;
   }else if(rel==='inside'){
     verdict='enter_now';
+    const E=PLAN_EVIDENCE.structural;
     verdictText=`✅ ادخل الآن — السعر ${cur} داخل ${zoneName} (${lo}–${hi}) فعلاً. `
-      +`الوقف ${stop} قريب: ${(+(cur-stop).toFixed(2))} ر.س = ${riskATR}×ATR (${(+((cur-stop)/cur*100).toFixed(2))}٪ تحت السعر).`;
+      +`الوقف ${stop} قريب: ${(+(cur-stop).toFixed(2))} ر.س = ${riskATR}×ATR (${(+((cur-stop)/cur*100).toFixed(2))}٪ تحت السعر). `
+      +`قيس: الدخول عند بنية أصاب الهدف الأول في ${E.win}٪ مقابل تعادل ${E.breakeven}٪ (${E.R>0?'+':''}${E.R}R للصفقة مقابل ${E.randR}R عشوائياً) — إيجابي، لكنه غير مؤكَّد إحصائياً عبر الأسهم بعد.`;
   }else if(rel==='above'){
     verdict='wait_pullback';
     verdictText=`السعر ${cur} أعلى من ${zoneName} بـ${gapUp}٪ — الدخول ينتظر ارتداداً إليها (${lo}–${hi})، لا يُطارَد. `
@@ -3720,7 +3788,7 @@ function calcAllFilters(sym,marketROC){
 
   let bullAlerts=0,bearAlerts=0;
   if(vz.alert){vz.bullish?bullAlerts++:bearAlerts++;}
-  if(ma.alert){ma.accel>0?bullAlerts++:bearAlerts++;}
+  /* الزخم لا يصوّت: قيس عكسياً بدلالة قوية (FILTER_EVIDENCE.ma) — التسارع الصاعد يرتدّ */
   if(rs.alert){rs.rs>1?bullAlerts++:bearAlerts++;}
   if(sq.alert){sq.hist>0?bullAlerts++:bearAlerts++;}
   if(ab.alert){ab.score>0?bullAlerts++:bearAlerts++;}
@@ -3768,7 +3836,7 @@ function calcAllFilters(sym,marketROC){
      ══════════════════════════════════════════════════════════════ */
   let masterScore=50;
   masterScore+=vz.alert?(vz.bullish?4:-4):0;
-  masterScore+=ma.alert?(ma.accel>0?4:-4):0;
+  /* الزخم خارج الموحّد — انظر FILTER_EVIDENCE.ma */
   masterScore+=rs.alert?(rs.rs>1?4:-4):0;
   masterScore+=sq.alert?(sq.hist>0?5:-5):0;
   masterScore+=ab.alert?(ab.score>0?4:-4):0;
@@ -5245,8 +5313,8 @@ function drawTradeLevels(sym){
   /* ③ سطر واحد تحت الشارت يقول ما لا يقوله الرسم: هل وصل السعر للمنطقة،
      وكم المخاطرة بمقياس ATR، ومن أين جاء الوقف. */
   if(info){
-    const VC={enter_now:'#0ecf7e',enter_at_market:'#4a9eff',wait_pullback:'#f5c842',zone_above:'#7a8ba8',no_trade:'#f04458'};
-    const VI={enter_now:'✅',enter_at_market:'▶',wait_pullback:'⏸',zone_above:'○',no_trade:'⛔'};
+    const VC={enter_now:'#0ecf7e',enter_at_market:'#7a8ba8',wait_pullback:'#f5c842',zone_above:'#7a8ba8',no_trade:'#f04458'};
+    const VI={enter_now:'✅',enter_at_market:'◇',wait_pullback:'⏸',zone_above:'○',no_trade:'⛔'};
     const relCol=VC[L.verdict]||'#7a8ba8';
     info.innerHTML=
       `<span style="color:${relCol}">${VI[L.verdict]||'○'} ${L.verdictText}</span>`
@@ -5905,8 +5973,8 @@ function updateTradePlan(sym){
       </div>
     </div>
     ${TL?(()=>{
-      const VC={enter_now:'#0ecf7e',enter_at_market:'#4a9eff',wait_pullback:'#f5c842',zone_above:'#7a8ba8',no_trade:'#f04458'};
-      const VI={enter_now:'✅',enter_at_market:'▶',wait_pullback:'⏸',zone_above:'○',no_trade:'⛔'};
+      const VC={enter_now:'#0ecf7e',enter_at_market:'#7a8ba8',wait_pullback:'#f5c842',zone_above:'#7a8ba8',no_trade:'#f04458'};
+      const VI={enter_now:'✅',enter_at_market:'◇',wait_pullback:'⏸',zone_above:'○',no_trade:'⛔'};
       const c=VC[TL.verdict]||'#f5c842';
       return `<div style="margin:2px 12px 7px;padding:7px 9px;border-radius:7px;font-size:11px;line-height:1.85;
            color:${c};background:${c}12;border:1px solid ${c}44">
@@ -10574,11 +10642,34 @@ function initIBToggle(){
 window.addEventListener('resize',function(){clearTimeout(TP._rz);TP._rz=setTimeout(resizeCharts,150);});
 window.addEventListener('orientationchange',function(){setTimeout(resizeCharts,300);});
 
+/** 🗂️ إعادة الترتيب بالدليل: غرفة القرار أولاً، ثم «الجميع»، ثم الفلاتر
+   بحسب ما قيس لها، والفلتر العكسي أخيراً. كل تبويب يحمل رقمه في تلميحه. */
+function applyFilterEvidence(){
+  try{
+    const tabs=document.querySelectorAll('.ftab');
+    if(!tabs||!tabs.length)return;
+    const rows=FILTER_EVIDENCE.rows;
+    const ranked=Object.keys(rows).sort((a,b)=>(rows[b].reverse?-1:rows[b].win)-(rows[a].reverse?-1:rows[a].win));
+    const fixed={decision:-30,all:-20,radar:40,spectral:41};
+    tabs.forEach(t=>{
+      const m=/setFilter\('([a-z0-9]+)'/.exec(t.getAttribute('onclick')||'');
+      if(!m)return;const k=m[1];
+      if(k in fixed){t.style.order=fixed[k];}
+      else if(rows[k]){t.style.order=ranked.indexOf(k);}
+      const txt=filterEvidenceText(k);
+      if(txt){t.title=txt;
+        if(rows[k].reverse&&!t.querySelector('.ev-rev')){const b=document.createElement('span');b.className='ev-rev';b.textContent=' ⛔';b.title=txt;t.appendChild(b);}}
+    });
+  }catch(e){}
+}
+window.applyFilterEvidence=applyFilterEvidence;
+
 function boot(){
   killV1();
   initIBToggle();
   initSimpleBtn();
   host();
+  applyFilterEvidence();
   if(typeof _filter!=='undefined' && _filter==='decision') renderResults();
   /* اللوحة الحيّة: تستعيد الفاصل المحفوظ وتبدأ العدّاد. لا تُطلق طلباً
      عند الإقلاع — تنتظر أول دورة أو ضغطة «↻». */
