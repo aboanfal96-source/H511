@@ -137,6 +137,22 @@ H('التكملة الفراكتالية — للهدف الثاني فقط');
   ok('لا هدف أول فراكتالي في خطة بلا هدف بنيوي', /if\(targets\.length===1&&window\.KSAEngine\)\{/.test(src) && !/if\(targets\.length<2&&window\.KSAEngine\)/.test(src));
 }
 
+H('الفلتر الزمني — لا يصوّت لاتجاه قيس بلا قيمة');
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+  const body = src.slice(src.indexOf('function calcAllFilters('), src.indexOf('function calcAllFilters(') + 12000);
+  ok('لا score+=tat.timeBonus', !/score\+=tat\.timeBonus/.test(body));
+  ok('لا ±14 للقنّاص في الموحّد', !/masterScore\+=tat\.sniperBonus/.test(body));
+  ok('لا صوت شراء/بيع من القنّاص', !/if\(tat\.sniperBonus\)\{tat\.dirUp\?bullAlerts\+\+/.test(body));
+  ok('ليس «دليلاً مؤكَّداً» في غرفة القرار', !/A\.push\(\{ t: 'توافق زمني متعدد الأدلة'/.test(src));
+  ok('الأرقام المقيسة معلنة في الكود', /TIME_TRIGGER_EVIDENCE=\{/.test(src) && /CLASSIC_WINDOW_EVIDENCE=\{/.test(src));
+  const G = ctx.G;
+  G.cans.__z = fromCloses(walk(400, 21, 0, 0.012)); ctx.calcInd('__z');
+  const tat = ctx.timeAlignmentTrigger(G.cans.__z, G.ind.__z);
+  if (tat.sniperBonus) ok('نصّ القنّاص يحمل القياس', /الاتجاه غير معلوم/.test(tat.reason));
+  delete G.cans.__z; delete G.ind.__z;
+}
+
 H('التوافقي — القديم لا يُعدّ إشارة حيّة');
 {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');

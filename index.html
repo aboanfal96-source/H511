@@ -387,7 +387,7 @@ body{height:100%;background:var(--c0);color:var(--t1);font-family:'IBM Plex Sans
       <select id="radar-src" onchange="buildRadar()" style="width:190px;background:var(--c3);border:1px solid var(--bd2);color:var(--t1);border-radius:4px;padding:3px;font-size:10px;font-family:inherit">
         <option value="cycle" selected>الدورات المقاسة فقط</option>
         <option value="verified">المؤكدة خارج العيّنة فقط</option>
-        <option value="all">المقاسة + النوافذ الكلاسيكية</option>
+        <option value="all" title="النوافذ الكلاسيكية قيست على 246 سهماً × 5 سنوات: رفع 0.98 — لا تتنبأ بالانعطاف">المقاسة + الكلاسيكية (قيست: بلا قيمة)</option>
       </select>
       <span id="radar-status" style="font-size:10px;color:var(--t2);margin-right:auto">اضغط «احسب الرادار» — يفحص كل سهم عن أقرب انعطاف زمني متوقع</span>
     </div>
@@ -2778,6 +2778,28 @@ function _timeAnchors(cs){
   return out;
 }
 
+/* ══ ما قيس فعلاً عن «⏱ التوافق الزمني» ════════════════════════════════
+   دراسة حدث بلا تسرّب (scripts/timetest.js --tat-only) على 240 سهماً حقيقياً
+   × 5 سنوات، 24 سبتمبر 2026. عند كل نقطة يُحسب الفلتر من البيانات المعروفة
+   حتى تلك النقطة فقط.
+   • القنّاص: انعطاف (قمة/قاع ±10) خلال ±2 جلسة في 30.1٪ [26.7–33.7] مقابل
+     25.3٪ حين يصمت (n=652) — رفع 1.18، أي أنه يرصد «شيئاً ينعطف هنا»
+     أكثر من الصدفة. لكن الاتجاه الذي يعلنه صدق بعد 10 جلسات في 50.6٪
+     مقابل 51.4٪ متوقَّعة بالصدفة من السهم نفسه — رفع 0.98: لا يعرف أيّ
+     اتجاه.
+   • كسر الدورة: انعطاف 24.1٪ (رفع 0.95) واتجاه 51.1٪ مقابل 55.0٪ (رفع
+     0.93) — لا معلومة فيه على أيّ من المقياسين.
+   لذلك لا يُصوّت الفلتر لاتجاه في أي سكور بعد الآن (كان ±20 في السكور، و±14
+   في الموحّد، وصوت شراء/بيع، و«دليل مؤكَّد» في غرفة القرار). يبقى معروضاً
+   علامةً على «انعطاف محتمل — الاتجاه غير معلوم» بأرقامه. */
+const TIME_TRIGGER_EVIDENCE={
+  measured:'2026-09-24',stocks:240,
+  sniper:{n:652,turn:30.1,turnCI:[26.7,33.7],baseTurn:25.3,turnLift:1.18,dirHit:50.6,dirExpected:51.4,dirLift:0.98},
+  penalty:{n:1038,turn:24.1,turnLift:0.95,dirHit:51.1,dirExpected:55.0,dirLift:0.93},
+  sniperText:'قيس على 240 سهماً × 5 سنوات: يسبق انعطافاً خلال جلستين في 30٪ مقابل 25٪ بالصدفة، لكن اتجاهه المعلن صدق في 50.6٪ مقابل 51.4٪ بالصدفة — انعطاف محتمل، الاتجاه غير معلوم',
+  penaltyText:'قيس على 240 سهماً × 5 سنوات: لا يرصد انعطافاً ولا اتجاهاً أكثر من الصدفة (رفع 0.95 و0.93)'
+};
+
 function timeAlignmentTrigger(cs,ind){
   const n=cs?.length||0;
   if(n<20)return{active:false,candleDistance:0,timeBonus:0,sniperBonus:false,penalty:false,badge:null,reason:'بيانات غير كافية'};
@@ -2920,6 +2942,8 @@ function timeAlignmentTrigger(cs,ind){
      window.KSA_DEBUG_TIME = true */
   if(window.KSA_DEBUG_TIME&&typeof console!=='undefined'&&console.debug)console.debug(`[TimeAlignment] pivot=${pivot.type}@${pivot.p.toFixed(2)} dist=${candleDistance}c/${calDays}d fib=${fibMatch||'-'} gann=${gannMatch||'-'} gannCal=${gannCal?.cycle||'-'} sq9=${sq9.squared} SR=${strongSR} → bonus=${timeBonus}`);
 
+  if(sniperBonus)reason+=' — '+TIME_TRIGGER_EVIDENCE.sniperText;
+  else if(penalty)reason+=' — '+TIME_TRIGGER_EVIDENCE.penaltyText;
   return{active,strongSR,srHits:_srHits,evidenceCount,anchorLabel,nearPivot,nearMA,nearBB,ptConfirmed:!!ptConv.confirmed,
     candleDistance,calendarDays:calDays,pivotPrice:+pivot.p.toFixed(2),pivotType:pivot.type,pivotIdx:pivot.i,
     fibMatch,gannMatch,gannCalMatch:gannCal,dcMatch,squareOfNine:sq9,priceTimeConvergence:ptConv,
@@ -3247,7 +3271,7 @@ function calcTradePlan(sym){
   /* ── classify plan type from active filters (if the stock has been scanned) ── */
   let planType='watch',planWhy='لا توجد بيانات فلاتر كافية بعد — يُعرض للمرجعية الهيكلية فقط';
   if(advD){
-    const bounceConfirmed=(advD.fib618?.confirmed)||(advD.snp?.level==='high'&&advD.snp?.dirUp)||(advD.tat?.sniperBonus&&advD.tat?.dirUp);
+    const bounceConfirmed=(advD.fib618?.confirmed)||(advD.snp?.level==='high'&&advD.snp?.dirUp);
     const breakoutConfirmed=advD.hunter?.alert||advD.pregap?.alert||(advD.macdX?.active&&advD.macdX?.bullish&&advD.macdX?.fresh);
     if(advD.masterScore>=65&&bounceConfirmed){planType='bounce';planWhy='ارتداد مؤكد من دعم/مستوى فيبوناتشي/توافق زمني ← الدخول عند السعر الحالي مباشرة';}
     else if(advD.masterScore>=65&&breakoutConfirmed){planType='breakout';planWhy='إشارة اختراق (صيد نسبة/فجوة سعرية/ماكد جديد) ← الدخول ينتظر تأكيد كسر المقاومة';}
@@ -3700,10 +3724,13 @@ function calcAllFilters(sym,marketROC){
   if(hidden.alert)bullAlerts++;
   if(pregap.alert)bullAlerts++;
   if(fvgr.alert){fvgr.rebalance?.type==='bu'?bullAlerts++:bearAlerts++;}
-  if(ew.sig==='شراء')bullAlerts++;else if(ew.sig==='بيع')bearAlerts++;
+  /* 🛠️ إليوت لا يُصوّت: وحدته نفسها تقيس أن عدّاً «صالحاً» يظهر في 54٪ من
+     سلاسل المشي العشوائي، وتقول «استعمله وصفاً للبنية لا سبباً للدخول». وعلى
+     السوق الحقيقي أطلق على 43٪ من الأسهم — بمعدّل الصدفة. فعدّه صوتاً في
+     الإشارة يناقض قياسها. يبقى معروضاً في تبويبه وعلى الشارت وفي المدارس. */
   if(harm?.sig==='شراء')bullAlerts++;else if(harm?.sig==='بيع')bearAlerts++;
   if(hunter.alert)bullAlerts++;
-  if(tat.sniperBonus){tat.dirUp?bullAlerts++:bearAlerts++;}/* 🎯 Sniper Time Bonus counts as a direction alert too */
+  /* ⏱ الفلتر الزمني لا يصوّت لاتجاه — اتجاهه قيس بلا قيمة (TIME_TRIGGER_EVIDENCE) */
   if(snp.level==='high'){snp.dirUp?bullAlerts++:bearAlerts++;}/* 🎯 Pre-Breakout confluence (3+/4) counts as a strong alert */
   if(fib618.confirmed)bullAlerts++;/* 📐 confirmed 61.8% bounce — bullish only by definition */
   if(macdX.active){macdX.bullish?bullAlerts++:bearAlerts++;}
@@ -3721,7 +3748,7 @@ function calcAllFilters(sym,marketROC){
   else if(bullAlerts===1){sig='◎ رصد';cls='sig-watch';}
 
   let score=bullAlerts*10-bearAlerts*8+50;
-  score+=tat.timeBonus;/* 🎯 +20 Sniper Bonus | ⚠ -10 Cycle Break | 0 Neutral */
+  /* مكافأة الوقت (±20) وعقوبة كسر الدورة (−10) أُزيلتا من السكور: انظر TIME_TRIGGER_EVIDENCE */
   if(snp.level==='high')score+=snp.dirUp?15:-15;/* Pre-Breakout confluence bonus */
   if(fib618.confirmed)score+=12;/* 📐 confirmed 61.8% retracement bounce bonus */
   score=Math.max(0,Math.min(100,score));
@@ -3745,7 +3772,7 @@ function calcAllFilters(sym,marketROC){
   masterScore+=hidden.alert?5:0;
   masterScore+=pregap.alert?6:0;
   masterScore+=fvgr.alert?(fvgr.rebalance?.type==='bu'?5:-5):0;
-  masterScore+=ew.sig==='شراء'?6:ew.sig==='بيع'?-6:0;
+  /* إليوت وصفي لا يدخل السكور — انظر التعليق في عدّ الإشارات أعلاه */
   masterScore+=harm?.sig==='شراء'?6:harm?.sig==='بيع'?-6:0;
   masterScore+=hunter.alert?8:0;
   masterScore+=macdX.active?(macdX.bullish?(macdX.strengthening?7:5):-6):0;
@@ -3753,13 +3780,13 @@ function calcAllFilters(sym,marketROC){
   masterScore+=revCandle.active?(revCandle.bullish?6:-6):0;
   masterScore+=sb.alert?13:0;
   masterScore+=falseBreak.active?(falseBreak.bullish?12:-12):0;
-  masterScore+=tat.sniperBonus?(tat.dirUp?14:-14):0;
+  /* ±14 للقنّاص الزمني أُزيل — اتجاهه قيس بلا قيمة */
   masterScore+=snp.level==='high'?(snp.dirUp?16:-16):0;
   masterScore+=fib618.confirmed?15:0;
   /* Bonus for genuine STACKED confluence — when 3+ heavy-weight
      confirmations line up together, that's rare and deserves to visibly
      rank above everything else, not just add linearly. */
-  const heavyConfirmCount=(tat.sniperBonus&&tat.dirUp?1:0)+(snp.level==='high'&&snp.dirUp?1:0)+(fib618.confirmed?1:0)+(hunter.alert?1:0);
+  const heavyConfirmCount=(snp.level==='high'&&snp.dirUp?1:0)+(fib618.confirmed?1:0)+(hunter.alert?1:0);
   if(heavyConfirmCount>=3)masterScore+=10;
   masterScore=Math.max(0,Math.min(100,Math.round(masterScore)));
 
@@ -4172,6 +4199,18 @@ function renderRadarTable(){
    ══════════════════════════════════════════════════════════════════════ */
 let _timeMap={},_timeMapBuilding=false,_timeMapDone=0;
 
+/* ══ ما قيس فعلاً عن النوافذ الكلاسيكية ══════════════════════════════
+   دراسة حدث بلا تسرّب (scripts/timetest.js) على 246 سهماً حقيقياً × 5 سنوات،
+   24 سبتمبر 2026: عند كل نقطة تُبنى النوافذ من البيانات المعروفة حتى تلك
+   النقطة فقط، ثم يُسأل التاريخ اللاحق هل وقع انعطاف (قمة/قاع ±10 جلسات)
+   خلال ±1 من الموعد. الرقم هنا ليُعرض لا ليُستعمل في أي حساب. */
+const CLASSIC_WINDOW_EVIDENCE={
+  measured:'2026-09-24',stocks:246,observations:22188,
+  nearestHit:15.5,baseline:15.8,lift:0.98,
+  fibLift:1.01,gannLift:1.05,confluenceLift:1.03,
+  text:'قيست على 246 سهماً × 5 سنوات بلا تسرّب: الانعطاف وقع عند أقرب نافذة بنسبة 15.5٪ مقابل 15.8٪ في أي جلسة (رفع 0.98) — أي لا معلومة فيها عن التوقيت'
+};
+
 function _timeEntry(sym){
   const cs=G.cans[sym];
   if(G.demo.has(sym)||!cs||cs.length<80)return{state:'na',why:'أقل من 80 جلسة أو بيانات تجريبية'};
@@ -4222,7 +4261,7 @@ function _timeEntry(sym){
       type:(bestA.type==='L'?'valley':'peak'),bars:bestW.barsAhead,sd:null,usable:false,coherent:false,
       src:'نافذة كلاسيكية',srcDetail:`${bestW.label} — العدّ من ${bestA.label}`,
       p:(tm&&tm.ok&&tm.pText)?tm.pText:null,pNum:(tm&&tm.ok&&isFinite(tm.p))?tm.p:null,
-      why:'رقم غان/فيبوناتشي مفروض من خارج السهم — للمراقبة لا للتنفيذ'};
+      why:'رقم غان/فيبوناتشي مفروض من خارج السهم — '+CLASSIC_WINDOW_EVIDENCE.text};
   }catch(e){}
 
   const pTxt=(tm&&tm.ok&&tm.pText)?(' (p='+tm.pText+')'):'';
@@ -6289,13 +6328,9 @@ function genTrade(sym){
   /* ⏱ TIME ALIGNMENT TRIGGER — same Price-Time Confluence engine used by
      the filter scan, now powering Market Brain too (full-platform link) */
   const tat=timeAlignmentTrigger(cs,ind);
+  /* الفلتر الزمني يُذكر ولا يرجّح كفّة: اتجاهه قيس بلا قيمة (TIME_TRIGGER_EVIDENCE) */
   if(tat.sniperBonus){
-    if(tat.dirUp){bu+=20;}else{be+=20;}
-    R.push({t:`⏱ ${tat.badge} (${tat.cycleType} ${tat.cycleNum})`});
-  }else if(tat.penalty){
-    /* Cycle break = caution, trims whichever side is currently leading */
-    if(bu>be)bu=Math.max(0,bu-10);else if(be>bu)be=Math.max(0,be-10);
-    R.push({t:`⚠ ${tat.badge}`});
+    R.push({t:`⏱ انعطاف محتمل — الاتجاه غير معلوم (${tat.cycleType} ${tat.cycleNum})`});
   }
 
   /* 🎯 PRE-BREAKOUT SNIPER SCORE — VCP + Volume Dry-up + OBV divergence +
@@ -8664,7 +8699,7 @@ function ddEvidence(d) {
   if (spec) A.push({ t: 'تفوّق طيفي مقاس تاريخياً', x: `+${spec.edgeWinRate} نقطة في نسبة الربح على ${spec.signalCount} إشارة، p = ${spec.pValueText}، اجتاز تصحيح Benjamini-Hochberg`, key: 'spectral' });
   if (d.snp?.level === 'high' && d.snp?.dirUp) A.push({ t: 'قناص ما قبل الانطلاق (تأكيد عالٍ)', x: `تقاطع VCP + جفاف حجم + تباعد OBV + توافق زمني — درجة ${d.snp.score ?? '—'}`, key: 'sniper' });
   if (d.fib618?.confirmed) A.push({ t: 'ارتداد فيبوناتشي ٦١.٨٪ مؤكَّد', x: 'ارتداد فعلي من المستوى، لا مجرد مرور به', key: 'fib' });
-  if (d.tat?.sniperBonus && d.tat?.dirUp) A.push({ t: 'توافق زمني متعدد الأدلة', x: 'تقاطع دورات غان/فيبوناتشي/دورة السهم الذاتية عند نفس المسافة الزمنية', key: 'time' });
+  /* «توافق زمني متعدد الأدلة» كان في الفئة (أ) «المؤكَّدة» — واتجاهه قيس بلا قيمة (TIME_TRIGGER_EVIDENCE)، فأُخرج منها. */
   if (d.sb?.alert) A.push({ t: 'رادار قاع الحيتان', x: `بصمة تجميع مؤسسي عند القاع — درجة ${d.sb.score ?? '—'}`, key: 'whale' });
 
   /* ── الفئة (ب) — الداعمة ── */
