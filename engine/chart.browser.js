@@ -419,6 +419,33 @@ const bad = m => { console.log('  ✗ ' + m); failures++; };
     rev.fracCacheCleared ? ok('ذاكرة أهداف الفراكتال تُمسح بعد التحديث الحيّ') : bad('_ddFracCache لا تُمسح — أهداف على سعر قديم');
     rev.timeMapRebuilt ? ok('خريطة المواعيد تُعاد بناؤها بعد التحديث الحيّ') : bad('عمود موعد الحركة يبقى قديماً بعد التحديث');
 
+    /* ── الترتيب الافتراضي بحالة الخطة، محسوبةً في الخلفية لا داخل الرسم ── */
+    const ps = await pg.evaluate(async () => {
+      /* صفوف المسح كما يبنيها runFullScan: هذا الاختبار يحمّل الأسهم بلا مسح */
+      if (!_advData.length) {
+        for (const s of STKS) {
+          if (!G.cans[s.sym] || G.demo.has(s.sym)) continue;
+          try { const res = calcAllFilters(s.sym, 0); if (res) _advData.push({ ...res, name: s.name, price: G.pr[s.sym] || 0, pct: G.pc[s.sym] || 0 }); } catch (e) { }
+        }
+      }
+      setFilter('all', document.getElementById('ftab-all'));
+      buildPlanMap();
+      const t0 = Date.now();
+      while (_planBuilding && Date.now() - t0 < 60000) await new Promise(r => setTimeout(r, 100));
+      renderResults();
+      const rows = [...document.querySelectorAll('#rtbody tr[id^="row-"]')];
+      const ranks = rows.map(r => { const p = planStatusCached(r.id.slice(4)); return p ? p.rank : 9; });
+      const pending = rows.filter(r => /⏳/.test(r.innerText)).length;
+      let sorted = true; for (let i = 1; i < ranks.length; i++) if (ranks[i] < ranks[i - 1]) { sorted = false; break; }
+      const tb = document.getElementById('rtbody');
+      return { n: rows.length, pending, sorted, sortCol: _sortCol, first: ranks.slice(0, 5), took: Date.now() - t0,
+        dbg: `adv=${_advData.length} filter=${_filter} trs=${tb ? tb.querySelectorAll('tr').length : -1} ids=${tb ? [...tb.querySelectorAll('tr')].slice(0, 3).map(r => r.id).join('|') : ''} html=${tb ? tb.innerHTML.slice(0, 160).replace(/\s+/g, ' ') : ''}` };
+    });
+    (ps.n > 0 && ps.pending === 0) ? ok(`عمود الخطة محسوب لكل الصفوف في الخلفية (${ps.n} صفاً · ${ps.took} مث)`)
+      : bad(`عمود الخطة: ${ps.pending} صفاً ما زال ⏳ من ${ps.n} — ${ps.dbg}`);
+    (ps.sortCol === 'plan' && ps.sorted) ? ok(`الترتيب الافتراضي بحالة الخطة (أول الرتب: ${ps.first.join(',')})`)
+      : bad(`الترتيب ليس بحالة الخطة: ${ps.sortCol} · مرتّب=${ps.sorted}`);
+
     /* ── إعادة الترتيب بالدليل: غرفة القرار أولاً، والزخم العكسي موسوم ── */
     const tabs = await pg.evaluate(() => {
       const o = {};

@@ -1145,7 +1145,11 @@ const Tm=()=>{const d=new Date();return`${String(d.getHours()).padStart(2,'0')}:
 
 /* ══ STATE ══ */
 const G={sel:'2222',tf:'3mo',tfi:'1d',pr:{},prSrc:{},prGap:{},op:{},hi:{},lo:{},vo:{},ch:{},pc:{},cans:{},ind:{},sc:{},ld:new Set(),ldg:new Set(),demo:new Set(),failed:new Map(),lwChart:null,cSeries:null,vSeries:null,series:{},view:{}};
-let _filter='all',_buyOnly=false,_sellOnly=false,_alertOnly=false,_sortCol='master',_sortDir=-1,_showBearish=false;
+/* 🗂️ الترتيب الافتراضي بحالة الخطة لا بالسكور الموحّد: السكور قيس بلا قيمة ترتيبية
+   (FILTER_EVIDENCE.rows.master). وحالة الخطة ترتيب تنظيمي لا تنبؤي — يضع أولاً
+   ما يمكن التصرّف فيه الآن (سعر عند بنية) — إذ لم يُظهر شيء في المنصة أفضلية
+   ثابتة، ولا الدخول عند بنية نفسه (PLAN_EVIDENCE.structural.secondHalf). */
+let _filter='all',_buyOnly=false,_sellOnly=false,_alertOnly=false,_sortCol='plan',_sortDir=-1,_showBearish=false;
 let _visibleSyms=[],_focusedIdx=-1,_pinnedSym=null;
 const TAB_ORDER=['decision','all','vz','ma','rs','sq','ab','fg','hidden','pregap','fvgr','elliott','harmonic','hunter','time','sniper','whale','fib618','falsebreak','master','macd','instvol','revcandle'];
 let _advData=[],_aiOpen=false,_zoomLevel=100;
@@ -3422,9 +3426,65 @@ function calcTradePlan(sym){
    الأرقام تُعرض ولا تدخل أي حساب. */
 const PLAN_EVIDENCE={
   measured:'2026-09-24',stocks:246,
-  structural:{n:1526,win:41.1,breakeven:39.4,R:0.063,randR:-0.023,stocksBeat:'120/230',p:0.55},
+  structural:{n:1526,win:41.1,breakeven:39.4,R:0.063,randR:-0.023,stocksBeat:'120/230',p:0.55,
+    /* المتانة: النتيجة كلّها من النصف الأول، وانقلبت في العامين الأخيرين */
+    firstHalf:{period:'2022–2024',n:812,win:44.2,breakeven:38.6,R:0.177,randR:-0.012},
+    secondHalf:{period:'2024–2026',n:714,win:37.5,breakeven:40.3,R:-0.067,randR:-0.037,positiveStocks:'73/177',p:0.024}},
   market:{n:4406,win:33.9,breakeven:35.6,R:-0.031,randR:-0.033,stocksBeat:'111/246',p:0.14}
 };
+
+/** حالة الخطة للجدول — مُذاكَرة بمفتاح يتغيّر مع كل سعر جديد.
+   الترتيب: عند بنية الآن ← بنية تنتظر ارتداداً ← المنطقة فوق السعر ← بلا
+   بنية ← لا صفقة. وداخل كل حالة: الأقرب وقفاً بوحدات ATR أولاً. */
+const _planCache={};
+const PLAN_RANK={enter_now:0,wait_pullback:1,zone_above:2,enter_at_market:3,no_trade:4};
+const PLAN_LABEL={enter_now:['✅ عند بنية','var(--up)'],wait_pullback:['⏸ ينتظر ارتداداً','#f5c842'],
+  zone_above:['○ المنطقة فوقه','var(--t3)'],enter_at_market:['◇ بلا بنية','var(--t3)'],no_trade:['⛔ لا صفقة','var(--dn)']};
+function planStatus(sym){
+  const cs=G.cans[sym];if(!cs||!cs.length)return null;
+  const adv=(typeof _advData!=='undefined')?_advData.find(d=>d.sym===sym):null;
+  const key=cs.length+'|'+cs[cs.length-1].close+'|'+(G.pr[sym]||'')+'|'+(adv?adv.masterScore:'');
+  const c=_planCache[sym];if(c&&c.key===key)return c.v;
+  let L=null;try{L=tradeLevels(sym);}catch(e){}
+  let v=null;
+  if(L){
+    const rank=(L.viable||L.verdict==='no_trade')?(PLAN_RANK[L.verdict]??5):5;
+    const lab=PLAN_LABEL[L.verdict]||['—','var(--t3)'];
+    v={rank,verdict:L.verdict,label:L.viable||L.verdict==='no_trade'?lab[0]:'— غير مجدية',color:L.viable?lab[1]:'var(--t3)',
+       riskATR:L.riskATR,rr1:L.rr1,title:L.viable?L.verdictText:(L.shortNote||L.verdictText||'')};
+  }
+  _planCache[sym]={key,v};
+  return v;
+}
+window.planStatus=planStatus;
+/** قراءة من الذاكرة فقط — لا حساب داخل الرسم أو الفرز (حساب 259 خطة ≈ 3.6 ث
+   كان سيجمّد الواجهة). null = لم تُحسب بعد لهذا السعر. */
+function planStatusCached(sym){
+  const cs=G.cans[sym];if(!cs||!cs.length)return null;
+  const adv=(typeof _advData!=='undefined')?_advData.find(d=>d.sym===sym):null;
+  const key=cs.length+'|'+cs[cs.length-1].close+'|'+(G.pr[sym]||'')+'|'+(adv?adv.masterScore:'');
+  const c=_planCache[sym];return (c&&c.key===key)?(c.v||{rank:5,label:'—',color:'var(--t3)',title:''}):null;
+}
+let _planBuilding=false;
+/** يبني حالات الخطط في الخلفية على دفعات، ثم يعيد رسم الجدول مرّة واحدة. */
+function buildPlanMap(){
+  if(_planBuilding||typeof _advData==='undefined'||!_advData.length)return;
+  _planBuilding=true;
+  const list=_advData.map(d=>d.sym).filter(s=>!planStatusCached(s));
+  const step=()=>{
+    const t0=Date.now();
+    while(list.length&&Date.now()-t0<40)planStatus(list.shift());
+    if(list.length)setTimeout(step,0);
+    else{_planBuilding=false;try{if(_filter!=='decision'&&_filter!=='radar')renderResults();}catch(e){}}
+  };
+  setTimeout(step,0);
+}
+window.buildPlanMap=buildPlanMap;
+/** قيمة الترتيب: أعلى = أفضل (الترتيب التنازلي هو الافتراضي). */
+function planSortValue(sym){
+  const p=planStatusCached(sym);if(!p)return -9999;
+  return (6-p.rank)*100-Math.min(99,(isFinite(p.riskATR)?p.riskATR*10:99));
+}
 
 function tradeLevels(sym){
   sym=sym||G.sel;
@@ -3563,10 +3623,13 @@ function tradeLevels(sym){
       +`الأفضل انتظار وصول السعر إلى بنية. المستويات للمرجع: وقف ${stop} (${riskATR}×ATR، ${(+((cur-stop)/cur*100).toFixed(2))}٪).`;
   }else if(rel==='inside'){
     verdict='enter_now';
-    const E=PLAN_EVIDENCE.structural;
-    verdictText=`✅ ادخل الآن — السعر ${cur} داخل ${zoneName} (${lo}–${hi}) فعلاً. `
+    const E=PLAN_EVIDENCE.structural,E1=E.firstHalf,E2=E.secondHalf;
+    /* 🛠️ كان النصّ «إيجابي لكنه غير مؤكَّد». ثم قيس نصفا الفترة كلٌّ وحده:
+       الأفضلية كلّها من 2022–2024 وانقلبت سالبة في 2024–2026. */
+    verdictText=`✅ السعر ${cur} داخل ${zoneName} (${lo}–${hi}) فعلاً. `
       +`الوقف ${stop} قريب: ${(+(cur-stop).toFixed(2))} ر.س = ${riskATR}×ATR (${(+((cur-stop)/cur*100).toFixed(2))}٪ تحت السعر). `
-      +`قيس: الدخول عند بنية أصاب الهدف الأول في ${E.win}٪ مقابل تعادل ${E.breakeven}٪ (${E.R>0?'+':''}${E.R}R للصفقة مقابل ${E.randR}R عشوائياً) — إيجابي، لكنه غير مؤكَّد إحصائياً عبر الأسهم بعد.`;
+      +`قيس على ${PLAN_EVIDENCE.stocks} سهماً: الدخول عند بنية كسب ${E1.R>0?'+':''}${E1.R}R للصفقة في ${E1.period} وخسر ${Math.abs(E2.R)}R في ${E2.period} — لا أفضلية ثابتة. `
+      +`هذا أفضل موضع دخول تعرضه المنصة بنيوياً، لا صفقة مضمونة الأفضلية.`;
   }else if(rel==='above'){
     verdict='wait_pullback';
     verdictText=`السعر ${cur} أعلى من ${zoneName} بـ${gapUp}٪ — الدخول ينتظر ارتداداً إليها (${lo}–${hi})، لا يُطارَد. `
@@ -3905,8 +3968,9 @@ async function runFullScan(){
   if(lastScanEl)lastScanEl.textContent=`✅ آخر تحديث: ${Tm()}`;
   updateBadges();
   renderResults();
-  /* بناء مواعيد الحركة بعد المسح مباشرة — على دفعات في الخلفية */
+  /* بناء مواعيد الحركة وحالات الخطط بعد المسح مباشرة — على دفعات في الخلفية */
   buildTimeMap(true);
+  buildPlanMap();
 }
 
 function updateBadges(){
@@ -4034,7 +4098,7 @@ function toggleWhy(sym){
 /* ══ TABLE HEADERS BY FILTER ══ */
 function getHeaders(){
   const base='<th onclick="sortResults(\'sym\')">الرمز</th><th>الاسم</th><th onclick="sortResults(\'price\')">السعر</th><th onclick="sortResults(\'pct\')">%</th>';
-  const end='<th onclick="sortResults(\'master\')">🏆 النتيجة</th><th>الإشارة</th><th>شرح</th>';
+  const end='<th onclick="sortResults(\'plan\')" title="حالة خطة الدخول — الترتيب الافتراضي: ما يمكن التصرّف فيه الآن أولاً (سعر عند بنية)، ثم الأقرب وقفاً. ترتيب تنظيمي لا تنبؤي: لا شيء في المنصة أظهر أفضلية ثابتة على 5 سنوات">🎯 الخطة</th><th onclick="sortResults(\'master\')" title="السكور الموحّد — قيس على 246 سهماً × 5 سنوات: بلا قيمة ترتيبية (47.7٪ من الأسهم)">🏆 النتيجة</th><th>الإشارة</th><th>شرح</th>';
   const cols={
     all:`${base}<th onclick="sortResults('tmap')" title="أقرب انعطاف متوقع من الدورة الطيفية المقاسة على هذا السهم — 🟢 قاع يُشترى عنده · 🔴 قمة تُباع عندها">🕒 موعد الحركة</th><th onclick="sortResults(\'vz\')">سيولة</th><th onclick="sortResults(\'ma_a\')">زخم</th><th onclick="sortResults(\'rs_v\')">RS</th><th onclick="sortResults(\'sq_s\')">ضغط</th><th onclick="sortResults(\'ab_s\')">امتصاص</th><th onclick="sortResults(\'fg_c\')">FVG</th>${end}`,
     vz:`${base}<th>Z-Score</th><th>الحالة</th><th>الحجم</th>${end}`,
@@ -4927,6 +4991,8 @@ async function refreshLive(opt){
     }
     LIVE.lastRun=Date.now();LIVE.updated=changed;LIVE.lastErr=failed?`${failed} سهماً لم يصل`:null;
     try{renderResults();}catch(e){}
+    /* الأسعار تغيّرت ⇒ مفاتيح الخطط تغيّرت؛ تُعاد في الخلفية ويُعاد الفرز */
+    try{buildPlanMap();}catch(e){}
     try{if(G.sel){updateHeader(G.sel);updateChart(G.sel);updateTradePlan(G.sel);}}catch(e){}
     try{if(window.AL&&AL.cfg&&AL.cfg.intervalMin===0&&typeof runAlertScan==='function'&&AL.cfg.kinds.length)
       await runAlertScan({silent:true});}catch(e){}
@@ -5080,6 +5146,7 @@ function renderResults(){
           return (e.tier==='cycle'?1000:0)-e.bars;};
         av=f(a);bv=f(b);break;}
       case'master':av=a.masterScore;bv=b.masterScore;break;
+      case'plan':av=planSortValue(a.sym);bv=planSortValue(b.sym);break;
       case'iv_r':av=a.instVol.volRatio;bv=b.instVol.volRatio;break;
       case'sb_s':av=a.sb.score;bv=b.sb.score;break;
       case'fb_s':av=a.falseBreak.score;bv=b.falseBreak.score;break;
@@ -5167,6 +5234,7 @@ function renderResults(){
       <td style="font-family:monospace">${d.price>0?d.price.toFixed(2):'—'}</td>
       <td style="color:${pcCol};font-family:monospace">${d.pct>=0?'+':''}${d.pct.toFixed(2)}%</td>
       ${midCols}
+      <td>${(()=>{const p=planStatusCached(d.sym);if(!p)return '<span style="color:var(--t3)" title="تُحسب الخطة في الخلفية">⏳</span>';return p.label!=='—'?`<span style="color:${p.color};font-weight:700;white-space:nowrap" title="${String(p.title||'').replace(/"/g,'&quot;')}">${p.label}</span>`:'—';})()}</td>
       <td><span class="scb"><span class="scf" style="width:${d.masterScore}%;background:${d.masterScore>=75?'var(--up)':d.masterScore>=55?'var(--gd)':d.masterScore>=35?'var(--t2)':'var(--dn)'}"></span></span><b>${d.masterScore}</b></td>
       <td><span class="${d.cls}" style="font-weight:700">${d.sig}</span>${d.tat.sniperBonus?` <span class="tag tag-${d.tat.dirUp?'s4':'s1'}" style="font-size:8px" title="${d.tat.reason}">⏱</span>`:d.tat.penalty?` <span class="tag tag-s1" style="font-size:8px" title="${d.tat.reason}">⚠⏱</span>`:''}${d.snp.level==='high'?` <span class="tag tag-${d.snp.dirUp?'s4':'s1'}" style="font-size:8px;background:rgba(167,139,250,.12);border-color:rgba(167,139,250,.3);color:var(--pu)" title="${d.snp.why}">🎯</span>`:''}${d.fib618.confirmed?` <span class="tag tag-s4" style="font-size:8px;background:rgba(14,207,126,.12);border-color:rgba(14,207,126,.3);color:var(--up)" title="${d.fib618.why}">📐</span>`:''}${d.sb.alert?` <span class="tag tag-s4" style="font-size:8px;background:rgba(45,212,191,.12);border-color:rgba(45,212,191,.3);color:#2dd4bf" title="${d.sb.why}">🐋</span>`:''}${d.falseBreak.active?` <span class="tag tag-${d.falseBreak.bullish?'s4':'s1'}" style="font-size:8px;background:rgba(240,68,88,.1);border-color:rgba(240,68,88,.3);color:${d.falseBreak.bullish?'var(--up)':'var(--dn)'}" title="${d.falseBreak.why}">🪤</span>`:''}</td>
       <td><button onclick="event.stopPropagation();toggleWhy('${d.sym}')" style="background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.2);color:var(--pu);padding:1px 8px;border-radius:3px;cursor:pointer;font-size:calc(var(--base-font)*0.75);font-family:inherit">لماذا؟</button></td>

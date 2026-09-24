@@ -232,6 +232,10 @@
       if (st) lines.push('شرط التأكيد: ' + String(st).replace(/^شرط التأكيد الإلزامي:\s*/, ''));
     }
 
+    /* ما قيس: الدخول عند بنية كسب في 2022–2024 وخسر في 2024–2026 (scripts/plantest.js).
+       تنبيه يوحي بفرصة دون أن يقول ذلك ليس صادقاً. */
+    if (a.kind === KIND.ZONE || a.kind === KIND.APPROACH || a.kind === KIND.READY)
+      lines.push('مرجع مقيس: الدخول عند بنية لم يُظهر أفضلية ثابتة على 5 سنوات.');
     lines.push('— تحليل آلي، ليس توصية. القرار ومسؤوليته عليك.');
     if (opt.url) lines.push(opt.url);
     return lines.join('\n');
