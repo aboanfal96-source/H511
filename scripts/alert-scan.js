@@ -89,11 +89,20 @@ const { loadInto, writeSnapshot, sleep } = require('./fetch.js');
 
   /* خريطة المواعيد ثقيلة (تحليل طيفي على كل سهم) ولا تلزم إلا لتنبيه
      الرادار، وهو مطفأ افتراضياً. */
+  /* 🛠️ كانت الخريطة تُكتب في ctx._timeMap — لكن _timeMap معرّفة بـ let في
+     سكربت الصفحة، فلا تصير خاصية على الكائن العام، والكتابة ترمي خطأً
+     يبتلعه try لكل سهم. أي أن تنبيه الرادار على الخادم لم يعمل قط، بصمت.
+     الآن خريطة محلية، ويُطبَّق عليها تصحيح الاختبارات المتعددة نفسه الذي
+     تطبّقه الصفحة. */
+  const timeMap = {};
   if (wantRadar) {
     log('▸ بناء خريطة المواعيد الزمنية…');
     const tm = Date.now();
-    for (const sym of Object.keys(G.cans)) { try { ctx._timeMap[sym] = ctx._timeEntry(sym); } catch (e) { } }
-    log(`  ${((Date.now() - tm) / 1000).toFixed(1)} ثانية`);
+    let errs = 0;
+    for (const sym of Object.keys(G.cans)) { try { timeMap[sym] = ctx._timeEntry(sym); } catch (e) { errs++; } }
+    const fdr = ctx.applyTimeMapFDR(timeMap);
+    log(`  ${((Date.now() - tm) / 1000).toFixed(1)} ثانية${errs ? ` · ${errs} خطأ` : ''}`
+      + (fdr.applied ? ` · تصحيح BH على ${fdr.tested}: بقيت ${fdr.kept} دورة وأُسقطت ${fdr.demoted}` : ''));
   }
 
   log('▸ تقييم الشروط…');
@@ -103,7 +112,7 @@ const { loadInto, writeSnapshot, sleep } = require('./fetch.js');
     if (!cs || cs.length < 80 || G.demo.has(sym)) continue;
     let levels = null, time = null, action = null;
     try { levels = ctx.tradeLevels(sym); } catch (e) { }
-    try { time = wantRadar ? (ctx._timeMap[sym] || null) : null; } catch (e) { }
+    time = wantRadar ? (timeMap[sym] || null) : null;
     if (levels && levels.viable && levels.riskOk) {
       try { action = ctx.KSATiming.actionPlan(cs, {}); } catch (e) { }
     }

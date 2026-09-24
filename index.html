@@ -1469,12 +1469,18 @@ function calcMomentumAccel(cs){
   const z=sd>0?accel/sd:0;
   let sig='—',color='na',why='';
   const fmt=v=>(v>0?'+':'')+v.toFixed(1);
-  if(z>=1.5&&jerk>0){sig='تسارع قوي ↑';color='s4';why=`زخم 5 جلسات ${fmt(r5now)}% مقابل ${fmt(r5prev)}% قبلها — تسارع ${fmt(accel)}% = ${z.toFixed(1)}σ من تذبذب السهم، والجلسات الثلاث الأخيرة أقوى من سابقتها`;}
-  else if(z>=0.75){sig='تسارع ↑';color='s2';why=`الزخم يزداد: ${fmt(r5now)}% بعد ${fmt(r5prev)}% (${z.toFixed(1)}σ)`;}
-  else if(z<=-1.5&&jerk<0){sig='تباطؤ قوي ↓';color='s1';why=`زخم 5 جلسات ${fmt(r5now)}% مقابل ${fmt(r5prev)}% قبلها — تباطؤ ${z.toFixed(1)}σ`;}
-  else if(z<=-0.75){sig='تباطؤ ↓';color='s5';why=`الزخم يتباطأ: ${fmt(r5now)}% بعد ${fmt(r5prev)}% (${z.toFixed(1)}σ)`;}
+  /* التسارع موجب حين يتوقّف هبوطٌ أيضاً (من −3٪ إلى 0٪). ذلك ليس سهماً
+     صاعداً، وعدّه إشارة شراء تضليل؛ فالوسم الصاعد يشترط زخماً حالياً
+     موجباً، والهابط زخماً حالياً سالباً. وما سوى ذلك انحسارٌ لا تنبيه. */
+  const up=r5now>0,dn=r5now<0;
+  if(z>=1.5&&up&&jerk>0){sig='تسارع قوي ↑';color='s4';why=`زخم 5 جلسات ${fmt(r5now)}% مقابل ${fmt(r5prev)}% قبلها — تسارع ${fmt(accel)}% = ${z.toFixed(1)}σ من تذبذب السهم، والجلسات الثلاث الأخيرة أقوى من سابقتها`;}
+  else if(z>=0.75&&up){sig='تسارع ↑';color='s2';why=`الزخم يزداد: ${fmt(r5now)}% بعد ${fmt(r5prev)}% (${z.toFixed(1)}σ)`;}
+  else if(z<=-1.5&&dn&&jerk<0){sig='تباطؤ قوي ↓';color='s1';why=`زخم 5 جلسات ${fmt(r5now)}% مقابل ${fmt(r5prev)}% قبلها — تسارع هبوطي ${z.toFixed(1)}σ`;}
+  else if(z<=-0.75&&dn){sig='تباطؤ ↓';color='s5';why=`الزخم الهابط يشتدّ: ${fmt(r5now)}% بعد ${fmt(r5prev)}% (${z.toFixed(1)}σ)`;}
+  else if(z>=0.75){sig='انحسار الهبوط';why=`الهبوط توقّف (${fmt(r5prev)}% ثم ${fmt(r5now)}%) — تغيّر في الزخم لا صعود بعد`;}
+  else if(z<=-0.75){sig='انحسار الصعود';why=`الصعود توقّف (${fmt(r5prev)}% ثم ${fmt(r5now)}%) — تغيّر في الزخم لا هبوط بعد`;}
   else{sig='محايد';why='لا تغيّر في الزخم يتجاوز تذبذب السهم المعتاد';}
-  return{accel:+accel.toFixed(2),jerk:+jerk.toFixed(2),z:+z.toFixed(2),sig,color,alert:Math.abs(z)>=1.5,why};
+  return{accel:+accel.toFixed(2),jerk:+jerk.toFixed(2),z:+z.toFixed(2),sig,color,alert:(z>=1.5&&up)||(z<=-1.5&&dn),why};
 }
 function calcRelativeStrength(cs,marketROC){
   if(!cs||cs.length<20) return{rs:1,z:0,excess:0,sig:'—',color:'na',why:''};
@@ -4172,7 +4178,7 @@ function _timeEntry(sym){
      لا سقوط صامت إلى نافذة غان. السقوط الصامت كان سيستبدل تاريخاً كاذباً
      بتاريخ كاذب آخر، والفرق أن الثاني لا يقول للمستخدم ما الذي حدث. */
   if(tm&&tm.ok&&tm.unstable){
-    return{state:'unstable',tier:'cycle',period:tm.period,p:tm.pText,
+    return{state:'unstable',tier:'cycle',period:tm.period,p:tm.pText,pNum:tm.p,
       spreadPct:tm.stability?tm.stability.spreadPct:null,
       periods:tm.stability?tm.stability.periods:null,
       why:tm.reason||'الدورة تتغيّر بتغيّر النافذة المحمّلة — لا يُشتقّ منها تاريخ'};
@@ -4185,7 +4191,7 @@ function _timeEntry(sym){
       stabilityNote:(tm.stability&&tm.stability.note)||null,
       type:t.type,bars:t.barsAhead,sd:t.sdBars,lo:t.loBars,hi:t.hiBars,usable:!!t.usable,
       valleyBars:v?v.barsAhead:null,valleySd:v?v.sdBars:null,
-      period:tm.period,p:tm.pText,coherent:!!tm.coherent,cyclePos:tm.cyclePos,
+      period:tm.period,p:tm.pText,pNum:tm.p,coherent:!!tm.coherent,cyclePos:tm.cyclePos,
       src:'دورة طيفية '+tm.period+' جلسة',srcDetail:'p = '+tm.pText+' · إشارة/ضجيج '+tm.snr};
   }
 
@@ -4210,15 +4216,44 @@ function _timeEntry(sym){
     if(bestW)return{state:'ok',tier:'classic',
       type:(bestA.type==='L'?'valley':'peak'),bars:bestW.barsAhead,sd:null,usable:false,coherent:false,
       src:'نافذة كلاسيكية',srcDetail:`${bestW.label} — العدّ من ${bestA.label}`,
-      p:(tm&&tm.ok&&tm.pText)?tm.pText:null,
+      p:(tm&&tm.ok&&tm.pText)?tm.pText:null,pNum:(tm&&tm.ok&&isFinite(tm.p))?tm.p:null,
       why:'رقم غان/فيبوناتشي مفروض من خارج السهم — للمراقبة لا للتنفيذ'};
   }catch(e){}
 
   const pTxt=(tm&&tm.ok&&tm.pText)?(' (p='+tm.pText+')'):'';
-  return{state:'none',p:(tm&&tm.pText)||null,
+  return{state:'none',p:(tm&&tm.pText)||null,pNum:(tm&&tm.ok&&isFinite(tm.p))?tm.p:null,
     why:'لا دورة دالة إحصائياً'+pTxt+' ولا نافذة قادمة — توقيت هذا السهم لا يُشتق من الدورات'};
 }
 
+/* ══ تصحيح الاختبارات المتعددة على خريطة المواعيد ═════════════════════
+   🛠️ كل سهم كان يُختبر وحده عند p < 0.05. وعلى 257 سهماً تُنتج الصدفة
+   وحدها نحو 13 «دورة دالة». قيس على السوق الحقيقي: 15 من 257 تحت 0.05 —
+   أي بمعدّل الصدفة تماماً (5.8٪). تبويب المسح الطيفي كان يطبّق تصحيح
+   Benjamini-Hochberg، والرادار لا — فالنتيجة نفسها «دالة» في مكان
+   و«صدفة» في آخر. الآن تُصحَّح الخريطة كلها كعائلة واحدة بعد اكتمالها،
+   وبالعتبة نفسها (q = 0.10). الدورة التي لا تجتاز التصحيح لا تحمل تاريخاً. */
+const TIME_FDR_Q=0.10;
+function applyTimeMapFDR(map){
+  map=map||_timeMap;
+  const syms=Object.keys(map).filter(s=>map[s]&&isFinite(map[s].pNum));
+  if(syms.length<20||!window.KSAEngine||!KSAEngine.Stats||!KSAEngine.Stats.benjaminiHochberg)
+    return{applied:false,tested:syms.length};
+  const pass=KSAEngine.Stats.benjaminiHochberg(syms.map(s=>map[s].pNum),TIME_FDR_Q);
+  let kept=0,demoted=0;
+  syms.forEach((s,k)=>{
+    const e=map[s];
+    e.fdrPass=!!pass[k];
+    if(e.tier==='cycle'&&!e.fdrPass){
+      map[s]={state:'none',p:e.p,pNum:e.pNum,fdrPass:false,wasCycle:e.state,period:e.period,
+        why:`دورة ${e.period} جلسة بـ p = ${e.p} منفردةً، لكنها لا تجتاز تصحيح الاختبارات المتعددة عبر ${syms.length} سهماً `
+          +`(Benjamini-Hochberg، q = ${TIME_FDR_Q}) — عددٌ كهذا من «الدورات» تُنتجه الصدفة وحدها عند فحص السوق كله، فلا يُشتقّ منها تاريخ.`};
+      demoted++;
+    }else if(e.tier==='cycle')kept++;
+  });
+  return{applied:true,tested:syms.length,kept,demoted,q:TIME_FDR_Q};
+}
+window.applyTimeMapFDR=applyTimeMapFDR;
+
 function buildTimeMap(force){
   if(_timeMapBuilding)return;
   if(!_advData.length)return;
@@ -4237,7 +4272,7 @@ function buildTimeMap(force){
     }
     st();
     if(list.length){ setTimeout(step,0); }
-    else{ _timeMapBuilding=false;st();
+    else{ _timeMapBuilding=false;try{applyTimeMapFDR(_timeMap);}catch(e){}st();
       if(_filter==='all'||_filter==='time')renderResults(); }
   };
   setTimeout(step,0);

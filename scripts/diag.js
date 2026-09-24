@@ -111,7 +111,8 @@ const H = t => log('\n\x1b[1m━━ ' + t + ' ━━\x1b[0m');
     const tt = Date.now();
     const T = {};
     for (const s of live) { try { T[s] = ctx._timeEntry(s); } catch (e) { T[s] = { state: 'error', why: e.message }; } }
-    log(`(${((Date.now() - tt) / 1000).toFixed(1)} ث)`);
+    const fdr = ctx.applyTimeMapFDR(T);
+    log(`(${((Date.now() - tt) / 1000).toFixed(1)} ث) · تصحيح BH على ${fdr.tested}: بقيت ${fdr.kept} دورة وأُسقطت ${fdr.demoted}`);
     const key = e => e.state + (e.tier ? '/' + e.tier : '') + (e.tier === 'cycle' && e.state === 'ok' ? (e.stabilityTested ? '/ثابتة' : '/غير مختبرة') : '');
     log('الحالة: ' + fmtTally(tally(live.map(s => key(T[s])))));
     const cyc = live.filter(s => T[s].state === 'ok' && T[s].tier === 'cycle');

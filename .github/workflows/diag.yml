@@ -10,6 +10,11 @@ name: تشخيص المنصّة
 
 on:
   workflow_dispatch:
+    inputs:
+      timetest:
+        description: 'دراسة الحدث الزمنية (بطيئة، ~30 دقيقة)'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -26,6 +31,7 @@ jobs:
       - name: تشخيص
         run: node scripts/diag.js --snapshot snapshot.json.gz --json diag.json
       - name: دراسة حدث — هل للفلتر الزمني قيمة؟
+        if: ${{ inputs.timetest }}
         run: node scripts/timetest.js --from snapshot.json.gz --json timetest.json
       - uses: actions/upload-artifact@v4
         if: always()
