@@ -151,6 +151,8 @@ const H = t => log('\n\x1b[1m━━ ' + t + ' ━━\x1b[0m');
   log('بُعد الوقف ٪: ' + dist(stopPct));
   log('بُعد الهدف الأول ٪: ' + dist(t1pct));
   const wild = tl.filter(s => { const t = TL[s].targets && TL[s].targets[0]; return t && t.rr > 5; });
+  const fillT1 = tl.filter(s => TL[s].targets && TL[s].targets[0] && TL[s].targets[0].kind === 'fractal').length;
+  log(`هدف أول فراكتالي (بلا بنية تحته): ${fillT1} · خطط مجدية ${tl.filter(s => TL[s].viable).length}`);
   log(`نسبة الهدف الأول فوق 1:5: ${wild.length} سهماً`);
   wild.slice(0, 8).forEach(s => { const x = TL[s], t = x.targets[0]; log(`  ${s}: سعر ${x.price} · منطقة ${x.entryLo}–${x.entryHi} · وقف ${x.stop} · هدف ${t.price} (${t.source || ''}) · 1:${t.rr}`); });
   out.levels = { n: tl.length, verdict: tally(tl.map(s => TL[s].verdict)), rr1: { med: q(rr1, .5), p90: q(rr1, .9), max: q(rr1, 1) }, wild: wild.length };

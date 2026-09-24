@@ -3490,7 +3490,12 @@ function tradeLevels(sym){
   const rrOf=px=>riskOk?+((px-entryRef)/risk).toFixed(2):null;
   const targets=(tp.targets||[]).map(t=>({price:t.price,source:t.source,kind:'structural',rr:rrOf(t.price)}));
   let filled=false;
-  if(targets.length<2&&window.KSAEngine){
+  /* 🛠️ العقد أعلاه: «وإن نقص الثاني يُكمَّل». لكن الشرط كان targets.length<2
+     فيشمل الصفر: خطة بلا أي هدف بنيوي — أي خطة تعلنها المنصة نفسها غير
+     مجدية — كانت تأخذ قمة فراكتالية هدفاً *أول* وتعرض «1:7». قيس على السوق
+     الحقيقي: كل الحالات الثماني فوق 1:5 كانت من هذا النوع. التكملة الآن
+     للهدف الثاني وحده، فوق هدف بنيوي قائم. */
+  if(targets.length===1&&window.KSAEngine){
     try{
       const fr=KSAEngine.fractalTargets(cs);
       /* 🛠️ سقف الوصول: الهدف الفراكتالي تكملة لا مستوى بنيوي، و«حيّة» تعني

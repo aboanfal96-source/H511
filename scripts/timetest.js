@@ -24,13 +24,18 @@ const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf('--' + n); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
 const FROM = val('from', '');
 const LIMIT = parseInt(val('limit', '0'), 10) || 0;
-const STEP = parseInt(val('step', '10'), 10);
+const STEP = parseInt(val('step', '20'), 10);
+/* timeWindows يعيد حساب دورة السهم الذاتية على السلسلة كاملة في كل نداء
+   (~0.1 ث)، فتُعايَن الأسهم: كل سهم رقم k من EVERY. عيّنة 128 سهماً × 50
+   نقطة × ~15 موعداً ≈ 100 ألف مشاهدة — أكثر من كافٍ لقياس الرفع. */
+const EVERY = parseInt(val('every', '2'), 10);
 const DEPTH = parseInt(val('depth', '10'), 10);     /* نصف عرض الانعطاف الحقيقي */
 const TOL = parseInt(val('tol', '1'), 10);          /* ± جلسات حول الموعد */
 const TAT = args.indexOf('--no-tat') < 0;
+const CLASSIC = args.indexOf('--tat-only') < 0;
 /* الفلتر يعيد حساب المؤشرات على كل سلسلة مقطوعة (~0.1 ث للنقطة)، فيُعايَن
    على عيّنة: كل سهم رقم k من TAT_EVERY، وكل TAT_STEP جلسة. */
-const TAT_EVERY = parseInt(val('tat-every', '3'), 10);
+const TAT_EVERY = parseInt(val('tat-every', '2'), 10);
 const TAT_STEP = parseInt(val('tat-step', '20'), 10);
 
 const log = (...a) => console.log(...a);
@@ -82,17 +87,29 @@ const row = (name, k, n, base) => {
   };
   const nearestBars = [];
   const t0 = Date.now();
+  const report = (label) => {
+    const b = acc.base[0] / Math.max(1, acc.base[1]);
+    const f = k => acc[k][1] ? `${(100 * acc[k][0] / acc[k][1]).toFixed(1)}٪ (رفع ${(acc[k][0] / acc[k][1] / b).toFixed(2)}, n=${acc[k][1]})` : '—';
+    log(`  [${label}] أساس ${(100 * b).toFixed(1)}٪ · فيبو ${f('fib')} · غان ${f('gann')} · أقرب ${f('nearest')} · تلاقٍ ${f('confl')}`);
+  };
+  let done = 0;
   for (let si = 0; si < live.length; si++) {
+    if (si % EVERY) continue;
     const sym = live[si];
     const cs = G.cans[sym], n = cs.length;
     const isT = trueTurns(cs, DEPTH);
     const lo = 260, hi = n - Math.max(DEPTH, 12) - 1;
     for (let j = lo; j <= hi; j++) { acc.base[1]++; if (near(isT, j, TOL)) acc.base[0]++; }
+    /* نسبة الصعود الأساسية لهذا السهم نفسه: الاتجاه المعلن يُقاس على
+       الاتجاه نفسه في السهم نفسه، لا على متوسط سوق هبط خلال الفترة */
+    let upN = 0, upK = 0;
+    for (let j = lo; j <= hi - 10; j++) { upN++; if (cs[j + 10].close > cs[j].close) upK++; }
+    const pUp = upN ? upK / upN : 0.5;
 
     for (let t = lo; t <= hi - 5; t += STEP) {
       const past = cs.slice(0, t + 1);
       let anchors = [];
-      try { anchors = ctx._timeAnchors(past); } catch (e) { }
+      if (CLASSIC) try { anchors = ctx._timeAnchors(past); } catch (e) { }
       const dates = [];
       for (const a of anchors) {
         let w = [];
@@ -121,7 +138,7 @@ const row = (name, k, n, base) => {
         }
       }
 
-      if (TAT && si % TAT_EVERY === 0 && (t - lo) % TAT_STEP < STEP) {
+      if (TAT && done % TAT_EVERY === 0 && (t - lo) % TAT_STEP < STEP) {
         /* فلتر «⏱ توافق زمني»: هل يقع الانعطاف حول «الآن» حين يقول ذلك؟ */
         G.cans.__t = past; delete G.ind.__t;
         let tat = null;
@@ -129,26 +146,27 @@ const row = (name, k, n, base) => {
         if (tat) {
           const hit = near(isT, t, 2);
           const up = cs[t + 10] && cs[t + 10].close > cs[t].close;
-          if (tat.active) {
-            acc.tatOn[1]++; if (hit) acc.tatOn[0]++;
-            if (tat.dirUp != null) { acc.fwdUpOn[1]++; if (up === !!tat.dirUp) acc.fwdUpOn[0]++; }
-          } else {
-            acc.tatOff[1]++; if (hit) acc.tatOff[0]++;
-            acc.fwdUpOff[1]++; if (up) acc.fwdUpOff[0]++;
-          }
-          if (tat.sniperBonus) {
-            acc.snipOn[1]++; if (hit) acc.snipOn[0]++;
-            acc.fwdUpSnip[1]++; if (up === !!tat.dirUp) acc.fwdUpSnip[0]++;
+          /* المتوقَّع بالصدفة لاتجاهٍ معلن = نسبة ذلك الاتجاه في السهم نفسه */
+          const expect = d => d ? pUp : 1 - pUp;
+          const kind = tat.sniperBonus ? 'snip' : (tat.penalty ? 'pen' : (tat.active ? 'oth' : 'off'));
+          const H = acc['turn_' + kind] || (acc['turn_' + kind] = [0, 0]);
+          H[1]++; if (hit) H[0]++;
+          if (kind !== 'off' && tat.dirUp != null) {
+            const D = acc['dir_' + kind] || (acc['dir_' + kind] = [0, 0, 0]);
+            D[1]++; if (up === !!tat.dirUp) D[0]++; D[2] += expect(!!tat.dirUp);
           }
         }
       }
     }
+    /* نتيجة جزئية دورياً: لو انتهت مهلة التشغيل لا يضيع كل شيء */
+    if (++done % 16 === 0) report(`${done} سهماً · ${((Date.now() - t0) / 1000).toFixed(0)} ث`);
   }
   delete G.cans.__t; delete G.ind.__t;
   log(`(${((Date.now() - t0) / 1000).toFixed(0)} ث)\n`);
 
   const base = acc.base[0] / acc.base[1];
   const out = {};
+  if (CLASSIC) {
   log('━━ النوافذ الكلاسيكية: هل يقع الانعطاف عند الموعد؟ ━━');
   out.base = row('خط الأساس (أي جلسة)', acc.base[0], acc.base[1], base);
   out.fib = row('فيبوناتشي زمني (جلسات)', acc.fib[0], acc.fib[1], base);
@@ -158,18 +176,23 @@ const row = (name, k, n, base) => {
   out.confl = row('تلاقي مرساتين (±1)', acc.confl[0], acc.confl[1], base);
   const nb = nearestBars.sort((a, b) => a - b);
   log(`بُعد أقرب نافذة بالجلسات: وسيط ${nb[Math.floor(nb.length / 2)]} · ربع أعلى ${nb[Math.floor(nb.length * .75)]} · 90٪ ${nb[Math.floor(nb.length * .9)]}`);
+  }
 
   if (TAT) {
-    const b2 = (acc.tatOn[0] + acc.tatOff[0]) / Math.max(1, acc.tatOn[1] + acc.tatOff[1]);
+    const T = k => acc['turn_' + k] || [0, 0];
+    const tot = ['off', 'snip', 'pen', 'oth'].reduce((a, k) => [a[0] + T(k)[0], a[1] + T(k)[1]], [0, 0]);
+    const b2 = tot[0] / Math.max(1, tot[1]);
     log('\n━━ فلتر «⏱ توافق زمني»: انعطاف خلال ±2 من الآن ━━');
-    out.tatOff = row('الفلتر صامت', acc.tatOff[0], acc.tatOff[1], b2);
-    out.tatOn = row('الفلتر نشط', acc.tatOn[0], acc.tatOn[1], b2);
-    out.snipOn = row('قنّاص زمني', acc.snipOn[0], acc.snipOn[1], b2);
-    const bu = acc.fwdUpOff[0] / Math.max(1, acc.fwdUpOff[1]);
-    log('\n━━ الاتجاه: صعود بعد 10 جلسات في الاتجاه المعلن ━━');
-    out.fwdOff = row('صامت: نسبة الصعود الأساسية', acc.fwdUpOff[0], acc.fwdUpOff[1], bu);
-    out.fwdOn = row('نشط: الاتجاه المعلن صدق', acc.fwdUpOn[0], acc.fwdUpOn[1], bu);
-    out.fwdSnip = row('قنّاص: الاتجاه المعلن صدق', acc.fwdUpSnip[0], acc.fwdUpSnip[1], bu);
+    out.turnOff = row('الفلتر صامت', T('off')[0], T('off')[1], b2);
+    out.turnSnip = row('قنّاص زمني (مكافأة +20)', T('snip')[0], T('snip')[1], b2);
+    out.turnPen = row('كسر دورة (عقوبة −10)', T('pen')[0], T('pen')[1], b2);
+    log('\n━━ الاتجاه المعلن بعد 10 جلسات — مقابل نسبة ذلك الاتجاه في السهم نفسه ━━');
+    for (const [k, name] of [['snip', 'قنّاص زمني'], ['pen', 'كسر دورة']]) {
+      const D = acc['dir_' + k] || [0, 0, 0];
+      const obs = D[1] ? D[0] / D[1] : 0, exp = D[1] ? D[2] / D[1] : 0, ci = wilson(D[0], D[1]);
+      log(`${name.padEnd(38)} صدق ${D[0]}/${D[1]} = ${(100 * obs).toFixed(1)}٪ [${ci[0]}–${ci[1]}] · المتوقَّع بالصدفة ${(100 * exp).toFixed(1)}٪ · رفع ${exp ? (obs / exp).toFixed(2) : '—'}`);
+      out['dir_' + k] = { k: D[0], n: D[1], obs: +(100 * obs).toFixed(2), expected: +(100 * exp).toFixed(2), ci, lift: exp ? +(obs / exp).toFixed(3) : null };
+    }
   }
   const fs = require('fs'); const jp = val('json', '');
   if (jp) fs.writeFileSync(jp, JSON.stringify(out, null, 1));

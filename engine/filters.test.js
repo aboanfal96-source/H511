@@ -131,6 +131,12 @@ H('الهدف الفراكتالي — سقف الوصول');
   delete ctx.G.cans.__f; delete ctx.G.ind.__f;
 }
 
+H('التكملة الفراكتالية — للهدف الثاني فقط');
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+  ok('لا هدف أول فراكتالي في خطة بلا هدف بنيوي', /if\(targets\.length===1&&window\.KSAEngine\)\{/.test(src) && !/if\(targets\.length<2&&window\.KSAEngine\)/.test(src));
+}
+
 H('التوافقي — القديم لا يُعدّ إشارة حيّة');
 {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
