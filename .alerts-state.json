@@ -1,15 +1,15 @@
 {
- "updatedAt": "2026-11-10T15:31:43.090Z",
+ "updatedAt": "2026-11-10T19:41:36.139Z",
  "lastRun": {
   "scanned": 257,
   "candidates": 5,
-  "sent": 5,
+  "sent": 0,
   "delivered": {
-   "feed": 5,
-   "issue": 5,
+   "feed": 0,
+   "issue": 0,
    "telegram": 0
   },
-  "suppressed": 0,
+  "suppressed": 5,
   "failedFetch": 2
  },
  "store": {
